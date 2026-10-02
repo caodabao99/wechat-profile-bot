@@ -220,15 +220,25 @@
           <button class="btn primary" @click="exportBackup" :disabled="backupBusy">
             {{ backupBusy === 'export' ? '正在生成…' : '导出备份（下载 zip）' }}
           </button>
-          <button class="btn" @click="pickImport" :disabled="backupBusy">导入备份（从 zip 恢复）</button>
-          <input type="file" ref="backupFile" accept=".zip" style="display:none" @change="importBackup">
+          <input class="text-input grow" :type="showEncPwd ? 'text' : 'password'" v-model="encPassword"
+                 placeholder="备份密码（选填，填了就加密密钥文件）" autocomplete="new-password">
         </div>
+        <div class="backup-actions">
+          <button class="btn" @click="pickImport" :disabled="backupBusy">导入备份（从 zip 恢复）</button>
+          <input class="text-input grow" :type="showEncPwd ? 'text' : 'password'" v-model="impPassword"
+                 placeholder="备份密码（备份加密过才需要填）" autocomplete="off">
+          <label class="check-row inline"><input type="checkbox" v-model="showEncPwd"> 显示密码</label>
+        </div>
+        <input type="file" ref="backupFile" accept=".zip" style="display:none" @change="importBackup">
         <p class="hint block" v-if="backupResult">{{ backupResult }}</p>
         <ul class="backup-notes">
           <li>导入会<strong>整体替换</strong>当前所有数据；系统会在服务器数据目录自动留一份「恢复前自动备份」，可反悔。</li>
           <li>聊天数据导入后立即生效；配置、登录凭据、2FA 密钥文件需<strong>重启服务</strong>后生效。</li>
           <li>备份文件含有密钥，等同密码，请妥善保管、不要公开分享。</li>
-          <li>也可以在微信给 ClawBot 发「备份」，在服务器数据目录生成备份文件。</li>
+          <li>填了「备份密码」时，模型 Key、微信登录凭据、2FA 密钥会以 AES-256 加密后放进 zip（文件名带 <code>.enc</code>），
+            导入时需填同一密码。<strong>密码程序不会保存，忘了就无法恢复这几个文件</strong>（聊天数据不受影响）。</li>
+          <li>加密只针对密钥文件，<strong>聊天数据库仍是明文</strong>；zip 也仍是标准格式，可直接用解压软件打开查看。</li>
+          <li>也可以在微信给 ClawBot 发「备份」，在服务器数据目录生成备份文件（该方式不支持加密）。</li>
         </ul>
         <div class="backup-log-section" v-if="backupLogs.length">
           <h3>最近操作记录</h3>

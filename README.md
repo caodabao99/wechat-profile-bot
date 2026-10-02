@@ -17,12 +17,28 @@
 
 ### 1. 获取程序
 
-从 Releases 下载对应平台的二进制：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.1.zip`，解压后得到：
 
-- Linux 服务器: `wechat-profile-bot-linux-amd64`
-- Windows: `wechat-profile-bot-windows-amd64.exe`
+```
+wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
+wechat-profile-bot-windows-amd64.exe      Windows 服务端（amd64）
+wechat-profile-bot.service                Linux systemd 服务模板
+start.bat                                 Windows 前台运行
+install-service.bat                       Windows 安装为服务（需 nssm.exe）
+uninstall-service.bat                     Windows 卸载服务
+config.json                               配置模板
+README.md                                 本文档
+```
 
-> 也可在本目录用 Go 1.25+ 自行编译：`go build -o wechat-profile-bot .`
+- Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
+- Docker 部署见下方「Docker 部署」，需要源码（`git clone` 本仓库）
+
+> 也可自行编译，需要 Go 1.25+：
+> ```bash
+> go build -ldflags="-s -w" -o wechat-profile-bot .                                  # 当前平台
+> CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -ldflags="-s -w" -o wechat-profile-bot-linux-amd64 .
+> CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o wechat-profile-bot-windows-amd64.exe .
+> ```
 
 ### 2. 配置
 
@@ -84,6 +100,149 @@
 
 功能包括：联系人列表、画像查看/编辑、消息记录、历史版本、统计、合并/撤销、**备份导出/导入**。
 
+## 常驻运行与开机自启
+
+> **建议顺序**：先前台跑一次完成扫码绑定（二维码链接直接打印在终端，不会写进日志文件），拿到 `ilink_credentials.json` 之后再转成常驻服务。凭据会一直复用，之后重启都不用再扫码。
+
+### Linux：systemd 服务（推荐）
+
+**1. 放置程序并建专用用户**
+
+```bash
+sudo mkdir -p /opt/wechat-profile-bot
+sudo cp wechat-profile-bot-linux-amd64 /opt/wechat-profile-bot/wechat-profile-bot
+sudo chmod +x /opt/wechat-profile-bot/wechat-profile-bot
+
+# 用低权限专用用户运行，不要用 root
+sudo useradd -r -s /usr/sbin/nologin -d /opt/wechat-profile-bot wpbot
+sudo chown -R wpbot:wpbot /opt/wechat-profile-bot
+```
+
+**2. 前台跑一次，完成配置和扫码**
+
+```bash
+cd /opt/wechat-profile-bot && sudo -u wpbot ./wechat-profile-bot
+```
+
+第一次会生成 `config.json` 模板并退出，填好 `llm.apiKey`、`myName` 后再执行一次，用手机微信扫描终端里的二维码链接，看到登录成功后 `Ctrl+C` 退出。
+
+**3. 创建服务单元** `/etc/systemd/system/wechat-profile-bot.service`
+
+仓库里带了现成模板（源码在 `scripts/linux/wechat-profile-bot.service`，发布包内为 `wechat-profile-bot.service`）：
+
+```bash
+sudo cp scripts/linux/wechat-profile-bot.service /etc/systemd/system/
+```
+
+内容如下，也可以自己手写一份：
+
+```ini
+[Unit]
+Description=WeChat Profile Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wpbot
+Group=wpbot
+WorkingDirectory=/opt/wechat-profile-bot
+ExecStart=/opt/wechat-profile-bot/wechat-profile-bot
+Restart=always
+RestartSec=10
+LimitNOFILE=65536
+
+# 安全加固：不给额外权限、独立 /tmp、系统目录只读
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> `WorkingDirectory` 必须是程序所在目录：`config.json`、数据库、`bot.log`、`security.log`、`banned_ips.json` 全部按「与数据库同目录」存放，靠工作目录定位。
+> `ProtectHome=true` 会让 `/home` 不可访问，所以**不要把程序装在 `/home` 下**；确实要放 `/home`，就把这一行删掉。
+
+**4. 启用并设为开机自启**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wechat-profile-bot
+sudo systemctl status wechat-profile-bot
+```
+
+**日常管理**
+
+| 操作 | 命令 |
+|------|------|
+| 启动 / 停止 / 重启 | `sudo systemctl start\|stop\|restart wechat-profile-bot` |
+| 开 / 关开机自启 | `sudo systemctl enable\|disable wechat-profile-bot` |
+| 查看状态 | `sudo systemctl status wechat-profile-bot` |
+| 实时看运行日志 | `sudo journalctl -u wechat-profile-bot -f` |
+| 看最近 200 行 | `sudo journalctl -u wechat-profile-bot -n 200 --no-pager` |
+| 看业务日志 | `tail -f /opt/wechat-profile-bot/bot.log` |
+| 看安全日志（登录失败/封禁/限流） | `sudo tail -f /opt/wechat-profile-bot/security.log` |
+| 查看被封 IP | `sudo -u wpbot /opt/wechat-profile-bot/wechat-profile-bot --list-bans` |
+| 解封 IP | `sudo -u wpbot /opt/wechat-profile-bot/wechat-profile-bot --unban 1.2.3.4` 后 `sudo systemctl restart wechat-profile-bot` |
+
+> **需要重新扫码时**（换了微信号、凭据被删）：`sudo systemctl stop wechat-profile-bot`，再按第 2 步前台跑一次，扫完码 `Ctrl+C`，然后 `sudo systemctl start wechat-profile-bot`。服务模式下二维码链接也会进 `journalctl`，属敏感信息，看完别外传。
+
+### Linux：不用 systemd 的后台运行
+
+```bash
+cd /opt/wechat-profile-bot
+nohup ./wechat-profile-bot > /dev/null 2>&1 &
+```
+
+程序自己会写 `bot.log` 和 `security.log`，所以标准输出可以直接丢弃。
+
+```bash
+pgrep -af wechat-profile-bot              # 查进程
+kill $(pgrep -f wechat-profile-bot)       # 停止
+```
+
+开机自启（没有 systemd 的老系统）：把下面这行加到 `/etc/rc.local` 的 `exit 0` 之前，并 `chmod +x /etc/rc.local`
+
+```bash
+cd /opt/wechat-profile-bot && nohup ./wechat-profile-bot >/dev/null 2>&1 &
+```
+
+也可以用 `tmux` / `screen` 挂一个会话，方便随时 attach 回来看输出。
+
+### Windows：安装为服务（nssm）
+
+仓库 `scripts/windows/` 下带了三个脚本（发布包里直接和 exe 放在一起），Windows 本身不能把 exe 直接注册成服务，需要 [nssm](https://nssm.cc/download)：
+
+1. 下载 nssm，解压后把 `win64/nssm.exe` 放到 exe 所在目录
+2. **先双击 `start.bat` 前台完成首次扫码**（二维码链接只在这个窗口里，不写日志），登录成功后关掉窗口
+3. 双击 `install-service.bat`，自动完成：服务名 `WeChatProfileBot`、开机自启、崩溃后 10 秒重启、`bot.log`/`bot-error.log` 单文件超 10MB 自动轮转
+4. 日常管理：
+
+```bat
+net start WeChatProfileBot
+net stop  WeChatProfileBot
+sc query  WeChatProfileBot
+```
+
+卸载服务运行 `uninstall-service.bat`。
+
+**不想装服务的话**：
+
+```powershell
+# 后台无窗口运行（PowerShell，在程序目录下执行）
+Start-Process -FilePath ".\wechat-profile-bot-windows-amd64.exe" -WorkingDirectory (Get-Location) -WindowStyle Hidden
+
+# 停止
+Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
+```
+
+开机自启（不装服务）：打开「任务计划程序」→ 创建任务 →
+- 常规：勾选「不管用户是否登录都要运行」
+- 触发器：新建 →「启动时」
+- 操作：新建 → 程序填 exe 完整路径，**「起始于」必须填 exe 所在目录**（否则找不到 `config.json`）
+
 ## Docker 部署
 
 镜像未发布到 Docker Hub，需要先本地构建。
@@ -109,6 +268,47 @@ docker run -d --name wechat-profile-bot --restart unless-stopped \
 ```
 
 配置和数据保存在 `./config` 目录。首次启动会在该目录生成 `config.json` 模板并退出，填好配置后再启动一次；启动日志里会打印二维码链接，用手机微信扫码绑定。
+
+### 容器不再以 root 运行
+
+镜像通过 `docker-entrypoint.sh` 启动：先在 root 权限下把 `/config` 的属主对齐到 `PUID:PGID` 并收紧到 `700`，再用 `su-exec` 降权运行业务进程。这样容器被攻破时也拿不到 root，同时宿主机上的 `./config` 仍然可读写。
+
+`docker-compose.yml` 里可以调整：
+
+```yaml
+environment:
+  - PUID=1000   # 改成宿主机上执行 docker 的用户的 id -u
+  - PGID=1000   # 改成 id -g
+```
+
+- 默认 `1000:1000`，与大多数 Linux 首个普通用户一致；用 `id -u` / `id -g` 查自己的值
+- 启动时会自动 `chown`，所以从旧版本（root 运行）升级过来不需要手工处理已有文件
+- 设 `PUID=0` 可退回旧行为（以 root 运行），作为排查问题时的逃生通道
+- 手动 `docker run` 时同理，加 `-e PUID=$(id -u) -e PGID=$(id -g)` 即可
+
+### Docker 日常运维
+
+| 操作 | 命令 |
+|------|------|
+| 启动（含构建） | `docker compose up -d --build` |
+| 停止 / 重启 | `docker compose stop` / `docker compose restart` |
+| 看容器输出 | `docker compose logs -f`（`--tail 200` 只看最近 200 行） |
+| 看业务日志 | `tail -f ./config/bot.log` |
+| 看安全日志 | `tail -f ./config/security.log` |
+| 查看被封 IP | `docker exec wechat-profile-bot /app/wechat-profile-bot --list-bans` |
+| 解封 IP | `docker exec wechat-profile-bot /app/wechat-profile-bot --unban 1.2.3.4` 然后 `docker compose restart` |
+| 升级到新版 | 替换源码后 `docker compose up -d --build`（数据在 `./config`，不会丢） |
+| 备份全部数据 | 直接打包宿主机 `./config` 目录，或用网页端「备份」导出 zip |
+
+**开机自启**：`docker-compose.yml` 里的 `restart: unless-stopped` 已经保证容器随 Docker 启动，还需要让 Docker 自身开机自启：
+
+```bash
+sudo systemctl enable docker
+```
+
+**关于端口**：`docker-compose.yml` 用的是 `network_mode: host`（避免 bridge 网络访问外部大模型 API 的问题），此时 `-p` / `ports` 映射**不生效**，容器直接监听宿主机的 17965。改用 bridge 网络时才需要 `-p 17965:17965`。
+
+**首次扫码**：`docker compose logs -f` 里会打印二维码链接，用手机微信打开绑定即可。二维码链接等同登录凭据，别截图外传。
 
 ## 命令列表
 
@@ -166,10 +366,37 @@ docker run -d --name wechat-profile-bot --restart unless-stopped \
 按顺序生效，任一层不通过立即返回：
 
 1. **非常用端口**：默认 17965，降低被批量扫描的概率；不需要远程访问时把 `apiPort` 设为 `-1` 彻底关闭
-2. **IP 白名单**（`apiWhitelist`）：支持单 IP 和 CIDR，**优先于 Token 校验**，不在名单内一律 403；空数组表示不限制
-3. **Bearer Token**（`apiToken`）：所有接口（含 `status`）都要求 `Authorization: Bearer <token>`，缺失或不匹配返回 401
+2. **IP 黑名单**：登录失败累计 10 次的 IP 会被**永久封禁**，之后所有请求直接 403（详见下方「登录失败封禁」）
+3. **IP 白名单**（`apiWhitelist`）：支持单 IP 和 CIDR，**优先于 Token 校验**，不在名单内一律 403；空数组表示不限制
+4. **Bearer Token**（`apiToken`）：所有接口（含 `status`）都要求 `Authorization: Bearer <token>`，缺失或不匹配返回 401
+5. **接口限流**：`/api/ingest` 每 IP 每分钟最多 120 次，防止 Token 泄露后被脚本刷爆大模型账单
+6. **安全响应头**：所有响应自动带 `X-Content-Type-Options`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Content-Security-Policy`，防点击劫持与 MIME 嗅探
+7. **HTTP 超时**：`ReadHeaderTimeout 10s` + `IdleTimeout 120s`，避免慢速连接（Slowloris）长期占满连接数
 
 > 服务端暴露在公网时务必同时配置 `apiToken` 和 `apiWhitelist`，或用防火墙/安全组限制来源。
+
+### 登录失败封禁
+
+网页登录（Token + TOTP）失败会按来源 IP 计数，**同一 IP 累计失败 10 次即永久封禁**，封禁后该 IP 访问任何接口都返回 403，重启服务也不会解除。
+
+所有失败与封禁事件单独记在数据目录的 `security.log`（权限 0600，与业务日志 `bot.log` 分开），封禁名单持久化在 `banned_ips.json`（权限 0600，原子写入；文件损坏时自动备份为 `.corrupt` 并以空名单启动）。
+
+登录成功会把该 IP 的失败计数清零，所以正常使用不会被误封。
+
+服务端的运维命令（执行完立即退出，不会启动服务，服务在跑也可以直接执行）：
+
+```bash
+./wechat-profile-bot --list-bans      # 查看当前被封禁的 IP
+./wechat-profile-bot --unban 1.2.3.4  # 解封指定 IP
+./wechat-profile-bot --unban-all      # 解封全部
+./wechat-profile-bot --help           # 查看全部命令
+```
+
+Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bot --list-bans`。
+
+> **解封后需要重启服务才生效**：这些命令只改 `banned_ips.json`，正在运行的进程把名单读在内存里，不会自动重新加载。`docker restart wechat-profile-bot` 或重跑一次二进制即可。
+
+> 客户端 IP 取自 TCP 连接的 `RemoteAddr`，**不信任 `X-Forwarded-For`**，所以伪造请求头无法绕过封禁；反过来说，如果你在 Nginx 等反向代理后面部署，服务端看到的会是代理的 IP，此时应改用代理层的限流/封禁，或把 `apiWhitelist` 配上真实客户端网段。
 
 ### 接口一览
 
@@ -209,7 +436,23 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 微信里发送「备份」命令可在服务器数据目录直接生成一份备份文件（适合无浏览器时先落盘，再用网页端下载）。桌面端连接本服务时，也可以直接用桌面端窗口左下角的「备份…/恢复…」按钮完成同样的操作（远程模式自动调用本服务接口）。
 
-> 备份 zip 包含模型 API Key、iLink 登录凭据和 TOTP 密钥，请像保管密码一样妥善保管，不要通过不可信渠道传输。
+### 备份加密（可选）
+
+导出时可以在「备份密码」框里填一个口令，填了就把 zip 里的**密钥文件**加密：
+
+| | 说明 |
+|---|---|
+| 加密范围 | 只加密 `config.json`、`ilink_credentials.json`、`totp_secret.json`（模型 API Key、微信登录凭据、2FA 密钥） |
+| 不加密 | `data.db`（聊天记录）和 `MANIFEST.json` 始终是明文，zip 也仍是标准格式，可用任意解压软件打开查看 |
+| 加密算法 | PBKDF2-HMAC-SHA256 派生密钥（120000 次迭代）+ AES-256-GCM，文件在 zip 内改名为 `原名.enc` |
+| 留空 | 和以前完全一样，明文保存，任何机器都能直接导入 |
+| 导入 | 程序会自动识别备份是否加密；加密的必须填同一口令，口令不对会**直接中止恢复，现有数据不受影响** |
+
+> **口令不会被程序保存在任何地方**，忘了就再也解不开那几个 `.enc` 文件（聊天记录不受影响，仍然可以正常恢复）。
+
+对应接口：`POST /api/backup/export`，body `{"password":"..."}`；导入时在 multipart 里加 `password` 字段。`GET /api/backup/export` 仍然是明文备份（口令放查询串会进浏览器历史和访问日志，故不支持）。
+
+> 备份 zip 包含模型 API Key、iLink 登录凭据和 TOTP 密钥，即使填了密码，聊天数据库仍是明文，请像保管密码一样妥善保管，不要通过不可信渠道传输。
 
 ## 注意事项
 
@@ -217,6 +460,52 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 - 只支持私信（DM），不支持群聊
 - 数据全部存在本地 SQLite，不上传到任何服务器
 - 首次生成画像需要积累一定数量的对方消息（默认 20 条）
+
+## 数据目录下的文件
+
+均与数据库同目录（Docker 下为 `/config`）：
+
+| 文件 | 说明 |
+|------|------|
+| `config.json` | 配置，含模型 API Key 和 `apiToken` |
+| `wechat-profile-bot.db` | SQLite 数据库（联系人、消息、画像、备份记录） |
+| `bot.log` | 运行日志 |
+| `security.log` | **安全日志**：登录失败、IP 封禁、限流拒绝、白名单拒绝（权限 0600） |
+| `banned_ips.json` | **永久封禁名单**，重启不丢失（权限 0600） |
+| `ilink_credentials.json` | 微信登录凭据，删掉需重新扫码 |
+| `totp_secret.json` | 网页登录的 2FA 密钥，删掉后下次登录重新绑定 |
+| `web_sessions.json` | 网页会话令牌（7 天有效），刻意不进备份 |
+
+这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
+
+## 更新日志
+
+### v2.1（2026-10-02）
+
+安全加固专项，全部改动向后兼容，不影响既有数据和用法。
+
+**新增**
+
+- **登录失败永久封禁**：同一 IP 网页登录失败累计 10 次即永久封禁，之后所有请求 403，重启不解除。名单持久化在 `banned_ips.json`（0600，原子写入，损坏时自动备份为 `.corrupt` 并以空名单启动）
+- **独立安全日志 `security.log`**（0600）：记录每次登录失败的 IP 与原因、封禁/解封事件、限流拒绝、白名单拒绝；与业务日志 `bot.log` 分开，便于审计
+- **封禁自救命令**：`--list-bans`、`--unban <ip>`、`--unban-all`、`--help`（改完名单需重启服务生效）
+- **备份加密（可选）**：导出时可设口令，把 zip 内的密钥文件（`config.json`、`ilink_credentials.json`、`totp_secret.json`）用 AES-256-GCM 加密为 `.enc`；口令不设则完全等同旧行为。聊天记录 `data.db` 与 `MANIFEST.json` 始终明文，zip 仍是标准格式。导入自动识别，口令错误直接中止、不动现有数据
+- **`/api/ingest` 限流**：每 IP 每分钟 120 次，超出返回 429 + `Retry-After`，防止 token 泄露后被刷爆大模型账单
+- **安全响应头**：所有响应带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、`Content-Security-Policy`
+- **HTTP 超时**：`ReadHeaderTimeout 10s`、`IdleTimeout 120s`，防慢速连接（Slowloris）占满连接数
+- **Docker 容器不再以 root 运行**：新增 `docker-entrypoint.sh`，先对齐 `/config` 属主并收紧到 700，再用 `su-exec` 降权到 `PUID:PGID`（默认 1000:1000）；`PUID=0` 可退回 root
+- **部署脚本入库**：`scripts/linux/wechat-profile-bot.service`（systemd 模板）、`scripts/windows/{start,install-service,uninstall-service}.bat`（nssm 服务）
+- README 补全「常驻运行与开机自启」（systemd / nohup / rc.local / Windows 服务 / 任务计划）和「Docker 日常运维」章节
+
+**说明**
+
+- 客户端 IP 一律取自 TCP `RemoteAddr`，**不信任 `X-Forwarded-For`**，伪造请求头无法绕过封禁；反向代理部署请改用代理层封禁或配好 `apiWhitelist`
+- 桌面端用 `apiToken` 直连，token 配错只记审计日志、**不计入封禁计数**，不会把自己锁死
+- 备份口令程序不保存在任何地方，忘了就解不开 `.enc`（聊天记录不受影响）
+
+### v2.0（2026-10-02）
+
+首个服务端版本：微信消息收发、AI 人物画像与意图分析、联系人管理（备注/合并/撤销）、网页管理界面（2FA）、REST API 供桌面端远程调用、数据备份/恢复与操作日志、Docker 部署支持。
 
 ## 关联项目
 

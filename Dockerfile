@@ -17,7 +17,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o wechat-profile-bot .
 # 运行阶段
 FROM alpine:3.20
 
-RUN apk --no-cache add ca-certificates tzdata
+# su-exec 用于入口脚本把进程降权到非 root（比 gosu 小得多）
+RUN apk --no-cache add ca-certificates tzdata su-exec
 
 # 镜像自带时区，docker run 直接启动时也不会退回 UTC（时间戳偏 8 小时）
 ENV TZ=Asia/Shanghai
@@ -27,6 +28,15 @@ WORKDIR /app
 # 从构建阶段复制二进制
 COPY --from=builder /app/wechat-profile-bot .
 
+# 入口脚本：对齐 /config 属主后降权运行。
+# 用 RUN chmod 而不是 COPY --chmod，避免依赖 BuildKit。
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
+
+# 降权使用的 UID/GID，默认 1000；请与宿主机上运行 docker 的用户对齐
+ENV PUID=1000
+ENV PGID=1000
+
 # 配置和数据目录（挂载卷持久化）
 # 程序通过检测 /config 目录是否存在来决定数据位置：存在则使用
 # /config/config.json、/config/wechat-profile-bot.db、/config/ilink_credentials.json，
@@ -35,4 +45,4 @@ VOLUME ["/config"]
 
 EXPOSE 17965
 
-ENTRYPOINT ["./wechat-profile-bot"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

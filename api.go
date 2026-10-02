@@ -40,6 +40,8 @@ type apiServer struct {
 	llm      *LLMClient
 	cfg      *Config
 	sessions *webSessionStore // 网页端 2FA 通过后颁发的会话
+	guard    *securityGuard   // 登录失败计数 + IP 永久封禁 + 安全日志
+	ingestRL *rateLimiter     // /api/ingest 限流，防止 token 泄露后被刷爆 LLM 账单
 }
 
 // clientIP 从请求中提取客户端 IP（去掉端口，兼容 IPv4/IPv6）
@@ -87,14 +89,41 @@ func checkIPWhitelist(r *http.Request, whitelist []string) bool {
 
 // startAPIServer 启动 HTTP API 服务（供 Windows 桌面版远程调用）
 func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Server {
-	s := &apiServer{db: db, llm: llm, cfg: cfg, sessions: initWebSessionStore()}
+	s := &apiServer{
+		db:       db,
+		llm:      llm,
+		cfg:      cfg,
+		sessions: initWebSessionStore(),
+		guard:    newSecurityGuard(),
+		// /api/ingest 每被调用一次就真实消耗一次 LLM 额度。apiToken 一旦泄露，
+		// 没有上限的调用次数意味着账单可以在几小时内被刷爆。这里按 token（无 token
+		// 时按 IP）限制每分钟请求数，正常使用（人工粘贴聊天记录）远达不到这个量。
+		ingestRL: newRateLimiter(ingestRateLimit, ingestRateWindow),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.route)
 	// 网页管理界面：静态资源不走认证（页面本身无敏感数据，数据接口都在 /api/ 下受 Token 保护）。
 	// ServeMux 按最长前缀匹配，/api/ 请求仍进入带认证的 s.route。
 	mux.HandleFunc("/assets/", handleAssets)
 	mux.HandleFunc("/", handleWebUI)
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+	srv := &http.Server{
+		Addr: fmt.Sprintf(":%d", port),
+		// 安全头 + IP 封禁拦截包在最外层：封禁要覆盖网页界面和静态资源，
+		// 不能只拦 /api/，否则被封的 IP 还能加载页面反复试。
+		Handler: withSecurity(mux, s.guard),
+		// ReadHeaderTimeout 是防 slowloris 慢速攻击的关键。默认值 0 表示永不超时，
+		// 攻击者只发一半请求头就能永久占住连接 + goroutine + 文件描述符，而 IP 白名单
+		// 和 token 检查都发生在"请求头收完整之后"，根本管不到这一层。
+		// 请求头只有几百字节，10 秒发不完的一定是恶意连接；正常客户端毫秒级完成，无感。
+		ReadHeaderTimeout: 10 * time.Second,
+		// IdleTimeout 回收 keep-alive 空闲连接，防止长期运行后 fd 累积到 too many open files
+		IdleTimeout: 120 * time.Second,
+		// 刻意不设 ReadTimeout / WriteTimeout，设了会直接搞坏现有功能：
+		//   ReadTimeout  —— 备份导入允许 200MB 上传（backupMaxUpload），手机慢网络传不完就被掐断
+		//   WriteTimeout —— 同步 LLM 调用很慢：画像生成最坏 ~122s（超时 60s × 重试 + 等 2s），
+		//                   「重新生成画像」要连调两次约 244s，意图分析上限 100s
+		// 这两个阶段的取消由各请求自己的 ctx（r.Context()）负责，客户端断开会正常传播。
+	}
 	go func() {
 		slog.Info("API 服务已启动", "addr", fmt.Sprintf("http://0.0.0.0:%d/api/", port))
 		slog.Info("网页管理界面", "addr", fmt.Sprintf("http://0.0.0.0:%d/", port))
@@ -108,11 +137,34 @@ func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Ser
 		} else {
 			slog.Warn("API 未设置认证 Token，任何知道地址的人都能调用！")
 		}
+		if bans := s.guard.ListBans(); len(bans) > 0 {
+			slog.Warn("当前有 IP 处于永久封禁状态", "count", len(bans),
+				"hint", "解封: wechat-profile-bot --unban <ip>；查看: --list-bans")
+		}
+		slog.Info("登录失败封禁已启用",
+			"threshold", maxAuthFailures, "action", "永久封禁",
+			"securityLog", securityLogPath())
+		slog.Info("ingest 接口限流已启用", "limit", ingestRateLimit, "window", ingestRateWindow.String())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务错误", "err", err)
 		}
 	}()
 	return srv
+}
+
+// withSecurity 在业务路由外层套两道防护：安全响应头 + IP 封禁拦截。
+// 封禁检查放在最前面，比 IP 白名单和 token 校验都早——已被封的 IP 连一次业务
+// 处理都不该消耗（否则封禁就失去了"止血"的意义）。
+func withSecurity(next http.Handler, g *securityGuard) http.Handler {
+	return securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r)
+		if g.IsBanned(ip) {
+			g.RecordBannedHit(ip, r.URL.Path)
+			writeErr(w, http.StatusForbidden, "该 IP 已被永久封禁，如为误封请在服务器执行 --unban 解封")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 // writeJSON 输出 JSON 响应
@@ -142,6 +194,7 @@ func writeProfileErr(w http.ResponseWriter, err error) {
 func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	// 1. IP 白名单检查（优先于认证，避免被未授权 IP 探测 token）
 	if !checkIPWhitelist(r, s.cfg.APIWhitelist) {
+		s.guard.RecordDenied(clientIP(r), r.URL.Path, "whitelist")
 		writeErr(w, http.StatusForbidden, "该 IP 未在白名单内，访问被拒绝")
 		return
 	}
@@ -150,7 +203,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(p, "/")
 
 	// /api/auth/* 是网页登录专用通道：不经过 Bearer 认证（第一因素 token 放在请求体），
-	// 但上面的 IP 白名单仍然生效
+	// 但上面的 IP 白名单仍然生效。登录失败计数与 IP 封禁在 routeAuth 内部处理。
 	if parts[0] == "auth" {
 		s.routeAuth(w, r, parts[1:])
 		return
@@ -163,6 +216,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.APIToken != "" {
 		tok := bearerToken(r)
 		if !s.sessions.valid(tok) && !tokenMatches(tok, s.cfg.APIToken) {
+			// 只审计不计数：桌面端 token 配错会高频重试，计入封禁会把用户自己封死
+			s.guard.RecordDenied(clientIP(r), r.URL.Path, "unauthorized")
 			writeErr(w, http.StatusUnauthorized, "未授权：请先在网页完成 Token + 2FA 登录，或在请求头携带有效的 apiToken")
 			return
 		}
@@ -190,7 +245,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.hUndoMerge(w, r)
 	case parts[0] == "merge" && len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
 		s.hMergeLogs(w, r)
-	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet:
+	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "export" &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost):
+		// GET 导出明文备份；POST 可在请求体里带口令，导出「密钥文件已加密」的备份
 		s.hBackupExport(w, r)
 	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "import" && r.Method == http.MethodPost:
 		s.hBackupImport(w, r)
@@ -647,6 +704,22 @@ func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*Inge
 
 // hIngest 桌面端粘贴聊天记录的入口：解析 + 存库 + 可选意图分析
 func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
+	// 限流：ingest 每被调用一次就真实消耗一次 LLM 额度，是全站最"贵"的接口。
+	// apiToken 一旦泄露，没有次数上限就意味着账单能在几小时内被脚本刷爆。
+	// 按 token 维度计数（同一 token 的不同来源共享额度），取不到 token 时退回按 IP。
+	// 正常用法（人工粘贴聊天记录）一分钟也就几次，120 次的上限碰不到。
+	rlKey := bearerToken(r)
+	if rlKey == "" {
+		rlKey = clientIP(r)
+	}
+	if ok, retry := s.ingestRL.Allow(rlKey); !ok {
+		s.guard.RecordDenied(clientIP(r), "/api/ingest", "触发限流")
+		w.Header().Set("Retry-After", strconv.Itoa(retry))
+		writeErr(w, http.StatusTooManyRequests,
+			fmt.Sprintf("请求过于频繁（每分钟最多 %d 次），请 %d 秒后重试", ingestRateLimit, retry))
+		return
+	}
+
 	var req struct {
 		Text    string `json:"text"`
 		Analyze bool   `json:"analyze"`

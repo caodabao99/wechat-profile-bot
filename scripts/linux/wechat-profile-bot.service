@@ -1,0 +1,55 @@
+# WeChat Profile Bot systemd 服务单元模板
+#
+# 安装步骤（假设程序放在 /opt/wechat-profile-bot，用专用用户 wpbot 运行）：
+#   sudo mkdir -p /opt/wechat-profile-bot
+#   sudo cp wechat-profile-bot-linux-amd64 /opt/wechat-profile-bot/wechat-profile-bot
+#   sudo chmod +x /opt/wechat-profile-bot/wechat-profile-bot
+#   sudo useradd -r -s /usr/sbin/nologin -d /opt/wechat-profile-bot wpbot
+#   sudo chown -R wpbot:wpbot /opt/wechat-profile-bot
+#
+#   # 先前台跑一次，生成 config.json 并完成扫码绑定，然后 Ctrl+C
+#   cd /opt/wechat-profile-bot && sudo -u wpbot ./wechat-profile-bot
+#
+#   sudo cp scripts/linux/wechat-profile-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now wechat-profile-bot
+#   sudo systemctl status wechat-profile-bot
+#
+# 常用命令：
+#   sudo journalctl -u wechat-profile-bot -f          实时日志
+#   sudo systemctl restart wechat-profile-bot         重启（改完 config.json 后用）
+#   sudo -u wpbot /opt/wechat-profile-bot/wechat-profile-bot --list-bans   查看被封 IP
+#
+# 如果程序不放在 /opt 而在 /home 下，请删掉 ProtectHome=true（否则读不到自己的目录）。
+
+[Unit]
+Description=WeChat Profile Bot
+Documentation=https://github.com/caodabao99/wechat-profile-bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wpbot
+Group=wpbot
+
+# 必须是程序所在目录：config.json、数据库、bot.log、security.log、
+# banned_ips.json 全部按「与数据库同目录」定位，靠工作目录找。
+WorkingDirectory=/opt/wechat-profile-bot
+ExecStart=/opt/wechat-profile-bot/wechat-profile-bot
+
+# 崩溃或网络抖动后自动拉起
+Restart=always
+RestartSec=10
+
+# 长轮询 + SQLite 会开不少文件描述符
+LimitNOFILE=65536
+
+# 安全加固：进程自身已支持非 root 运行，这里再收紧一层
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

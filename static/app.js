@@ -48,6 +48,9 @@ createApp({
     const backupResult = ref('');
     const backupFile = ref(null);
     const backupLogs = ref([]);
+    const encPassword = ref(''); // 导出时给密钥文件设的口令，留空=明文
+    const impPassword = ref(''); // 导入加密备份时的口令
+    const showEncPwd = ref(false); // 明文显示口令，方便核对
 
     // ---------- 弹层 ----------
     const showRemark = ref(false);
@@ -599,12 +602,21 @@ createApp({
     }
 
     async function exportBackup() {
+      const pwd = encPassword.value.trim();
+      if (pwd && !confirm('将用密码加密备份中的密钥文件（模型 Key、微信登录凭据、2FA 密钥）。\n\n' +
+        '· 密码忘了这些文件就再也解不开，程序不会保存密码\n' +
+        '· 聊天数据仍是明文，zip 可正常打开查看\n\n确定继续吗？')) return;
       backupBusy.value = 'export';
       backupResult.value = '';
       try {
-        const res = await fetch('/api/backup/export', {
-          headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) },
-        });
+        const opt = { headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) } };
+        if (pwd) {
+          // 口令走请求体而不是查询串，避免落进浏览器历史和访问日志
+          opt.method = 'POST';
+          opt.headers['Content-Type'] = 'application/json';
+          opt.body = JSON.stringify({ password: pwd });
+        }
+        const res = await fetch('/api/backup/export', opt);
         if (res.status === 401) {
           localStorage.removeItem(TOKEN_KEY);
           authed.value = false;
@@ -629,7 +641,8 @@ createApp({
         a.remove();
         setTimeout(() => URL.revokeObjectURL(a.href), 10000);
         const mb = (blob.size / 1024 / 1024).toFixed(1);
-        backupResult.value = '已导出：' + name + '（' + mb + ' MB）';
+        backupResult.value = '已导出：' + name + '（' + mb + ' MB）' +
+          (pwd ? '，密钥文件已用密码加密，导入时需提供同一密码' : '');
         loadBackupLogs();
       } catch (e) {
         backupResult.value = '导出失败：' + e.message;
@@ -651,7 +664,8 @@ createApp({
       if (!confirm('确定用「' + file.name + '」恢复吗？\n\n' +
         '· 当前所有联系人、消息、画像数据将被整体替换\n' +
         '· 系统会自动在服务器留一份恢复前备份\n' +
-        '· 配置/登录凭据恢复后需重启服务生效')) {
+        '· 配置/登录凭据恢复后需重启服务生效\n' +
+        '· 若这份备份导出时设过密码，请先在下方「备份密码」里填上')) {
         ev.target.value = '';
         return;
       }
@@ -660,6 +674,8 @@ createApp({
       try {
         const fd = new FormData();
         fd.append('file', file);
+        const pwd = impPassword.value.trim();
+        if (pwd) fd.append('password', pwd);
         const r = await api('/api/backup/import', { method: 'POST', body: fd });
         backupResult.value =
           '恢复完成：联系人 ' + r.contacts + '、消息 ' + r.messages +
@@ -715,6 +731,7 @@ createApp({
       history, expandedHistory, stats, busy, profileSections,
       mergeLogs, loadingMerges, mergeCandidates,
       backupBusy, backupResult, backupFile, backupLogs, exportBackup, pickImport, importBackup,
+      encPassword, impPassword, showEncPwd,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,

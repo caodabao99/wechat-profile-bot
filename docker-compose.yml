@@ -13,5 +13,12 @@ services:
       - ./config:/config
     environment:
       - TZ=Asia/Shanghai
+      # 容器内进程以这个 UID/GID 运行（不再用 root）。
+      # 请改成宿主机上执行 docker 的用户的 id -u / id -g，
+      # 这样 ./config 里的数据库、日志、备份在宿主机上也能正常读写。
+      # 启动时入口脚本会自动把 ./config 的属主改成这里指定的值。
+      # 设 PUID=0 可退回旧行为（以 root 运行）。
+      - PUID=1000
+      - PGID=1000
     # host 网络模式，避免 bridge 网络访问外部 API 的问题
     network_mode: host

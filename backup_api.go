@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,11 @@ import (
 
 // backupMaxUpload 备份导入允许的最大 zip 体积
 const backupMaxUpload = 200 << 20 // 200MB
+
+// backupPasswordRequest POST /api/backup/export 的请求体
+type backupPasswordRequest struct {
+	Password string `json:"password"`
+}
 
 // botSidecarFiles 服务端备份随带的旁路文件：
 // 模型配置、微信登录凭据、2FA 密钥——换服务器部署时免去重新扫码和重新配置。
@@ -34,13 +40,28 @@ func backupSource(r *http.Request, sessions *webSessionStore) string {
 	return "desktop"
 }
 
-// hBackupExport 导出备份 zip
+// hBackupExport 导出备份 zip。
+//
+// GET  —— 明文备份（口令放查询串会进浏览器历史、访问日志和 Referer，故不支持）
+// POST —— 请求体 {"password":"..."}，非空时把密钥文件加密后再打包
 func (s *apiServer) hBackupExport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+	var password string
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		var req backupPasswordRequest
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "请求体不是有效的 JSON")
+			return
+		}
+		password = strings.TrimSpace(req.Password)
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET 或 POST")
 		return
 	}
-	zipPath, cleanup, err := BuildBackupZip(s.db, dataDir(), botSidecarFiles)
+
+	zipPath, cleanup, err := BuildBackupZipWithPassword(s.db, dataDir(), botSidecarFiles, password)
 	if err != nil {
 		slog.Error("导出备份失败", "err", err)
 		LogBackupAction(s.db, "export", backupSource(r, s.sessions), "", 0, err.Error(), false)
@@ -50,8 +71,12 @@ func (s *apiServer) hBackupExport(w http.ResponseWriter, r *http.Request) {
 	defer cleanup()
 
 	name := BackupFileName(time.Now())
+	detail := ""
+	if password != "" {
+		detail = "密钥文件已加密"
+	}
 	if fi, err := os.Stat(zipPath); err == nil {
-		LogBackupAction(s.db, "export", backupSource(r, s.sessions), name, fi.Size(), "", true)
+		LogBackupAction(s.db, "export", backupSource(r, s.sessions), name, fi.Size(), detail, true)
 	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition",
@@ -61,7 +86,7 @@ func (s *apiServer) hBackupExport(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, zipPath)
 }
 
-// hBackupImport 导入备份 zip（multipart 字段名 file）。
+// hBackupImport 导入备份 zip（multipart 字段名 file，可选字段 password）。
 // 聊天数据在事务内即时生效；config/凭据/2FA 密钥写入磁盘后需重启进程。
 func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -79,6 +104,7 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer up.Close()
+	password := strings.TrimSpace(r.FormValue("password"))
 
 	ext := strings.ToLower(filepath.Ext(hdr.Filename))
 	tmp, err := os.CreateTemp("", "wp-upload-*"+ext)
@@ -95,7 +121,7 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	}
 	tmp.Close()
 
-	summary, err := RestoreBackupZip(s.db, tmpPath, dataDir(), true)
+	summary, err := RestoreBackupZipWithPassword(s.db, tmpPath, dataDir(), true, password)
 	if err != nil {
 		slog.Warn("导入备份失败", "err", err)
 		LogBackupAction(s.db, "import", backupSource(r, s.sessions), hdr.Filename, hdr.Size, err.Error(), false)
@@ -105,11 +131,15 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	slog.Info("备份导入完成",
 		"contacts", summary.Contacts, "messages", summary.Messages,
 		"histories", summary.Histories, "files", summary.Files,
+		"encrypted", password != "",
 		"needRestart", summary.NeedRestart, "safety", summary.SafetyBackup)
 	detail := fmt.Sprintf("联系人 %d，消息 %d，画像历史 %d",
 		summary.Contacts, summary.Messages, summary.Histories)
 	if len(summary.Files) > 0 {
 		detail += "；恢复配置文件 " + strings.Join(summary.Files, "、")
+		if password != "" {
+			detail += "（密钥文件已解密）"
+		}
 	}
 	LogBackupAction(s.db, "import", backupSource(r, s.sessions), hdr.Filename, hdr.Size, detail, true)
 	writeJSON(w, http.StatusOK, summary)

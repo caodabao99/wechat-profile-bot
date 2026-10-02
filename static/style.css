@@ -44,9 +44,13 @@ body {
 .btn.ghost:hover { color: var(--text); background: var(--bg); }
 
 /* 备份页 */
-.backup-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 6px; }
+.backup-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 14px 0 6px; }
+.backup-actions .text-input { width: auto; }
 .backup-notes { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.9; }
 .backup-notes strong { color: var(--text); }
+.backup-notes code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.check-row.inline { margin-top: 0; white-space: nowrap; }
 
 /* 备份操作记录 */
 .backup-log-section { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }

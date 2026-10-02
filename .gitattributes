@@ -1,0 +1,12 @@
+# Windows 批处理必须保持 CRLF，否则在某些环境下会解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# shell 脚本必须保持 LF，容器里的 /bin/sh 不接受 CRLF
+*.sh text eol=lf
+
+# 二进制不做任何换行转换
+*.exe binary
+*.db binary
+*.zip binary
+*.png binary

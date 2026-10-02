@@ -15,6 +15,13 @@ import (
 )
 
 func main() {
+	// 安全相关的命令行开关（解封 / 查看名单 / 帮助）。
+	// 必须在 setupLogging 和 LoadConfig 之前处理：否则仅仅为了改一条封禁记录，
+	// 就会顺带创建 bot.log、生成 config.json 并写入一个全新的 apiToken。
+	if handleSecurityCLI() {
+		return
+	}
+
 	// 日志（控制台 + bot.log），后续所有运行信息都走 slog
 	logFile := setupLogging()
 	if logFile != nil {
