@@ -2,6 +2,8 @@
 
 微信 ClawBot（iLink Bot API）服务端 —— 把微信聊天记录自动存到数据库，生成人物画像和意图分析。
 
+配套 Windows 桌面端：[github.com/caodabao99/wechat-profile](https://github.com/caodabao99/wechat-profile)
+
 ## 功能
 
 - **微信消息收发**：通过腾讯官方 iLink Bot API 长轮询收发消息，无需公网 IP/Webhook/内网穿透
@@ -17,8 +19,10 @@
 
 从 Releases 下载对应平台的二进制：
 
-- Linux: `wechat-profile-bot-linux-amd64`
+- Linux 服务器: `wechat-profile-bot-linux-amd64`
 - Windows: `wechat-profile-bot-windows-amd64.exe`
+
+> 也可在本目录用 Go 1.25+ 自行编译：`go build -o wechat-profile-bot .`
 
 ### 2. 配置
 
@@ -72,6 +76,13 @@
 - **帮助** → 查看所有命令
 - **画像 昵称** → 查看联系人画像
 - **列表** → 查看所有联系人
+
+### 5. 网页管理界面
+
+浏览器打开 `http://服务器IP:17965/`，输入 `config.json` 里的 `apiToken` 登录。
+首次登录需绑定 TOTP 验证器（Google/Microsoft Authenticator、微信、支付宝均可），以后每次登录输入动态码。
+
+功能包括：联系人列表、画像查看/编辑、消息记录、历史版本、统计、合并/撤销、**备份导出/导入**。
 
 ## Docker 部署
 
@@ -194,6 +205,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 - **导出备份**：下载一个 `wechat-profile-backup-日期.zip`，内含全部联系人、消息、画像历史、合并记录，以及 `config.json`、`ilink_credentials.json`、`totp_secret.json`（网页登录态 `web_sessions.json` 刻意不包含）
 - **导入恢复**：选择之前导出的 zip，当前数据库会被整体替换；恢复前自动在数据目录留一份 `auto-backup-pre-restore-时间.zip`，恢复配置文件后需重启服务才生效
+- **操作记录**：页面下方显示最近 50 次备份/恢复操作（时间、来源端、文件名、结果），失败操作标红
 
 微信里发送「备份」命令可在服务器数据目录直接生成一份备份文件（适合无浏览器时先落盘，再用网页端下载）。桌面端连接本服务时，也可以直接用桌面端窗口左下角的「备份…/恢复…」按钮完成同样的操作（远程模式自动调用本服务接口）。
 
