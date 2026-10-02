@@ -1,0 +1,728 @@
+/* 微信画像管理前端逻辑：Vue 3（global build），无构建步骤 */
+/* global Vue */
+const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
+
+createApp({
+  setup() {
+    // ---------- 登录态（Token + TOTP 两步登录） ----------
+    const TOKEN_KEY = 'wp_api_token'; // 登录成功后这里存的是「网页会话令牌」，不再存 apiToken
+    const authed = ref(false);
+    const tokenInput = ref('');
+    // authStage: token=输Token / setup=首次绑定验证器 / 2fa=输6位动态码
+    const authStage = ref('token');
+    const pendingToken = ref('');
+    const codeInput = ref('');
+    const setupSecret = ref('');
+    const setupOtpauth = ref('');
+    const setupQr = ref('');
+    const loginChecking = ref(false);
+    const loginError = ref('');
+
+    // ---------- 路由（hash） ----------
+    const route = reactive({ view: 'contacts', id: 0 });
+
+    // ---------- 联系人列表 ----------
+    const contacts = ref([]);
+    const loadingContacts = ref(false);
+    const search = ref('');
+    const showMerged = ref(false);
+
+    // ---------- 联系人详情 ----------
+    const contact = ref(null);
+    const loadingDetail = ref(false);
+    const detailTab = ref('profile');
+    const messages = ref([]);
+    const messagesLoading = ref(false);
+    const messagesHasMore = ref(false);
+    const history = ref([]);
+    const expandedHistory = ref(0);
+    const stats = ref(null);
+    const busy = ref(false);
+
+    // ---------- 合并记录 ----------
+    const mergeLogs = ref([]);
+    const loadingMerges = ref(false);
+
+    // ---------- 备份 ----------
+    const backupBusy = ref(false);
+    const backupResult = ref('');
+    const backupFile = ref(null);
+    const backupLogs = ref([]);
+
+    // ---------- 弹层 ----------
+    const showRemark = ref(false);
+    const remarkInput = ref('');
+    const showSupplement = ref(false);
+    const supplementNote = ref('');
+    const showMerge = ref(false);
+    const mergeSourceId = ref(0);
+    const mergeUseSourceName = ref(false);
+    const mergeRegenerate = ref(true);
+    const showDelete = ref(false);
+
+    const toasts = ref([]);
+    let toastSeq = 0;
+
+    // ---------- 基础设施 ----------
+    function toast(msg, type) {
+      const id = ++toastSeq;
+      toasts.value.push({ id, msg, type: type || '' });
+      setTimeout(() => {
+        const i = toasts.value.findIndex(x => x.id === id);
+        if (i >= 0) toasts.value.splice(i, 1);
+      }, 3000);
+    }
+
+    // api 统一走 /api/，带 Bearer Token；401 清空登录态跳回登录页
+    async function api(path, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({}, opts.headers, {
+        Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY),
+      });
+      // FormData（文件上传）必须让浏览器自动设置带 boundary 的 multipart 头
+      if (opts.body && typeof opts.body === 'object' &&
+        !(typeof FormData !== 'undefined' && opts.body instanceof FormData)) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(opts.body);
+      }
+      const res = await fetch(path, opts);
+      if (res.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        authed.value = false;
+        throw new Error('登录已过期，请重新输入 Token');
+      }
+      let body = {};
+      try { body = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+      if (!res.ok) {
+        throw new Error(body.error || ('请求失败 (' + res.status + ')'));
+      }
+      return body;
+    }
+
+    // authPost 登录专用：不带任何 Authorization 头（避免残留会话干扰），
+    // 也不触发全局 401 跳转
+    async function authPost(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+      if (!res.ok) throw new Error(data.error || ('请求失败 (' + res.status + ')'));
+      return data;
+    }
+
+    function enterApp(session) {
+      localStorage.setItem(TOKEN_KEY, session);
+      authed.value = true;
+      authStage.value = 'token';
+      tokenInput.value = '';
+      codeInput.value = '';
+      pendingToken.value = '';
+      setupSecret.value = '';
+      setupOtpauth.value = '';
+      setupQr.value = '';
+      loginError.value = '';
+      loadContacts();
+    }
+
+    function backToToken() {
+      authStage.value = 'token';
+      codeInput.value = '';
+      loginError.value = '';
+    }
+
+    // 第一步：提交 apiToken，由后端决定下一步是首次绑定还是输动态码
+    async function login() {
+      const t = tokenInput.value.trim();
+      if (!t) { loginError.value = '请输入 API Token'; return; }
+      loginChecking.value = true;
+      loginError.value = '';
+      try {
+        const r = await authPost('/api/auth/login', { token: t });
+        if (r.stage === 'ok') { enterApp(r.session); return; }
+        pendingToken.value = t;
+        if (r.stage === 'setup') {
+          setupSecret.value = r.secret;
+          setupOtpauth.value = r.otpauth;
+          setupQr.value = r.qrPng;
+          authStage.value = 'setup';
+        } else {
+          authStage.value = '2fa';
+        }
+      } catch (e) {
+        loginError.value = e.message;
+      } finally {
+        loginChecking.value = false;
+      }
+    }
+
+    // 首次绑定：验证器扫码后输入 6 位码确认
+    async function enable2FA() {
+      const code = codeInput.value.trim();
+      if (!/^\d{6}$/.test(code)) { loginError.value = '请输入验证器上的 6 位数字'; return; }
+      loginChecking.value = true;
+      loginError.value = '';
+      try {
+        const r = await authPost('/api/auth/2fa/enable', {
+          token: pendingToken.value, secret: setupSecret.value, code,
+        });
+        if (r.stage === 'ok') enterApp(r.session);
+      } catch (e) {
+        loginError.value = e.message;
+      } finally {
+        loginChecking.value = false;
+      }
+    }
+
+    // 日常登录：输入 TOTP 动态码
+    async function verify2FA() {
+      const code = codeInput.value.trim();
+      if (!/^\d{6}$/.test(code)) { loginError.value = '请输入 6 位动态码'; return; }
+      loginChecking.value = true;
+      loginError.value = '';
+      try {
+        const r = await authPost('/api/auth/2fa/verify', {
+          token: pendingToken.value, code,
+        });
+        if (r.stage === 'ok') enterApp(r.session);
+      } catch (e) {
+        loginError.value = e.message;
+        codeInput.value = '';
+      } finally {
+        loginChecking.value = false;
+      }
+    }
+
+    async function logout() {
+      try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 忽略，本地照样清 */ }
+      localStorage.removeItem(TOKEN_KEY);
+      authed.value = false;
+      authStage.value = 'token';
+      loginError.value = '';
+    }
+
+    // ---------- 路由解析 ----------
+    function parseRoute() {
+      const h = location.hash;
+      const m = h.match(/^#\/contact\/(\d+)$/);
+      if (m) {
+        const id = Number(m[1]);
+        if (route.view !== 'detail' || route.id !== id) {
+          resetDetail();
+        }
+        route.view = 'detail';
+        route.id = id;
+      } else if (h.startsWith('#/merges')) {
+        route.view = 'merges';
+        route.id = 0;
+      } else if (h.startsWith('#/backup')) {
+        route.view = 'backup';
+        route.id = 0;
+      } else if (h.startsWith('#/help')) {
+        route.view = 'help';
+        route.id = 0;
+      } else {
+        route.view = 'contacts';
+        route.id = 0;
+      }
+      onRouteEnter();
+    }
+
+    function onRouteEnter() {
+      if (!authed.value) return;
+      if (route.view === 'contacts') loadContacts();
+      if (route.view === 'detail') loadDetail();
+      if (route.view === 'merges') loadMergeLogs();
+      if (route.view === 'backup') loadBackupLogs();
+    }
+
+    function resetDetail() {
+      contact.value = null;
+      detailTab.value = 'profile';
+      messages.value = [];
+      messagesHasMore.value = false;
+      history.value = [];
+      expandedHistory.value = 0;
+      stats.value = null;
+      showRemark.value = false;
+      showSupplement.value = false;
+      showMerge.value = false;
+      showDelete.value = false;
+    }
+
+    function gotoDetail(id) {
+      location.hash = '#/contact/' + id;
+    }
+
+    // ---------- 联系人列表 ----------
+    async function loadContacts() {
+      loadingContacts.value = true;
+      try {
+        // 兜底成 []：后端空列表若返回 null，ref 变成 null，
+        // 模板里 .length/.filter 会抛 TypeError 导致整页白屏
+        contacts.value = (await api('/api/contacts' + (showMerged.value ? '?includeMerged=1' : ''))) || [];
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        loadingContacts.value = false;
+      }
+    }
+
+    // 搜索：昵称、备注、别名任一命中，忽略大小写（对齐桌面端 matchContact）
+    const filteredContacts = computed(() => {
+      const q = search.value.trim().toLowerCase();
+      if (!q) return contacts.value;
+      return contacts.value.filter(c => {
+        if ((c.name || '').toLowerCase().includes(q)) return true;
+        if ((c.remark || '').toLowerCase().includes(q)) return true;
+        if (c.aliases && c.aliases.some(a => a.toLowerCase().includes(q))) return true;
+        return false;
+      });
+    });
+
+    // displayName：有备注时显示「备注（昵称）」
+    function displayName(c) {
+      return c.remark ? c.remark + '（' + c.name + '）' : c.name;
+    }
+
+    // ---------- 联系人详情 ----------
+    async function loadDetail() {
+      loadingDetail.value = true;
+      try {
+        contact.value = await api('/api/contacts/' + route.id);
+        if (detailTab.value === 'messages' && !messages.value.length) loadMessages(false);
+        if (detailTab.value === 'history') loadHistory();
+        if (detailTab.value === 'stats') loadStats();
+      } catch (e) {
+        toast(e.message, 'error');
+        contact.value = null;
+      } finally {
+        loadingDetail.value = false;
+      }
+    }
+
+    function switchTab(tab) {
+      detailTab.value = tab;
+      if (tab === 'messages' && !messages.value.length) loadMessages(false);
+      if (tab === 'history' && !history.value.length) loadHistory();
+      if (tab === 'stats' && !stats.value) loadStats();
+    }
+
+    // 画像按桌面端 profile.go 固定分节铺开
+    const profileSections = computed(() => buildSections(contact.value && contact.value.profileJson));
+
+    // asArr 把画像字段统一成数组。
+    // LLM 正常输出数组，但历史快照/旧版本/手动补充合并后这些字段可能是字符串，
+    // 直接 .map 会抛 TypeError 导致整个画像（含历史展开）渲染失败，必须兜底
+    const asArr = (v) => {
+      if (Array.isArray(v)) return v.filter(x => x !== null && x !== '');
+      if (v == null || v === '') return [];
+      return [String(v)];
+    };
+
+    function buildSections(pj) {
+      if (!pj || pj === '{}') return [];
+      let p;
+      try { p = JSON.parse(pj); } catch (e) { return []; }
+      const secs = [];
+      const push = (title, lines) => {
+        if (lines && lines.length) secs.push({ title, lines });
+      };
+      push('概要', p.summary ? [p.summary] : []);
+      const bi = (p.basic_info && typeof p.basic_info === 'object') ? p.basic_info : {};
+      const biLines = [];
+      if (bi.occupation) biLines.push('职业：' + bi.occupation);
+      if (bi.location) biLines.push('所在地：' + bi.location);
+      const dates = asArr(bi.important_dates);
+      if (dates.length) {
+        biLines.push('重要日子：');
+        dates.forEach(d => biLines.push('- ' + d));
+      }
+      push('基本信息', biLines);
+      push('性格特征', asArr(p.personality).map(x => '- ' + x));
+      const cs = (p.communication_style && typeof p.communication_style === 'object') ? p.communication_style : {};
+      const csLines = [];
+      if (cs.reply_length) csLines.push('回复长短：' + cs.reply_length);
+      if (cs.tone) csLines.push('语气：' + cs.tone);
+      const phrases = asArr(cs.frequent_phrases);
+      if (phrases.length) {
+        csLines.push('口头禅：');
+        phrases.forEach(x => csLines.push('- ' + x));
+      }
+      if (cs.emoji_usage) csLines.push('表情使用：' + cs.emoji_usage);
+      if (cs.initiative) csLines.push('主动程度：' + cs.initiative);
+      push('沟通风格', csLines);
+      push('兴趣爱好', asArr(p.interests).map(x => '- ' + x));
+      const ep = (p.emotional_patterns && typeof p.emotional_patterns === 'object') ? p.emotional_patterns : {};
+      const epLines = [];
+      const stressors = asArr(ep.stressors);
+      if (stressors.length) {
+        epLines.push('压力源：');
+        stressors.forEach(x => epLines.push('- ' + x));
+      }
+      const comforts = asArr(ep.comfort_topics);
+      if (comforts.length) {
+        epLines.push('安慰有效话题：');
+        comforts.forEach(x => epLines.push('- ' + x));
+      }
+      if (ep.when_upset) epLines.push('不高兴时的表现：' + ep.when_upset);
+      push('情绪模式', epLines);
+      const rel = (p.relationship && typeof p.relationship === 'object') ? p.relationship : {};
+      const relLines = [];
+      if (rel.closeness) relLines.push('亲密程度：' + rel.closeness);
+      const events = asArr(rel.recent_events);
+      if (events.length) {
+        relLines.push('近期共同事件：');
+        events.forEach(x => relLines.push('- ' + x));
+      }
+      if (rel.interaction_pattern) relLines.push('互动模式：' + rel.interaction_pattern);
+      push('关系', relLines);
+      if (p.intent_patterns && typeof p.intent_patterns === 'object' && !Array.isArray(p.intent_patterns)
+        && Object.keys(p.intent_patterns).length) {
+        const ipLines = Object.keys(p.intent_patterns).sort()
+          .map(k => '- ' + k + '：' + p.intent_patterns[k]);
+        push('典型意图', ipLines);
+      }
+      push('重要事实', asArr(p.important_facts).map(x => '- ' + x));
+      return secs;
+    }
+
+    // ---------- 消息 ----------
+    async function loadMessages(more) {
+      messagesLoading.value = true;
+      try {
+        const offset = more ? messages.value.length : 0;
+        const list = (await api('/api/contacts/' + route.id + '/messages?offset=' + offset + '&limit=50')) || [];
+        if (more) messages.value = messages.value.concat(list);
+        else messages.value = list;
+        messagesHasMore.value = list.length === 50;
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        messagesLoading.value = false;
+      }
+    }
+
+    // ---------- 画像历史 ----------
+    async function loadHistory() {
+      try {
+        history.value = (await api('/api/contacts/' + route.id + '/history?limit=100')) || [];
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+
+    function toggleHistory(h) {
+      expandedHistory.value = expandedHistory.value === h.ID ? 0 : h.ID;
+    }
+
+    function historySections(h) {
+      return buildSections(h.ProfileJSON);
+    }
+
+    // 回滚：现有 API 没有专门的回滚端点，通过 supplement 让 LLM 以历史快照为准覆盖当前画像
+    async function rollback(h) {
+      if (!confirm('确定把画像回滚到 ' + fmtTime(h.CreatedAt) + ' 的版本吗？\n将通过「补充画像」接口让大模型以该历史快照覆盖当前画像。')) return;
+      busy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/supplement', {
+          method: 'POST',
+          body: { note: '请把画像整体恢复为以下历史版本，以该 JSON 内容为准，忽略与之冲突的现有信息：\n' + h.ProfileJSON },
+        });
+        toast('已回滚到该版本');
+        expandedHistory.value = 0;
+        await loadDetail();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // ---------- 统计 ----------
+    async function loadStats() {
+      try {
+        stats.value = await api('/api/contacts/' + route.id + '/stats');
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+
+    // ---------- 操作：备注 / 补充 / 合并 / 删除 ----------
+    function startRemark() {
+      remarkInput.value = contact.value ? contact.value.remark : '';
+      showRemark.value = true;
+    }
+
+    async function doSetRemark() {
+      busy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/remark', {
+          method: 'POST',
+          body: { remark: remarkInput.value.trim() },
+        });
+        toast('备注已更新');
+        showRemark.value = false;
+        loadDetail();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function doSupplement() {
+      busy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/supplement', {
+          method: 'POST',
+          body: { note: supplementNote.value.trim() },
+        });
+        toast('画像已补充');
+        showSupplement.value = false;
+        loadDetail();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    async function doRegenerate() {
+      if (!confirm('将基于该联系人的全部消息重新生成画像（调用大模型，可能要等一两分钟），继续？')) return;
+      busy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/regenerate', { method: 'POST' });
+        toast('画像已重新生成');
+        loadDetail();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // 关联昵称：候选为除当前联系人外的未合并联系人
+    const mergeCandidates = ref([]);
+    async function startMerge() {
+      try {
+        const list = (await api('/api/contacts')) || [];
+        mergeCandidates.value = list.filter(c => c.id !== route.id);
+        mergeSourceId.value = 0;
+        mergeUseSourceName.value = false;
+        mergeRegenerate.value = true;
+        showMerge.value = true;
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+
+    async function doMerge() {
+      if (!mergeSourceId.value) return;
+      const src = mergeCandidates.value.find(c => c.id === mergeSourceId.value);
+      if (!confirm('确定把「' + (src ? displayName(src) : '') + '」并入「' + displayName(contact.value) + '」吗？')) return;
+      busy.value = true;
+      try {
+        await api('/api/merge', {
+          method: 'POST',
+          body: {
+            sourceId: mergeSourceId.value,
+            targetId: route.id,
+            useSourceName: mergeUseSourceName.value,
+            regenerate: mergeRegenerate.value,
+          },
+        });
+        toast(mergeRegenerate.value ? '已合并，画像正在后台重新生成' : '已合并');
+        showMerge.value = false;
+        loadDetail();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // 删除：先弹层说明，再确认（二次确认）
+    function doDelete() {
+      showDelete.value = true;
+    }
+
+    async function confirmDelete() {
+      busy.value = true;
+      try {
+        await api('/api/contacts/' + route.id, { method: 'DELETE' });
+        toast('联系人已删除');
+        showDelete.value = false;
+        location.hash = '#/';
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // ---------- 合并记录 ----------
+    async function loadMergeLogs() {
+      loadingMerges.value = true;
+      try {
+        mergeLogs.value = (await api('/api/merge/logs?limit=100')) || [];
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        loadingMerges.value = false;
+      }
+    }
+
+    async function undoMerge(l) {
+      if (!confirm('确定撤销「' + l.SourceName + ' → ' + l.TargetName + '」的合并吗？\n消息和别名将退回原联系人。')) return;
+      busy.value = true;
+      try {
+        await api('/api/merge/undo', { method: 'POST', body: { logId: l.ID } });
+        toast('已撤销合并');
+        loadMergeLogs();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        busy.value = false;
+      }
+    }
+
+    // ---------- 备份 / 恢复 ----------
+    async function loadBackupLogs() {
+      try {
+        backupLogs.value = (await api('/api/backup/logs')) || [];
+      } catch (e) {
+        backupLogs.value = [];
+      }
+    }
+
+    async function exportBackup() {
+      backupBusy.value = 'export';
+      backupResult.value = '';
+      try {
+        const res = await fetch('/api/backup/export', {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) },
+        });
+        if (res.status === 401) {
+          localStorage.removeItem(TOKEN_KEY);
+          authed.value = false;
+          return;
+        }
+        if (!res.ok) {
+          let msg = '导出失败 (' + res.status + ')';
+          try { msg = (await res.json()).error || msg; } catch (e) {}
+          throw new Error(msg);
+        }
+        // 文件名优先取 Content-Disposition
+        let name = 'wechat-profile-backup.zip';
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        const mb = (blob.size / 1024 / 1024).toFixed(1);
+        backupResult.value = '已导出：' + name + '（' + mb + ' MB）';
+        loadBackupLogs();
+      } catch (e) {
+        backupResult.value = '导出失败：' + e.message;
+      } finally {
+        backupBusy.value = false;
+      }
+    }
+
+    function pickImport() {
+      backupResult.value = '';
+      // 每次重新选择同一个文件也要触发 change
+      if (backupFile.value) backupFile.value.value = '';
+      backupFile.value && backupFile.value.click();
+    }
+
+    async function importBackup(ev) {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      if (!confirm('确定用「' + file.name + '」恢复吗？\n\n' +
+        '· 当前所有联系人、消息、画像数据将被整体替换\n' +
+        '· 系统会自动在服务器留一份恢复前备份\n' +
+        '· 配置/登录凭据恢复后需重启服务生效')) {
+        ev.target.value = '';
+        return;
+      }
+      backupBusy.value = 'import';
+      backupResult.value = '正在上传并恢复，请稍候（大文件可能需要一两分钟）…';
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const r = await api('/api/backup/import', { method: 'POST', body: fd });
+        backupResult.value =
+          '恢复完成：联系人 ' + r.contacts + '、消息 ' + r.messages +
+          '、画像历史 ' + r.histories + '、合并记录 ' + r.mergeLogs +
+          (r.files && r.files.length ? '\n已恢复配置文件：' + r.files.join('、') + '，需重启服务生效' : '') +
+          (r.safetyBackup ? '\n恢复前自动备份：' + r.safetyBackup : '');
+        toast('恢复完成');
+        loadContacts();
+        loadBackupLogs();
+      } catch (e) {
+        backupResult.value = '恢复失败：' + e.message;
+      } finally {
+        backupBusy.value = false;
+        ev.target.value = '';
+      }
+    }
+
+    // ---------- 工具 ----------
+    // 时间显示：兼容 RFC3339（2026-10-01T14:45:54+08:00）和纯文本日期
+    function fmtTime(s) {
+      if (!s) return '';
+      let d = new Date(s);
+      if (isNaN(d.getTime())) d = new Date(String(s).replace(' ', 'T'));
+      if (isNaN(d.getTime())) return s;
+      const pad = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+        ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    onMounted(() => {
+      window.addEventListener('hashchange', parseRoute);
+      parseRoute();
+      // 本地存的是网页会话令牌（7 天有效），启动时向后端验真，过期/被吊销就回登录页
+      (async () => {
+        if (!localStorage.getItem(TOKEN_KEY)) return;
+        try {
+          await api('/api/status');
+          authed.value = true;
+          loadContacts();
+        } catch (e) {
+          localStorage.removeItem(TOKEN_KEY);
+        }
+      })();
+    });
+    onUnmounted(() => window.removeEventListener('hashchange', parseRoute));
+
+    return {
+      authed, tokenInput, loginChecking, loginError, login, logout,
+      authStage, codeInput, setupSecret, setupOtpauth, setupQr,
+      enable2FA, verify2FA, backToToken,
+      route, contacts, loadingContacts, search, showMerged, filteredContacts,
+      contact, loadingDetail, detailTab, messages, messagesLoading, messagesHasMore,
+      history, expandedHistory, stats, busy, profileSections,
+      mergeLogs, loadingMerges, mergeCandidates,
+      backupBusy, backupResult, backupFile, backupLogs, exportBackup, pickImport, importBackup,
+      showRemark, remarkInput, showSupplement, supplementNote,
+      showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
+      toasts,
+      loadContacts, gotoDetail, displayName, loadDetail, switchTab, loadMessages,
+      toggleHistory, historySections, rollback,
+      startRemark, doSetRemark, doSupplement, doRegenerate,
+      startMerge, doMerge, doDelete, confirmDelete,
+      loadMergeLogs, undoMerge, fmtTime,
+    };
+  },
+}).mount('#app');

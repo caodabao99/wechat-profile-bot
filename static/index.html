@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#059669">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23059669'/%3E%3Ccircle cx='11' cy='13' r='4' fill='%23fff'/%3E%3Ccircle cx='21' cy='13' r='4' fill='%23fff' opacity='.7'/%3E%3Cpath d='M6 22c2-3 5-4 8-4s7 2 9 5' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<title>微信画像管理</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+
+  <!-- ============ 登录页（Token + 2FA 两步） ============ -->
+  <main v-if="!authed" class="login-wrap">
+    <div class="card login-card">
+      <h1 class="login-title">微信画像管理</h1>
+
+      <!-- 第一步：API Token -->
+      <form v-if="authStage==='token'" @submit.prevent="login">
+        <p class="hint block">输入 config.json 里的 apiToken</p>
+        <input class="text-input" type="password" v-model="tokenInput" placeholder="API Token" autocomplete="current-password">
+        <button class="btn primary lg" type="submit" :disabled="loginChecking">{{ loginChecking ? '验证中…' : '下一步' }}</button>
+      </form>
+
+      <!-- 第二步（首次）：绑定 TOTP 验证器 -->
+      <form v-else-if="authStage==='setup'" @submit.prevent="enable2FA">
+        <p class="hint block">首次使用，先用验证器扫码绑定（Google/Microsoft Authenticator、微信、支付宝等均可）</p>
+        <div class="qr-box"><img :src="setupQr" alt="2FA 绑定二维码"></div>
+        <p class="hint block">无法扫码时手动添加密钥：</p>
+        <p class="totp-secret">{{ setupSecret }}</p>
+        <p class="hint block">扫码后输入验证器上显示的 6 位数字完成绑定</p>
+        <input class="text-input" type="text" inputmode="numeric" maxlength="6" v-model="codeInput" placeholder="6 位动态码" autocomplete="one-time-code" autofocus>
+        <button class="btn primary lg" type="submit" :disabled="loginChecking">{{ loginChecking ? '验证中…' : '确认绑定并进入' }}</button>
+        <button class="btn ghost" type="button" @click="backToToken">返回</button>
+      </form>
+
+      <!-- 第二步（日常）：输入动态码 -->
+      <form v-else @submit.prevent="verify2FA">
+        <p class="hint block">请输入验证器上的 6 位动态码（每 30 秒变化）</p>
+        <input class="text-input" type="text" inputmode="numeric" maxlength="6" v-model="codeInput" placeholder="6 位动态码" autocomplete="one-time-code" autofocus>
+        <button class="btn primary lg" type="submit" :disabled="loginChecking">{{ loginChecking ? '验证中…' : '进入' }}</button>
+        <button class="btn ghost" type="button" @click="backToToken">返回上一步</button>
+      </form>
+
+      <p class="login-err" v-if="loginError">{{ loginError }}</p>
+    </div>
+  </main>
+
+  <template v-else>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/">
+        <span class="logo">◉</span>
+        <span>微信画像管理</span>
+      </a>
+      <nav class="tabs">
+        <a href="#/" :class="{active: route.view==='contacts' || route.view==='detail'}">联系人</a>
+        <a href="#/merges" :class="{active: route.view==='merges'}">合并记录</a>
+        <a href="#/backup" :class="{active: route.view==='backup'}">备份</a>
+        <a href="#/help" :class="{active: route.view==='help'}">命令说明</a>
+      </nav>
+      <button class="btn logout" @click="logout">退出</button>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <!-- ============ 联系人列表 ============ -->
+    <section v-if="route.view==='contacts'">
+      <div class="card">
+        <div class="search-row">
+          <input class="text-input grow" type="search" v-model="search" placeholder="搜索昵称 / 备注 / 别名（忽略大小写）">
+          <button class="btn ghost sm" @click="loadContacts" :disabled="loadingContacts">刷新</button>
+        </div>
+        <label class="check-row"><input type="checkbox" v-model="showMerged" @change="loadContacts"> 显示已并入的联系人</label>
+      </div>
+
+      <div class="list-head">
+        <h2>联系人 <span class="count" v-if="filteredContacts.length">{{ filteredContacts.length }}</span></h2>
+      </div>
+      <p class="empty" v-if="!loadingContacts && !filteredContacts.length">没有匹配的联系人</p>
+
+      <div class="contact-card" v-for="c in filteredContacts" :key="c.id" @click="gotoDetail(c.id)">
+        <div class="c-main">
+          <div class="c-name">{{ displayName(c) }}</div>
+          <div class="c-summary" v-if="c.profileSummary">{{ c.profileSummary }}</div>
+          <div class="c-meta">
+            <span>{{ c.otherMsgCount }} 条对方消息</span>
+            <span v-if="c.lastUpdated">更新：{{ fmtTime(c.lastUpdated) }}</span>
+          </div>
+        </div>
+        <div class="c-side">
+          <span class="chip st-gray" v-if="c.mergedInto">已并入</span>
+          <span class="chip st-purple" v-else-if="c.mergeCount > 0">含{{ c.mergeCount }}人</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 联系人详情 ============ -->
+    <section v-if="route.view==='detail'">
+      <div class="card detail-head" v-if="contact">
+        <div class="dh-top">
+          <a class="back" href="#/">← 返回列表</a>
+          <button class="btn ghost sm" @click="loadDetail" :disabled="loadingDetail">刷新</button>
+        </div>
+        <h2 class="dh-name">{{ displayName(contact) }}</h2>
+        <div class="c-meta">
+          <span>{{ contact.otherMsgCount }} 条对方消息</span>
+          <span v-if="contact.aliases && contact.aliases.length">别名：{{ contact.aliases.join('、') }}</span>
+          <span class="chip st-purple" v-if="contact.mergeCount > 0">含{{ contact.mergeCount }}人</span>
+          <span class="chip st-gray" v-if="contact.mergedInto">已并入 #{{ contact.mergedInto }}</span>
+        </div>
+        <div class="dh-actions">
+          <button class="btn sm" @click="startRemark">改备注</button>
+          <button class="btn sm" @click="showSupplement = true; supplementNote = ''">补充画像</button>
+          <button class="btn sm" @click="startMerge" :disabled="!!contact.mergedInto">关联昵称</button>
+          <button class="btn sm" @click="doRegenerate" :disabled="busy">{{ busy ? '处理中…' : '重新生成画像' }}</button>
+          <button class="btn sm danger" @click="doDelete">删除</button>
+        </div>
+      </div>
+
+      <!-- 页签：画像 / 消息 / 历史 / 统计 -->
+      <nav class="subtabs" v-if="contact">
+        <a :class="{active: detailTab==='profile'}" @click.prevent="detailTab = 'profile'" href="#">画像</a>
+        <a :class="{active: detailTab==='messages'}" @click.prevent="switchTab('messages')" href="#">消息</a>
+        <a :class="{active: detailTab==='history'}" @click.prevent="switchTab('history')" href="#">历史</a>
+        <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
+      </nav>
+
+      <!-- 画像：按桌面端固定分节铺开 -->
+      <div v-if="contact && detailTab==='profile'">
+        <p class="empty" v-if="!profileSections.length">暂无画像，消息积累到一定数量后会自动生成</p>
+        <div class="card section" v-for="sec in profileSections" :key="sec.title">
+          <h2>{{ sec.title }}</h2>
+          <div class="sec-lines">
+            <p v-for="(line, i) in sec.lines" :key="i" :class="{item: line.startsWith('- ')}">{{ line }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 消息 -->
+      <div v-if="contact && detailTab==='messages'">
+        <div class="msg-row" v-for="(m, i) in messages" :key="i" :class="m.sender">
+          <span class="m-sender">{{ m.sender === 'me' ? '我' : '对方' }}</span>
+          <div class="m-body">
+            <div class="m-content">{{ m.content }}</div>
+            <div class="m-time">{{ m.msgTime }}</div>
+          </div>
+        </div>
+        <p class="empty" v-if="!messagesLoading && !messages.length">暂无消息</p>
+        <div class="more-row" v-if="messages.length && messagesHasMore">
+          <button class="btn sm" @click="loadMessages(true)" :disabled="messagesLoading">{{ messagesLoading ? '加载中…' : '加载更多' }}</button>
+        </div>
+      </div>
+
+      <!-- 画像历史 -->
+      <div v-if="contact && detailTab==='history'">
+        <p class="empty" v-if="!history.length">暂无画像历史</p>
+        <div class="card history-card" v-for="h in history" :key="h.ID">
+          <div class="h-head" @click="toggleHistory(h)">
+            <span class="h-time">{{ fmtTime(h.CreatedAt) }}</span>
+            <span class="h-summary">{{ h.ChangeSummary || '画像更新' }}</span>
+            <span class="h-toggle">{{ expandedHistory === h.ID ? '收起' : '查看' }}</span>
+          </div>
+          <div v-if="expandedHistory === h.ID" class="h-detail">
+            <p class="hint" v-if="!h.ProfileJSON || h.ProfileJSON === '{}'">该版本没有画像快照（事件日志）</p>
+            <template v-else>
+              <div class="sec-lines" v-for="sec in historySections(h)" :key="sec.title">
+                <p class="sec-title">【{{ sec.title }}】</p>
+                <p v-for="(line, i) in sec.lines" :key="i">{{ line }}</p>
+              </div>
+              <button class="btn sm" @click="rollback(h)" :disabled="busy">{{ busy ? '处理中…' : '回滚到此版本' }}</button>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- 统计 -->
+      <div v-if="contact && detailTab==='stats'" class="card">
+        <h2>消息统计</h2>
+        <div class="stat-grid" v-if="stats">
+          <div class="stat-row"><span class="st-label">总消息数</span><span class="st-val">{{ stats.Total }}</span></div>
+          <div class="stat-row"><span class="st-label">我发的</span><span class="st-val">{{ stats.Mine }}</span></div>
+          <div class="stat-row"><span class="st-label">对方发的</span><span class="st-val">{{ stats.Other }}</span></div>
+          <div class="stat-row"><span class="st-label">首条消息</span><span class="st-val">{{ fmtTime(stats.FirstTime) || '—' }}</span></div>
+          <div class="stat-row"><span class="st-label">最近消息</span><span class="st-val">{{ fmtTime(stats.LastTime) || '—' }}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 合并记录 ============ -->
+    <section v-if="route.view==='merges'">
+      <div class="list-head">
+        <h2>合并记录 <span class="count" v-if="mergeLogs.length">{{ mergeLogs.length }}</span></h2>
+        <button class="btn ghost sm" @click="loadMergeLogs" :disabled="loadingMerges">刷新</button>
+      </div>
+      <p class="empty" v-if="!loadingMerges && !mergeLogs.length">暂无合并记录</p>
+      <div class="card merge-card" v-for="l in mergeLogs" :key="l.ID">
+        <div class="mg-main">
+          <div class="mg-title">{{ l.SourceName }} → {{ l.TargetName }}</div>
+          <div class="c-meta">
+            <span>{{ fmtTime(l.CreatedAt) }}</span>
+            <span class="chip st-gray" v-if="l.UndoneAt">已撤销 {{ fmtTime(l.UndoneAt) }}</span>
+          </div>
+        </div>
+        <button class="btn sm danger" v-if="!l.UndoneAt" @click="undoMerge(l)" :disabled="busy">撤销合并</button>
+      </div>
+    </section>
+
+    <!-- ============ 备份 / 恢复 ============ -->
+    <section v-if="route.view==='backup'">
+      <div class="card">
+        <h2>备份与恢复</h2>
+        <p class="hint block">
+          备份是一个 zip 文件，包含：全部联系人、消息、画像、画像历史、别名与合并记录，
+          以及配置（模型 Key）、微信登录凭据和 2FA 密钥。换服务器或电脑时，部署好新程序后直接在这里导入即可。
+        </p>
+        <div class="backup-actions">
+          <button class="btn primary" @click="exportBackup" :disabled="backupBusy">
+            {{ backupBusy === 'export' ? '正在生成…' : '导出备份（下载 zip）' }}
+          </button>
+          <button class="btn" @click="pickImport" :disabled="backupBusy">导入备份（从 zip 恢复）</button>
+          <input type="file" ref="backupFile" accept=".zip" style="display:none" @change="importBackup">
+        </div>
+        <p class="hint block" v-if="backupResult">{{ backupResult }}</p>
+        <ul class="backup-notes">
+          <li>导入会<strong>整体替换</strong>当前所有数据；系统会在服务器数据目录自动留一份「恢复前自动备份」，可反悔。</li>
+          <li>聊天数据导入后立即生效；配置、登录凭据、2FA 密钥文件需<strong>重启服务</strong>后生效。</li>
+          <li>备份文件含有密钥，等同密码，请妥善保管、不要公开分享。</li>
+          <li>也可以在微信给 ClawBot 发「备份」，在服务器数据目录生成备份文件。</li>
+        </ul>
+        <div class="backup-log-section" v-if="backupLogs.length">
+          <h3>最近操作记录</h3>
+          <table class="backup-log-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>操作</th>
+                <th>来源</th>
+                <th>文件名</th>
+                <th>大小</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="l in backupLogs" :key="l.id" :class="{err:!l.success}">
+                <td>{{ l.createdAt ? fmtTime(l.createdAt).slice(0,16) : '-' }}</td>
+                <td>
+                  <span class="tag" :class="l.action==='export'?'tag-green':'tag-orange'">
+                    {{ l.action==='export'?'导出':'恢复' }}
+                  </span>
+                  <span v-if="!l.success" class="tag tag-red">失败</span>
+                </td>
+                <td>{{ {web:'网页',wechat:'微信',desktop:'桌面'} [l.source] || l.source }}</td>
+                <td :title="l.filename">{{ l.filename || '-' }}</td>
+                <td>{{ l.sizeBytes ? (l.sizeBytes/1024/1024).toFixed(1)+' MB' : '-' }}</td>
+                <td :title="l.detail" class="log-detail">{{ l.detail || '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 微信命令说明（内容来自 bot.go helpText） ============ -->
+    <section v-if="route.view==='help'">
+      <div class="card help-card">
+        <h2>微信命令说明</h2>
+        <pre class="help-text">微信画像助手命令：
+
+【直接粘贴聊天记录】
+多选复制微信聊天记录发给我，自动识别并存入，同时返回意图分析
+（内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
+
+【查询类】
+画像 [昵称]        — 查看联系人画像（不填昵称显示最近更新的）
+历史 [昵称] [编号] — 查看画像历史版本；加编号看该版完整画像（如：历史 小齐 1）
+列表           — 查看所有联系人
+统计 昵称       — 查看该联系人的消息统计
+
+【管理类】
+备注 昵称 备注内容   — 设置联系人备注
+补充 昵称 信息内容   — 手动补充画像信息（后台处理，完成后单独推送）
+备份            — 在服务器生成完整备份文件（下载/导入用网页管理界面）
+合并 新昵称 旧昵称   — 合并两个联系人（新昵称并入旧昵称）
+撤销合并 昵称       — 撤销最近一次的合并
+合并记录           — 查看合并历史
+删除 昵称           — 删除联系人及其所有数据（需再回复「确认删除 昵称」）
+
+【系统类】
+状态           — 查看登录和运行状态
+重登           — 重新扫码登录（会话过期时用）
+
+【提示】
+- 聊天记录识别靠的是微信"多选复制"功能，复制后直接粘贴发给我
+- 首次生成画像需要积累一定数量的对方消息
+- 发"帮助"查看本说明</pre>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============ 弹层：改备注 ============ -->
+  <div class="mask" v-if="showRemark" @click.self="showRemark = false">
+    <form class="card modal" @submit.prevent="doSetRemark">
+      <h2>修改备注</h2>
+      <input class="text-input" type="text" v-model="remarkInput" placeholder="留空表示清除备注">
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showRemark = false">取消</button>
+        <button class="btn primary" type="submit" :disabled="busy">保存</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 弹层：补充画像 ============ -->
+  <div class="mask" v-if="showSupplement" @click.self="showSupplement = false">
+    <form class="card modal" @submit.prevent="doSupplement">
+      <h2>补充画像信息</h2>
+      <textarea class="text-input ta" v-model="supplementNote" rows="5" placeholder="如：生日是 5 月 20 日、做后端开发、对猫毛过敏…"></textarea>
+      <p class="hint">手动补充的信息优先级最高，会直接合并进画像（调用大模型，可能要等一两分钟）</p>
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showSupplement = false">取消</button>
+        <button class="btn primary" type="submit" :disabled="busy || !supplementNote.trim()">{{ busy ? '处理中…' : '提交' }}</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 弹层：关联昵称（合并） ============ -->
+  <div class="mask" v-if="showMerge" @click.self="showMerge = false">
+    <form class="card modal" @submit.prevent="doMerge">
+      <h2>关联昵称（合并联系人）</h2>
+      <p class="hint block">把选中的联系人并入「{{ contact ? displayName(contact) : '' }}」，其消息、别名、画像历史都会转移过去</p>
+      <select class="text-input" v-model.number="mergeSourceId">
+        <option :value="0" disabled>选择要并入的联系人</option>
+        <option v-for="c in mergeCandidates" :key="c.id" :value="c.id">{{ displayName(c) }}</option>
+      </select>
+      <label class="check-row"><input type="checkbox" v-model="mergeUseSourceName"> 显示名改用对方昵称</label>
+      <label class="check-row"><input type="checkbox" v-model="mergeRegenerate"> 合并后重新生成画像</label>
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showMerge = false">取消</button>
+        <button class="btn primary" type="submit" :disabled="busy || !mergeSourceId">{{ busy ? '处理中…' : '合并' }}</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 弹层：删除二次确认 ============ -->
+  <div class="mask" v-if="showDelete" @click.self="showDelete = false">
+    <div class="card modal">
+      <h2>删除联系人</h2>
+      <p>确定删除联系人「{{ contact ? displayName(contact) : '' }}」吗？<br>
+      该联系人的消息、画像、画像历史、别名、合并记录都会被删除，<b>不可恢复</b>。</p>
+      <div class="modal-actions">
+        <button class="btn" @click="showDelete = false">取消</button>
+        <button class="btn danger solid" @click="confirmDelete" :disabled="busy">{{ busy ? '删除中…' : '确认删除' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts">
+    <transition-group name="toast">
+      <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
+    </transition-group>
+  </div>
+  </template>
+
+</div>
+<script src="/assets/vue.global.prod.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,715 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// profileInFlight 记录正在进行画像生成的 contactID，避免短时间内重复触发
+var profileInFlight sync.Map
+
+// backgroundProfileTimeout 后台画像生成的最长执行时间。
+// LLM 客户端单次超时 60s、失败重试一次，最坏约 122s；后台任务用的是脱离请求的
+// context（请求返回后 r.Context() 就被取消了），必须自带超时，否则 LLM 端挂住时
+// goroutine 会永久占用 profileInFlight 里的槽位，该联系人再也无法触发画像更新。
+const backgroundProfileTimeout = 3 * time.Minute
+
+// maxMessagesPageLimit 单次分页最多返回的消息条数。
+// limit 由客户端传入，不设上限时一个请求就能把整库消息拉走（桌面端远程模式
+// 会在内存里一次性展开），既拖垮服务端也可能打爆客户端。
+const maxMessagesPageLimit = 500
+
+// ingestAnalyzeTimeout 意图分析的硬上限。
+// 桌面端粘贴聊天记录后同步等这个结果，但 LLM 最坏要 ~122s；超时后仍然返回
+// 已完成的入库结果，把错误单独放进 intentError 字段，不至于让用户以为整次导入失败。
+const ingestAnalyzeTimeout = 100 * time.Second
+
+// apiServer 桌面端远程调用的 REST API 服务
+type apiServer struct {
+	db       *sql.DB
+	llm      *LLMClient
+	cfg      *Config
+	sessions *webSessionStore // 网页端 2FA 通过后颁发的会话
+}
+
+// clientIP 从请求中提取客户端 IP（去掉端口，兼容 IPv4/IPv6）
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// checkIPWhitelist 检查请求 IP 是否在白名单内。
+// whitelist 为空时不限制（返回 true）；非空时必须命中其中任一 IP 或 CIDR 段。
+func checkIPWhitelist(r *http.Request, whitelist []string) bool {
+	if len(whitelist) == 0 {
+		return true
+	}
+	ipStr := clientIP(r)
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, entry := range whitelist {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// CIDR 段
+		if strings.Contains(entry, "/") {
+			if _, cidr, err := net.ParseCIDR(entry); err == nil && cidr.Contains(ip) {
+				return true
+			}
+			continue
+		}
+		// 单 IP
+		if entry == ipStr {
+			return true
+		}
+		if allowed := net.ParseIP(entry); allowed != nil && allowed.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// startAPIServer 启动 HTTP API 服务（供 Windows 桌面版远程调用）
+func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Server {
+	s := &apiServer{db: db, llm: llm, cfg: cfg, sessions: initWebSessionStore()}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/", s.route)
+	// 网页管理界面：静态资源不走认证（页面本身无敏感数据，数据接口都在 /api/ 下受 Token 保护）。
+	// ServeMux 按最长前缀匹配，/api/ 请求仍进入带认证的 s.route。
+	mux.HandleFunc("/assets/", handleAssets)
+	mux.HandleFunc("/", handleWebUI)
+	srv := &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: mux}
+	go func() {
+		slog.Info("API 服务已启动", "addr", fmt.Sprintf("http://0.0.0.0:%d/api/", port))
+		slog.Info("网页管理界面", "addr", fmt.Sprintf("http://0.0.0.0:%d/", port))
+		if len(cfg.APIWhitelist) > 0 {
+			slog.Info("API 访问白名单已启用", "allow", cfg.APIWhitelist)
+		} else {
+			slog.Info("API 访问白名单未启用（不限制来源 IP）")
+		}
+		if cfg.APIToken != "" {
+			slog.Info("API 认证: Bearer Token 已启用")
+		} else {
+			slog.Warn("API 未设置认证 Token，任何知道地址的人都能调用！")
+		}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("API 服务错误", "err", err)
+		}
+	}()
+	return srv
+}
+
+// writeJSON 输出 JSON 响应
+func writeJSON(w http.ResponseWriter, code int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+// writeErr 输出错误响应
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// writeProfileErr 把画像生成的错误映射成合适的 HTTP 状态码。
+// ErrProfileBusy 表示同一联系人已有画像任务在跑，属于请求冲突而非服务端故障，
+// 用 409 让桌面端能提示「正在生成中，请稍后」，而不是笼统的「服务器错误」。
+func writeProfileErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrProfileBusy) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeErr(w, http.StatusInternalServerError, err.Error())
+}
+
+// route 路由分发（含 IP 白名单 + Bearer Token 认证）
+func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
+	// 1. IP 白名单检查（优先于认证，避免被未授权 IP 探测 token）
+	if !checkIPWhitelist(r, s.cfg.APIWhitelist) {
+		writeErr(w, http.StatusForbidden, "该 IP 未在白名单内，访问被拒绝")
+		return
+	}
+
+	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
+	parts := strings.Split(p, "/")
+
+	// /api/auth/* 是网页登录专用通道：不经过 Bearer 认证（第一因素 token 放在请求体），
+	// 但上面的 IP 白名单仍然生效
+	if parts[0] == "auth" {
+		s.routeAuth(w, r, parts[1:])
+		return
+	}
+
+	// 2. 认证检查（status 接口也要求认证，防止端口扫描探测）
+	//    接受两种凭证：
+	//    a) 网页会话令牌 —— 网页端通过 apiToken + TOTP 双因素后颁发，有期限可吊销
+	//    b) apiToken 本身 —— Windows 桌面端远程模式使用
+	if s.cfg.APIToken != "" {
+		tok := bearerToken(r)
+		if !s.sessions.valid(tok) && !tokenMatches(tok, s.cfg.APIToken) {
+			writeErr(w, http.StatusUnauthorized, "未授权：请先在网页完成 Token + 2FA 登录，或在请求头携带有效的 apiToken")
+			return
+		}
+	}
+
+	switch {
+	case p == "status":
+		s.hStatus(w, r)
+	case parts[0] == "contacts" && len(parts) == 1 && r.Method == http.MethodGet:
+		s.hListContacts(w, r)
+	case parts[0] == "contacts" && len(parts) == 1 && r.Method == http.MethodPost:
+		s.hCreateContact(w, r)
+	case parts[0] == "contacts" && len(parts) == 2 && parts[1] == "resolve" && r.Method == http.MethodPost:
+		s.hResolveContact(w, r)
+	case parts[0] == "contacts" && len(parts) >= 2:
+		id, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "无效的联系人ID")
+			return
+		}
+		s.routeContact(w, r, id, parts[2:])
+	case parts[0] == "merge" && len(parts) == 1 && r.Method == http.MethodPost:
+		s.hMerge(w, r)
+	case parts[0] == "merge" && len(parts) == 2 && parts[1] == "undo" && r.Method == http.MethodPost:
+		s.hUndoMerge(w, r)
+	case parts[0] == "merge" && len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
+		s.hMergeLogs(w, r)
+	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet:
+		s.hBackupExport(w, r)
+	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "import" && r.Method == http.MethodPost:
+		s.hBackupImport(w, r)
+	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
+		s.hBackupLogs(w, r)
+	case parts[0] == "ingest" && r.Method == http.MethodPost:
+		s.hIngest(w, r)
+	default:
+		writeErr(w, http.StatusNotFound, "未知接口: "+r.URL.Path)
+	}
+}
+
+// routeContact /api/contacts/{id}/... 子路由
+func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int64, sub []string) {
+	if len(sub) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			s.hGetContact(w, r, id)
+		case http.MethodDelete:
+			s.hDeleteContact(w, r, id)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		}
+		return
+	}
+	switch sub[0] {
+	case "messages":
+		s.hGetMessages(w, r, id)
+	case "stats":
+		s.hGetStats(w, r, id)
+	case "history":
+		s.hGetHistory(w, r, id)
+	case "remark":
+		s.hSetRemark(w, r, id)
+	case "name":
+		s.hSetName(w, r, id)
+	case "supplement":
+		s.hSupplement(w, r, id)
+	case "regenerate":
+		s.hRegenerate(w, r, id)
+	case "analyze":
+		s.hAnalyze(w, r, id)
+	default:
+		writeErr(w, http.StatusNotFound, "未知接口")
+	}
+}
+
+// ---- 联系人查询 ----
+
+// contactJSON 联系人 API 输出结构
+type contactJSON struct {
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	Remark         string   `json:"remark"`
+	ProfileJSON    string   `json:"profileJson,omitempty"`
+	ProfileSummary string   `json:"profileSummary"`
+	OtherMsgCount  int      `json:"otherMsgCount"`
+	LastUpdated    string   `json:"lastUpdated"`
+	CreatedAt      string   `json:"createdAt"`
+	MergedInto     int64    `json:"mergedInto"`
+	MergeCount     int      `json:"mergeCount"`
+	Aliases        []string `json:"aliases,omitempty"`
+}
+
+func toContactJSON(c *Contact) contactJSON {
+	return contactJSON{
+		ID: c.ID, Name: c.Name, Remark: c.Remark,
+		ProfileSummary: c.ProfileSummary, OtherMsgCount: c.OtherMsgCount,
+		LastUpdated: c.LastUpdated, CreatedAt: c.CreatedAt,
+		MergedInto: c.MergedInto, MergeCount: c.MergeCount, Aliases: c.Aliases,
+	}
+}
+
+func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
+	includeMerged := r.URL.Query().Get("includeMerged") == "1"
+	contacts, err := GetAllContacts(s.db, includeMerged)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	out := make([]contactJSON, 0, len(contacts))
+	for i := range contacts {
+		out = append(out, toContactJSON(&contacts[i]))
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *apiServer) hGetContact(w http.ResponseWriter, r *http.Request, id int64) {
+	c, err := GetContactByIDWithMerged(s.db, id)
+	if err != nil {
+		writeErr(w, 404, "联系人不存在")
+		return
+	}
+	logs, _ := GetMergeLogsForTarget(s.db, id)
+	cj := toContactJSON(c)
+	cj.ProfileJSON = c.ProfileJSON
+	cj.MergeCount = len(logs)
+	writeJSON(w, 200, cj)
+}
+
+func (s *apiServer) hGetMessages(w http.ResponseWriter, r *http.Request, id int64) {
+	q := r.URL.Query()
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > maxMessagesPageLimit {
+		limit = maxMessagesPageLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	msgs, err := GetMessagesPage(s.db, id, offset, limit)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	type msgJSON struct {
+		Sender  string `json:"sender"`
+		Content string `json:"content"`
+		MsgTime string `json:"msgTime"`
+	}
+	out := make([]msgJSON, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, msgJSON{m.Sender, m.Content, m.Timestamp.Format("2006-01-02 15:04:05")})
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *apiServer) hGetStats(w http.ResponseWriter, r *http.Request, id int64) {
+	stats, err := GetContactStats(s.db, id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, stats)
+}
+
+func (s *apiServer) hGetHistory(w http.ResponseWriter, r *http.Request, id int64) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := GetProfileHistory(s.db, id, limit)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, list)
+}
+
+// ---- 联系人写操作 ----
+
+func readBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		writeErr(w, 400, "请求体解析失败: "+err.Error())
+		return false
+	}
+	return true
+}
+
+func (s *apiServer) hCreateContact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeErr(w, 400, "名称不能为空")
+		return
+	}
+	id, err := GetOrCreateContact(s.db, req.Name)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]int64{"id": id})
+}
+
+func (s *apiServer) hResolveContact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	id, viaAlias, err := ResolveContactID(s.db, req.Name)
+	if err != nil {
+		writeErr(w, 404, "联系人不存在")
+		return
+	}
+	writeJSON(w, 200, map[string]interface{}{"id": id, "viaAlias": viaAlias})
+}
+
+func (s *apiServer) hSetRemark(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		Remark string `json:"remark"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if err := UpdateContactRemark(s.db, id, req.Remark); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *apiServer) hSetName(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if err := UpdateContactName(s.db, id, req.Name); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *apiServer) hDeleteContact(w http.ResponseWriter, r *http.Request, id int64) {
+	if err := DeleteContactByID(s.db, id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// ---- LLM 操作（服务端执行，桌面端无需 API Key） ----
+
+func (s *apiServer) hSupplement(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		Note string `json:"note"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	contact, err := GetContactByID(s.db, id)
+	if err != nil {
+		writeErr(w, 404, "联系人不存在")
+		return
+	}
+	if err := SupplementProfile(r.Context(), s.db, s.llm, id, contact.Name, req.Note); err != nil {
+		writeProfileErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *apiServer) hRegenerate(w http.ResponseWriter, r *http.Request, id int64) {
+	contact, err := GetContactByID(s.db, id)
+	if err != nil {
+		writeErr(w, 404, "联系人不存在")
+		return
+	}
+	msgs, err := GetAllMessages(s.db, id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if err := GenerateOrUpdateProfile(r.Context(), s.db, s.llm, id, contact.Name, msgs); err != nil {
+		writeProfileErr(w, err)
+		return
+	}
+	updated, _ := GetContactByID(s.db, id)
+	writeJSON(w, 200, map[string]string{"ok": "true", "summary": updated.ProfileSummary})
+}
+
+func (s *apiServer) hAnalyze(w http.ResponseWriter, r *http.Request, id int64) {
+	var req struct {
+		Message string `json:"message"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	msgs, err := GetRecentMessages(s.db, id, 50)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	result, err := AnalyzeIntent(r.Context(), s.db, s.llm, id, req.Message, msgs)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, result)
+}
+
+// ---- 合并 ----
+
+func (s *apiServer) hMerge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceID      int64 `json:"sourceId"`
+		TargetID      int64 `json:"targetId"`
+		UseSourceName bool  `json:"useSourceName"`
+		Regenerate    bool  `json:"regenerate"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	result, err := MergeContacts(s.db, req.SourceID, req.TargetID, MergeOptions{
+		UseSourceNameAsDisplay: req.UseSourceName,
+		RegenerateProfile:      req.Regenerate,
+	})
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	// 合并后异步重生成画像（去重）
+	if req.Regenerate {
+		if _, loaded := profileInFlight.LoadOrStore(req.TargetID, true); !loaded {
+			go func() {
+				defer profileInFlight.Delete(req.TargetID)
+				// 用脱离请求的 context：响应写完后 r.Context() 立即取消，
+				// 直接传它会让后台任务刚起步就被打断。
+				ctx, cancel := context.WithTimeout(context.Background(), backgroundProfileTimeout)
+				defer cancel()
+
+				target, err := GetContactByID(s.db, req.TargetID)
+				if err != nil {
+					slog.Error("合并后重生成画像失败: 读取联系人", "err", err)
+					return
+				}
+				msgs, err := GetAllMessages(s.db, req.TargetID)
+				if err != nil {
+					slog.Error("合并后重生成画像失败: 读取消息", "err", err)
+					return
+				}
+				if err := GenerateOrUpdateProfile(ctx, s.db, s.llm, req.TargetID, target.Name, msgs); err != nil {
+					slog.Error("合并后重生成画像失败", "err", err)
+				}
+			}()
+		}
+	}
+	writeJSON(w, 200, result)
+}
+
+func (s *apiServer) hUndoMerge(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		LogID int64 `json:"logId"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if err := UndoMerge(s.db, req.LogID); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *apiServer) hMergeLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if targetIDStr := q.Get("targetId"); targetIDStr != "" {
+		targetID, err := strconv.ParseInt(targetIDStr, 10, 64)
+		if err != nil {
+			writeErr(w, 400, "无效的 targetId")
+			return
+		}
+		logs, err := GetMergeLogsForTarget(s.db, targetID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, logs)
+		return
+	}
+	logs, err := GetMergeLogs(s.db, limit)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, logs)
+}
+
+// ---- 聊天记录识别（核心接口） ----
+
+// IngestOutcome 识别结果（bot 和 API 共用）
+type IngestOutcome struct {
+	Contact          *Contact
+	ParsedCount      int
+	NewCount         int
+	ViaAlias         bool
+	ProfileTriggered bool
+	Messages         []Message
+}
+
+// ingestAndStore 解析聊天记录、推断联系人、存库、按需触发画像更新
+func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*IngestOutcome, error) {
+	messages := ParseClipboard(text, cfg.MyName)
+	var valid []Message
+	for _, m := range messages {
+		if strings.TrimSpace(m.Content) != "" {
+			valid = append(valid, m)
+		}
+	}
+	if len(valid) == 0 {
+		return nil, fmt.Errorf("未能解析出有效聊天记录")
+	}
+
+	contactName := InferContactName(valid, cfg.MyName)
+	if contactName == "" {
+		return nil, fmt.Errorf("无法识别对方昵称")
+	}
+
+	cid, viaAlias, err := ResolveContactID(db, contactName)
+	if err != nil {
+		return nil, fmt.Errorf("解析联系人失败: %w", err)
+	}
+
+	newCount, err := SaveMessages(db, cid, valid)
+	if err != nil {
+		return nil, fmt.Errorf("保存消息失败: %w", err)
+	}
+
+	contact, err := GetContactByID(db, cid)
+	if err != nil {
+		return nil, fmt.Errorf("读取联系人失败: %w", err)
+	}
+
+	outcome := &IngestOutcome{
+		Contact: contact, ParsedCount: len(valid),
+		NewCount: newCount, ViaAlias: viaAlias, Messages: valid,
+	}
+
+	// 达到阈值则后台更新画像（去重：同一联系人已有生成任务则跳过，避免并发浪费 LLM 调用）
+	if ShouldGenerateProfile(db, cid) || ShouldUpdateProfile(db, cid) {
+		if _, loaded := profileInFlight.LoadOrStore(cid, true); !loaded {
+			outcome.ProfileTriggered = true
+			go func() {
+				defer profileInFlight.Delete(cid)
+				// 用脱离请求的 context：响应写完后 r.Context() 立即取消，
+				// 直接透传会让后台任务刚起步就被打断；但必须自带超时，
+				// 否则 LLM 端挂住时 profileInFlight 里的槽位会被永久占用，
+				// 该联系人再也无法触发画像更新。
+				ctx, cancel := context.WithTimeout(context.Background(), backgroundProfileTimeout)
+				defer cancel()
+
+				allMsgs, err := GetAllMessages(db, cid)
+				if err != nil {
+					slog.Error("后台生成画像失败: 读取消息", "err", err)
+					return
+				}
+				if err := GenerateOrUpdateProfile(ctx, db, llm, cid, contact.Name, allMsgs); err != nil {
+					slog.Error("后台生成画像失败", "err", err)
+				}
+			}()
+		}
+	}
+	return outcome, nil
+}
+
+// hIngest 桌面端粘贴聊天记录的入口：解析 + 存库 + 可选意图分析
+func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text    string `json:"text"`
+		Analyze bool   `json:"analyze"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Text) == "" {
+		writeErr(w, 400, "text 不能为空")
+		return
+	}
+
+	outcome, err := ingestAndStore(s.db, s.cfg, s.llm, req.Text)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+
+	resp := map[string]interface{}{
+		"contactId":        outcome.Contact.ID,
+		"contactName":      outcome.Contact.Name,
+		"displayName":      displayName(outcome.Contact),
+		"parsedCount":      outcome.ParsedCount,
+		"newCount":         outcome.NewCount,
+		"otherMsgCount":    outcome.Contact.OtherMsgCount,
+		"viaAlias":         outcome.ViaAlias,
+		"profileTriggered": outcome.ProfileTriggered,
+		"hasProfile":       outcome.Contact.ProfileJSON != "" && outcome.Contact.ProfileJSON != "{}",
+		"coldStartCount":   s.cfg.Profile.ColdStartCount,
+	}
+
+	// 同步意图分析（桌面端结果窗需要）
+	if req.Analyze {
+		var latestOther string
+		for i := len(outcome.Messages) - 1; i >= 0; i-- {
+			if outcome.Messages[i].Sender == "other" {
+				latestOther = outcome.Messages[i].Content
+				break
+			}
+		}
+		if latestOther != "" {
+			// 意图分析要等一轮完整的 LLM 调用（最坏 ~122s），而桌面端是同步等这个响应的。
+			// 给一个略小于客户端超时的硬上限：超时后仍然把已完成的入库结果返回给调用方，
+			// 把失败原因单独放进 intentError，而不是让整个请求 504 掉。
+			ctx, cancel := context.WithTimeout(r.Context(), ingestAnalyzeTimeout)
+			intent, err := AnalyzeIntent(ctx, s.db, s.llm, outcome.Contact.ID, latestOther, outcome.Messages)
+			cancel()
+			if err == nil {
+				resp["intent"] = intent
+			} else {
+				resp["intentError"] = err.Error()
+			}
+		}
+	}
+	writeJSON(w, 200, resp)
+}
+
+// ---- 状态 ----
+
+func (s *apiServer) hStatus(w http.ResponseWriter, r *http.Request) {
+	contacts, _ := GetAllContacts(s.db, false)
+	writeJSON(w, 200, map[string]interface{}{
+		"ok":       true,
+		"contacts": len(contacts),
+	})
+}

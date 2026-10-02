@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  wechat-profile-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wechat-profile-bot:latest
+    container_name: wechat-profile-bot
+    restart: unless-stopped
+    volumes:
+      # 配置和数据库持久化
+      - ./config:/config
+    environment:
+      - TZ=Asia/Shanghai
+    # host 网络模式，避免 bridge 网络访问外部 API 的问题
+    network_mode: host
