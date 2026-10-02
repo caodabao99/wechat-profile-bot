@@ -140,6 +140,15 @@ func (s *apiServer) hAuthEnable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
+	totpMu.Lock()
+	defer totpMu.Unlock()
+	if _, err := os.Lstat(totpSecretPath()); err == nil {
+		writeErr(w, http.StatusConflict, "2FA 已绑定，请使用动态码登录")
+		return
+	} else if !os.IsNotExist(err) {
+		writeErr(w, http.StatusInternalServerError, "检查 2FA 密钥失败")
+		return
+	}
 	if strings.TrimSpace(req.Secret) == "" {
 		writeErr(w, http.StatusBadRequest, "缺少绑定密钥，请返回上一步重新获取二维码")
 		return
@@ -173,6 +182,8 @@ func (s *apiServer) hAuthVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
+	totpMu.Lock()
+	defer totpMu.Unlock()
 	f, err := totpLoadSecret()
 	if err != nil {
 		slog.Error("读取 2FA 密钥失败", "err", err)
@@ -217,6 +228,8 @@ func (s *apiServer) hAuthDisable(w http.ResponseWriter, r *http.Request) {
 	if !decodeAuthBody(w, r, &req) {
 		return
 	}
+	totpMu.Lock()
+	defer totpMu.Unlock()
 	f, err := totpLoadSecret()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "2FA 未启用")

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -284,15 +286,85 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.hSetRemark(w, r, id)
 	case "name":
 		s.hSetName(w, r, id)
+	case "profile":
+		s.hEditProfile(w, r, id)
 	case "supplement":
 		s.hSupplement(w, r, id)
 	case "regenerate":
 		s.hRegenerate(w, r, id)
+	case "rewrite", "review-draft", "profile-changes":
+		s.hAssistance(w, r, id, sub[0])
 	case "analyze":
 		s.hAnalyze(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
+}
+
+func (s *apiServer) hEditProfile(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", "PUT")
+		writeErr(w, 405, "请使用 PUT")
+		return
+	}
+	if id <= 0 {
+		writeErr(w, 400, "无效的联系人ID")
+		return
+	}
+	var input struct {
+		Profile json.RawMessage `json:"profile"`
+		Base    *string         `json:"baseProfileJson"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeErr(w, 400, "请求格式错误: "+err.Error())
+		return
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeErr(w, 400, "请求只能包含一个 JSON 对象")
+		return
+	}
+	if input.Base == nil || len(input.Profile) == 0 || bytes.Equal(bytes.TrimSpace(input.Profile), []byte("null")) {
+		writeErr(w, 400, "必须提供 profile 对象和 baseProfileJson")
+		return
+	}
+	// 避免模型兼容解析器静默丢弃用户填写的重要日期。
+	var shape struct {
+		BasicInfo struct {
+			ImportantDates []string `json:"important_dates"`
+		} `json:"basic_info"`
+	}
+	if err := json.Unmarshal(input.Profile, &shape); err != nil {
+		writeErr(w, 400, "重要日期必须为字符串列表")
+		return
+	}
+	var profile Profile
+	pd := json.NewDecoder(bytes.NewReader(input.Profile))
+	pd.DisallowUnknownFields()
+	if err := pd.Decode(&profile); err != nil {
+		writeErr(w, 400, "画像字段格式错误: "+err.Error())
+		return
+	}
+	for key := range profile.IntentPatterns {
+		if strings.TrimSpace(key) == "" {
+			writeErr(w, 400, "意图名称不能为空")
+			return
+		}
+	}
+	if err := EditProfile(s.db, id, profile, *input.Base); err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			writeErr(w, 404, "联系人不存在")
+		case errors.Is(err, ErrProfileConflict), errors.Is(err, ErrProfileStale):
+			writeErr(w, 409, err.Error())
+		default:
+			writeErr(w, 500, "保存画像失败")
+		}
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 // ---- 联系人查询 ----

@@ -113,6 +113,7 @@
         </div>
         <div class="dh-actions">
           <button class="btn sm" @click="startRemark">改备注</button>
+          <button class="btn sm" @click="startProfileEdit" :disabled="busy || !!contact.mergedInto">编辑画像</button>
           <button class="btn sm" @click="showSupplement = true; supplementNote = ''">补充画像</button>
           <button class="btn sm" @click="startMerge" :disabled="!!contact.mergedInto">关联昵称</button>
           <button class="btn sm" @click="doRegenerate" :disabled="busy">{{ busy ? '处理中…' : '重新生成画像' }}</button>
@@ -127,6 +128,37 @@
         <a :class="{active: detailTab==='history'}" @click.prevent="switchTab('history')" href="#">历史</a>
         <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
       </nav>
+
+      <div class="card section" v-if="contact && contact.id === route.id">
+        <h2>回复前帮我看看</h2>
+        <p>结合画像和最近上下文检查歧义，保留原意。仅展示和复制，不自动发送。</p>
+        <textarea class="text-input" rows="3" maxlength="4000" v-model="assist.draft" :disabled="assist.reviewBusy" placeholder="粘贴自己准备发送的话"></textarea>
+        <button class="btn" @click="reviewDraft" :disabled="assist.reviewBusy || !assist.draft.trim()">{{ assist.reviewBusy ? '检查中…' : '帮我看看' }}</button>
+        <div v-if="assist.review">
+          <p v-if="!assist.review.issues.length">未发现明显歧义</p>
+          <p v-for="(issue, i) in assist.review.issues" :key="i">{{ issue }}</p>
+          <p style="white-space:pre-wrap">{{ assist.review.improved }}</p>
+          <button class="btn sm" @click="copyAssist(assist.review.improved)">复制改进版本</button>
+        </div>
+        <h2>候选回复 · 换个说法</h2>
+        <textarea class="text-input" rows="2" maxlength="4000" v-model="assist.message" :disabled="assist.analyzeBusy" placeholder="粘贴对方最新消息，生成候选回复"></textarea>
+        <button class="btn" @click="analyzeReplies" :disabled="assist.analyzeBusy || !assist.message.trim()">{{ assist.analyzeBusy ? '生成中…' : '生成候选回复' }}</button>
+        <div v-for="(reply, i) in assist.replies" :key="i" class="card section">
+          <h3>建议回复 {{ i + 1 }}</h3><p style="white-space:pre-wrap">{{ reply.text }}</p>
+          <select v-model="reply.style" :disabled="reply.busy"><option v-for="style in styles" :key="style">{{ style }}</option></select>
+          <button class="btn sm" @click="rewriteReply(reply)" :disabled="reply.busy">{{ reply.busy ? '改写中…' : '换个说法' }}</button>
+          <button class="btn sm" @click="copyAssist(reply.text)">复制</button>
+        </div>
+        <h2>画像变化</h2>
+        <button class="btn" @click="loadChanges" :disabled="assist.changesBusy">{{ assist.changesBusy ? '读取中…' : '查看 / 刷新变化' }}</button>
+        <div v-if="assist.changes">
+          <p>{{ assist.changes.note }}</p>
+          <div v-for="change in assist.changes.changes" :key="change.field" class="card section">
+            <strong :class="change.kind === '删除' ? 'st-gray' : 'st-purple'">【{{ change.kind }}】{{ change.field }}</strong>
+            <p style="white-space:pre-wrap">原：{{ change.before }}</p><p style="white-space:pre-wrap">现：{{ change.after }}</p>
+          </div>
+        </div>
+      </div>
 
       <!-- 画像：按桌面端固定分节铺开 -->
       <div v-if="contact && detailTab==='profile'">
@@ -310,6 +342,31 @@
     </section>
 
   </main>
+
+  <div class="mask" v-if="profileEditor">
+    <form class="card modal" style="max-height:90vh;overflow-y:auto" @submit.prevent="saveProfileEdit">
+      <h2>编辑当前画像</h2>
+      <p class="hint">清空字段或列表项即可删除。再次 AI 生成可能重新提取这些信息。</p>
+      <fieldset :disabled="profileSaving" style="border:0;padding:0">
+        <label v-for="field in profileFields" :key="field[0]" style="display:block;margin:12px 0">
+          {{ field[1] }}{{ field[2] ? '（每行一项）' : '' }}
+          <textarea class="text-input" :rows="field[2] ? 3 : 2" v-model="profileEditor.values[field[0]]"></textarea>
+        </label>
+        <p>意图模式</p>
+        <div v-for="(row, i) in profileEditor.intents" :key="i" style="margin:10px 0">
+          <input class="text-input" v-model="row.name" aria-label="意图名称" placeholder="意图名称">
+          <textarea class="text-input" v-model="row.description" aria-label="意图描述" placeholder="典型表现"></textarea>
+          <button type="button" class="btn sm" @click="profileEditor.intents.splice(i, 1)">删除此意图</button>
+        </div>
+        <button type="button" class="btn sm" @click="profileEditor.intents.push({name:'',description:''})">添加意图</button>
+      </fieldset>
+      <p role="alert" v-if="profileEditError">{{ profileEditError }}</p>
+      <div class="modal-actions">
+        <button type="button" class="btn" :disabled="profileSaving" @click="profileEditor = null">取消</button>
+        <button type="submit" class="btn primary" :disabled="profileSaving">{{ profileSaving ? '保存中…' : '保存' }}</button>
+      </div>
+    </form>
+  </div>
 
   <!-- ============ 弹层：改备注 ============ -->
   <div class="mask" v-if="showRemark" @click.self="showRemark = false">

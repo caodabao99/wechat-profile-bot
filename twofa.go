@@ -61,7 +61,10 @@ type totpSecretFile struct {
 	LastUsedStep int64  `json:"lastUsedStep"` // 最近一次成功验证的时间步，用于防重放
 }
 
-func totpSecretPath() string { return filepath.Join(dataDir(), "totp_secret.json") }
+// totpMu 串行化密钥检查、验证和修改；恢复旁路密钥时也必须持有。
+var totpMu sync.Mutex
+
+var totpSecretPath = func() string { return filepath.Join(dataDir(), "totp_secret.json") }
 
 func totpLoadSecret() (*totpSecretFile, error) {
 	b, err := os.ReadFile(totpSecretPath())

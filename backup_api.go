@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -121,7 +122,7 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	}
 	tmp.Close()
 
-	summary, err := RestoreBackupZipWithPassword(s.db, tmpPath, dataDir(), true, password)
+	summary, err := restoreBotBackup(s.db, tmpPath, dataDir(), true, password)
 	if err != nil {
 		slog.Warn("导入备份失败", "err", err)
 		LogBackupAction(s.db, "import", backupSource(r, s.sessions), hdr.Filename, hdr.Size, err.Error(), false)
@@ -143,6 +144,21 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	}
 	LogBackupAction(s.db, "import", backupSource(r, s.sessions), hdr.Filename, hdr.Size, detail, true)
 	writeJSON(w, http.StatusOK, summary)
+}
+
+// restoreBotBackup 的锁顺序为 deleteRestoreMu → totpMu → 共享恢复内部的 dbMu。
+func restoreBotBackup(db *sql.DB, zipPath, dir string, makeSafety bool, password string) (*BackupSummary, error) {
+	deleteRestoreMu.Lock()
+	defer deleteRestoreMu.Unlock()
+	totpMu.Lock()
+	defer totpMu.Unlock()
+	summary, err := RestoreBackupZipWithPassword(db, zipPath, dir, makeSafety, password)
+	if err == nil {
+		pendingDeleteMu.Lock()
+		clear(pendingDeletes)
+		pendingDeleteMu.Unlock()
+	}
+	return summary, err
 }
 
 // hBackupLogs 查询备份/恢复历史

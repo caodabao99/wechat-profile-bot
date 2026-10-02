@@ -38,6 +38,52 @@ createApp({
     const expandedHistory = ref(0);
     const stats = ref(null);
     const busy = ref(false);
+    const assistance = reactive({});
+    const assist = computed(() => {
+      const id = route.id;
+      return assistance[id] || (assistance[id] = { draft: '', review: null, reviewBusy: false, message: '', analyzeBusy: false, replies: [], changes: null, changesBusy: false });
+    });
+    const styles = ['更简短', '更自然', '更委婉', '更直接'];
+    async function copyAssist(text) {
+      try { await navigator.clipboard.writeText(text); toast('已复制'); }
+      catch (e) { toast('复制失败，请选中文字手动复制', 'error'); }
+    }
+    async function reviewDraft() {
+      const id = route.id, state = assist.value, text = state.draft;
+      if (state.reviewBusy) return;
+      state.reviewBusy = true;
+      try { const out = await api('/api/contacts/' + id + '/review-draft', { method: 'POST', body: { text } }); if (state.draft === text) state.review = out; }
+      catch (e) { toast(e.message, 'error'); }
+      finally { state.reviewBusy = false; }
+    }
+    async function analyzeReplies() {
+      const id = route.id, state = assist.value, message = state.message;
+      if (state.analyzeBusy) return;
+      state.analyzeBusy = true;
+      try {
+        const out = await api('/api/contacts/' + id + '/analyze', { method: 'POST', body: { message } });
+        if (state.message === message) state.replies = (out.suggested_replies || (out.suggested_reply ? [out.suggested_reply] : [])).map(text => ({ text, style: '更自然', busy: false }));
+      } catch (e) { toast(e.message, 'error'); }
+      finally { state.analyzeBusy = false; }
+    }
+    async function rewriteReply(reply) {
+      const id = route.id, state = assist.value, original = reply.text, style = reply.style;
+      if (reply.busy) return;
+      reply.busy = true;
+      try {
+        const out = await api('/api/contacts/' + id + '/rewrite', { method: 'POST', body: { text: original, style } });
+        if (state.replies.includes(reply) && reply.text === original) reply.text = out.reply;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { reply.busy = false; }
+    }
+    async function loadChanges() {
+      const id = route.id, state = assist.value;
+      if (state.changesBusy) return;
+      state.changesBusy = true;
+      try { state.changes = await api('/api/contacts/' + id + '/profile-changes'); }
+      catch (e) { toast(e.message, 'error'); }
+      finally { state.changesBusy = false; }
+    }
 
     // ---------- 合并记录 ----------
     const mergeLogs = ref([]);
@@ -62,6 +108,62 @@ createApp({
     const mergeUseSourceName = ref(false);
     const mergeRegenerate = ref(true);
     const showDelete = ref(false);
+    const profileEditor = ref(null);
+    const profileSaving = ref(false);
+    const profileEditError = ref('');
+    const profileFields = [
+      ['summary', '核心摘要'], ['basic_info.occupation', '职业'], ['basic_info.location', '城市/地区'],
+      ['basic_info.important_dates', '重要日子', true], ['personality', '性格特征', true],
+      ['communication_style.reply_length', '回复长短'], ['communication_style.tone', '语气'],
+      ['communication_style.frequent_phrases', '常用表达', true], ['communication_style.emoji_usage', '表情习惯'],
+      ['communication_style.initiative', '主动程度'], ['interests', '兴趣爱好', true],
+      ['emotional_patterns.stressors', '压力源/雷点', true], ['emotional_patterns.comfort_topics', '安慰话题', true],
+      ['emotional_patterns.when_upset', '不高兴时的表现'], ['relationship.closeness', '亲密程度'],
+      ['relationship.recent_events', '近期共同事件', true], ['relationship.interaction_pattern', '互动模式'],
+      ['important_facts', '重要事实', true],
+    ];
+    function startProfileEdit() {
+      try {
+        const base = contact.value.profileJson || '';
+        const p = JSON.parse(base || '{}') || {};
+        const values = {};
+        for (const [path, , list] of profileFields) {
+          let v = path.split('.').reduce((obj, key) => obj && obj[key], p);
+          if (path === 'basic_info.important_dates' && v && !Array.isArray(v)) v = Object.entries(v).map(([k, val]) => k + ': ' + val);
+          values[path] = list ? (v || []).join('\n') : (v || '');
+        }
+        profileEditor.value = { id: contact.value.id, base, values, intents: Object.entries(p.intent_patterns || {}).map(([name, description]) => ({ name, description })) };
+        profileEditError.value = '';
+      } catch (e) { toast('画像无法解析：' + e.message, 'error'); }
+    }
+    async function saveProfileEdit() {
+      if (profileSaving.value) return;
+      const draft = profileEditor.value;
+      const p = {};
+      for (const [path, , list] of profileFields) {
+        const keys = path.split('.');
+        let obj = p;
+        for (const key of keys.slice(0, -1)) obj = obj[key] || (obj[key] = {});
+        obj[keys[keys.length - 1]] = list ? draft.values[path].split('\n').map(s => s.trim()).filter(Boolean) : draft.values[path].trim();
+      }
+      p.intent_patterns = Object.create(null);
+      for (const row of draft.intents) {
+        const name = row.name.trim(), description = row.description.trim();
+        if (!name && !description) continue;
+        if (!name || Object.hasOwn(p.intent_patterns, name)) { profileEditError.value = '意图名称不能为空或重复'; return; }
+        p.intent_patterns[name] = description;
+      }
+      profileSaving.value = true;
+      profileEditError.value = '';
+      try {
+        await api('/api/contacts/' + draft.id + '/profile', { method: 'PUT', body: { profile: p, baseProfileJson: draft.base } });
+        profileEditor.value = null;
+        toast('画像已保存');
+        if (route.view === 'detail' && route.id === draft.id) await loadDetail();
+        loadContacts();
+      } catch (e) { profileEditError.value = e.message; }
+      finally { profileSaving.value = false; }
+    }
 
     const toasts = ref([]);
     let toastSeq = 0;
@@ -127,7 +229,7 @@ createApp({
       setupOtpauth.value = '';
       setupQr.value = '';
       loginError.value = '';
-      loadContacts();
+      parseRoute();
     }
 
     function backToToken() {
@@ -714,7 +816,7 @@ createApp({
         try {
           await api('/api/status');
           authed.value = true;
-          loadContacts();
+          parseRoute();
         } catch (e) {
           localStorage.removeItem(TOKEN_KEY);
         }
@@ -723,6 +825,8 @@ createApp({
     onUnmounted(() => window.removeEventListener('hashchange', parseRoute));
 
     return {
+      assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges,
+      profileEditor, profileSaving, profileEditError, profileFields, startProfileEdit, saveProfileEdit,
       authed, tokenInput, loginChecking, loginError, login, logout,
       authStage, codeInput, setupSecret, setupOtpauth, setupQr,
       enable2FA, verify2FA, backToToken,

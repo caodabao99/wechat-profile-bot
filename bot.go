@@ -40,6 +40,10 @@ type pendingDelete struct {
 	expiresAt   time.Time
 }
 
+// deleteRestoreMu 必须先于 dbMu/pendingDeleteMu 获取，覆盖查询、登记和实际删除。
+// API 恢复持有同一把锁，避免旧确认在数据库替换后继续执行。
+var deleteRestoreMu sync.Mutex
+
 var (
 	pendingDeleteMu sync.Mutex
 	pendingDeletes  = make(map[string]pendingDelete)
@@ -94,7 +98,7 @@ var (
 func isCommand(cmd string) bool {
 	switch cmd {
 	case "帮助", "help", "?", "列表", "画像", "历史", "备注", "补充", "合并",
-		"撤销合并", "合并记录", "删除", "统计", "备份", "重登", "状态", "确认删除":
+		"撤销合并", "合并记录", "删除", "统计", "备份", "重登", "状态", "确认删除", "改写", "草稿检查", "画像变化":
 		return true
 	}
 	return false
@@ -257,6 +261,8 @@ func (b *Bot) HandleMessage(msg *ILinkMessage) string {
 	}
 
 	switch cmd {
+	case "改写", "草稿检查", "画像变化":
+		return b.assistCommand(cmd, args)
 	case "帮助", "help", "?":
 		return b.helpText()
 	case "列表":
@@ -323,6 +329,12 @@ func (b *Bot) helpText() string {
 【直接粘贴聊天记录】
 多选复制微信聊天记录发给我，自动识别并存入，同时返回意图分析
 （内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
+
+【回复辅助（仅展示，不代发）】
+改写 昵称 | 更简短 | 原回复 — 风格可选更简短/更自然/更委婉/更直接
+草稿检查 昵称 | 准备发送的话 — 检查歧义并给出改进版本
+画像变化 昵称 — 对比当前与上一历史画像，不调用模型
+昵称含空格也可使用，竖线分隔；原文中的竖线会保留。
 
 【查询类】
 画像 [昵称]        — 查看联系人画像（不填昵称显示最近更新的）
@@ -766,6 +778,8 @@ func (b *Bot) mergeLogs(args string) string {
 }
 
 func (b *Bot) deleteContact(msg *ILinkMessage, args string) string {
+	deleteRestoreMu.Lock()
+	defer deleteRestoreMu.Unlock()
 	name := strings.TrimSpace(args)
 	if name == "" {
 		return "用法: 删除 昵称\n（删除联系人及其所有消息和画像，不可恢复）"
@@ -801,6 +815,8 @@ func (b *Bot) deleteContact(msg *ILinkMessage, args string) string {
 // 任何用户在任何时候发一条以「确认删除 」开头的消息都会立刻删库，
 // 既没有真正的前置确认，也可能删掉与用户预期不符的联系人。
 func (b *Bot) ConfirmDelete(userID, name string) string {
+	deleteRestoreMu.Lock()
+	defer deleteRestoreMu.Unlock()
 	p, ok := takePendingDelete(userID)
 	if !ok {
 		return "没有待确认的删除操作（可能已超时）。请先发送「删除 昵称」"
@@ -1009,8 +1025,8 @@ func formatIntentResult(result map[string]interface{}) string {
 	if v := get("subtext"); v != "" {
 		fmt.Fprintf(&sb, "潜台词: %s\n", v)
 	}
-	if v := get("suggested_reply"); v != "" {
-		fmt.Fprintf(&sb, "建议回复: %s\n", v)
+	for i, reply := range suggestedReplies(result) {
+		fmt.Fprintf(&sb, "建议回复 %d: %s\n", i+1, reply)
 	}
 	if v := get("confidence"); v != "" {
 		fmt.Fprintf(&sb, "置信度: %s\n", v)
