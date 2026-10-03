@@ -248,6 +248,12 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 		return result, err
 	}
 
+	// 9b. 源联系人的标签并到目标（增值功能；表不存在时跳过，不影响合并本身）
+	if err := transferTagsLocked(tx, sourceID, targetID); err != nil &&
+		!strings.Contains(err.Error(), "no such table") {
+		return result, err
+	}
+
 	// 10. 写 merge_log
 	msgIDsJSON, _ := json.Marshal(msgIDs)
 	historyIDsJSON, _ := json.Marshal(historyIDs)

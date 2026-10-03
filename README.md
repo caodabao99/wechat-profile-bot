@@ -13,6 +13,15 @@
 - **联系人管理**：备注、合并（换昵称后关联）、撤销合并、删除
 - **REST API**：内置 HTTP 接口（默认端口 17965），Windows 桌面版可远程复用同一份数据与模型分析
 - **关系助手**（网页端，默认关闭）：重要日子提醒、久未联系提醒、亲密度评分、AI 情绪预警，每日提醒 / 每周报告通过 SMTP 邮件发送
+- **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
+- **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
+- **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
+- **联系人时间线**：单个联系人的完整往来脉络（首次联系、画像变更、合并、手动记录的大事），可手动补记事件
+- **重要日子日历订阅**：把联系人生日/纪念日导出成标准 `.ics` 订阅链接，手机或电脑日历客户端直接订阅，全年自动重复提醒
+- **AI 祝福语草稿**：重要日子临近时按画像和你的说话风格生成 3 条草稿，自己复制粘贴发送（不代发）
+- **疑似重复联系人推荐**：按昵称/备注相似度扫出可能是同一个人的联系人对，给出建议保留项，一键跳去合并
+- **年度关系报告**：一键生成某一年的关系长页（消息量、最活跃的一天、月度走势、情绪曲线、亲密度变化、关键词、大事记），可分享
+- **我的社交大盘**：全量联系人的互动统计——24 小时活跃分布、周几分布、双方回复速度、谁先开口、高频用词
 - **消息归档**：超过保留期（默认 730 天 ≈ 2 年）的旧消息可一键或每日自动移入同库归档表，缩小活动数据、加快日常查询；随时可按联系人或全部恢复，随备份一起导出
 - **可信设备（免登录）**：登录时勾选「信任此设备」，该浏览器 90 天内打开网页免输 Token 和动态验证码（使用即自动续期）；可在网页端查看、单独或全部吊销
 
@@ -20,7 +29,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.0.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.1.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -37,7 +46,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -255,7 +264,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.0.0.tar.gz`，得到 `wechat-profile-bot:v3.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.1.0.tar.gz`，得到 `wechat-profile-bot:v3.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -351,6 +360,9 @@ sudo systemctl enable docker
 - 浏览器登录后只保存有期限（7 天）的**网页会话令牌**，不长期保存 `apiToken`；退出即吊销
 - Windows 桌面端远程模式继续直接用 `apiToken`，不受影响
 - TOTP 密钥保存在数据目录的 `totp_secret.json`（Docker 下为 `/config/totp_secret.json`，权限 0600）。**换手机或验证器丢失时，在服务器删除该文件**，下次网页登录会重新走绑定流程
+- 顶部导航的 **洞察** 页聚合四个子面板：聊天记录全文搜索、年度关系报告（可另存分享）、我的社交大盘、疑似重复联系人推荐
+- 联系人列表支持按标签筛选、勾选多人批量打标；联系人详情页新增 **时间线** 子页，可手动补记大事
+- **关系助手** 页除每日提醒外，还包含待跟进事项（手动记 / AI 扫描）、重要日子 AI 祝福语草稿、日历订阅（`.ics`）密钥管理
 
 ## 桌面端远程对接（REST API）
 
@@ -454,6 +466,23 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | POST | `/api/merge/undo` | 撤销合并，body `{"logId"}` |
 | GET | `/api/merge/logs?limit=&targetId=` | 合并记录 |
 | POST | `/api/ingest` | 提交聊天记录识别，body `{"text","analyze"}` |
+| GET | `/api/search/messages?q=&contactId=&from=&to=&archive=1&offset=&limit=` | 全文搜索消息（`archive=1` 一并搜归档） |
+| GET / POST | `/api/tags` | 标签列表 / 新建标签，body `{"name"}` |
+| POST | `/api/tags/batch` | 批量打标，body `{"contactIds":[],"tagIds":[],"remove":false}` |
+| PUT / DELETE | `/api/tags/{id}` | 重命名（body `{"name"}`）/ 删除标签 |
+| GET / PUT | `/api/contacts/{id}/tags` | 读取 / 覆盖式设置某联系人的标签，body `{"tagIds":[]}` |
+| GET / POST | `/api/contacts/{id}/timeline` | 联系人时间线 / 手动补记事件，body `{"title","detail","eventTime"}` |
+| DELETE | `/api/contacts/{id}/timeline/{eventId}` | 删除一条手动记录的事件 |
+| GET | `/api/insights/duplicates` | 疑似重复联系人推荐 |
+| GET | `/api/insights/social?days=30` | 我的社交大盘 |
+| GET | `/api/insights/report?year=2026&format=html` | 年度关系报告（`format=html` 返回可分享长页） |
+| GET / POST | `/api/assistant/followups?status=open&limit=100` | 待跟进列表 / 手动新增，body `{"contactId","kind","content","amount"}` |
+| POST | `/api/assistant/followups/scan` | 用 AI 从最近聊天里扫待跟进，body `{"contactId"}`（可选，缺省按每日上限自动挑） |
+| PUT / DELETE | `/api/assistant/followups/{id}` | 改状态（body `{"status":"done\|ignored\|open"}`）/ 删除 |
+| GET / POST | `/api/assistant/calendar/key` | 读取（打码）/ 重置 `.ics` 订阅密钥 |
+| DELETE | `/api/assistant/calendar/key` | 清除订阅密钥（关闭日历订阅） |
+| POST | `/api/assistant/blessing` | 生成 AI 祝福语草稿，body `{"contactId","kind","raw","month","day","dateStr","daysUntil"}`（除 `contactId` 外均可省略） |
+| GET | `/api/calendar.ics?key=订阅密钥` | 日历订阅地址（不走 Bearer，仍受 IP 白名单约束） |
 
 验证示例：
 
@@ -515,6 +544,65 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v3.1.0（2026-10-03）
+
+**新增：待跟进事项（承诺 / 借钱 / 待回复）**
+
+- 网页端「关系助手」页新增待跟进卡片，可手动记一笔（类型分承诺、金钱往来、待回复），带金额、截止说明
+- 也可让 AI 从最近聊天里扫出「我答应过的事 / 借钱还钱 / 该回复没回复」，自动抽取默认关闭（有模型开销），开启后每天最多扫 8 个联系人、只看最近 30 天消息（均可配）
+- 未完成项每天随提醒邮件一起推送，网页端可标记完成 / 忽略 / 重新打开，也可直接删除
+
+**新增：联系人标签分组**
+
+- 自定义标签（可改名、可删除），联系人详情页可勾选标签，列表页显示标签 chips 并支持按标签筛选
+- 列表页支持勾选多人批量打标 / 批量去标（单次上限 2000 人）
+
+**新增：聊天记录全文搜索**
+
+- 网页端新增「洞察」页，第一个子面板就是全文搜索：跨全部联系人按关键词搜消息，可限定联系人、起止日期
+- 可选一并搜已归档消息（默认只搜活动消息），支持翻页加载更多
+
+**新增：联系人时间线**
+
+- 联系人详情页新增「时间线」子页，按时间倒序汇总首次联系、画像更新、合并、手动记录的大事
+- 可手动补记事件（标题 + 详情 + 时间），可删除；派生节点自动生成，不需维护
+
+**新增：重要日子日历订阅（.ics）**
+
+- 「关系助手 → 日历订阅」一键生成独立密钥，得到一条 `.ics` 订阅地址，手机/电脑日历客户端直接订阅
+- 联系人的生日、纪念日按 RFC5545 导出为全天、每年重复的事件；订阅地址不走 Bearer，靠 URL 密钥鉴权（仍受 IP 白名单约束），可随时重置或关闭
+- 密钥只显示一次（后续查看是打码值），泄露后重置即可
+
+**新增：重要日子 AI 祝福语草稿**
+
+- 重要日子临近时按联系人画像和你的说话风格生成 3 条草稿，网页端一键复制，**不代发**
+- 提醒邮件里是否附草稿由开关控制，默认关闭
+
+**新增：疑似重复联系人推荐**
+
+- 「洞察」页按昵称/备注相似度扫出可能是同一个人的联系人对，给出建议保留项和判定理由，一键跳去合并页
+
+**新增：年度关系报告**
+
+- 选年份一键生成：消息量、最活跃的一天、月度走势、情绪曲线、亲密度变化、高频关键词、大事记
+- 可导出为独立 HTML 长页另存分享（内联样式，不依赖服务端）
+
+**新增：我的社交大盘**
+
+- 全量联系人的互动统计：24 小时活跃分布、周几分布、双方平均回复速度、谁先开口的比例、你的高频用词
+- 统计窗口可选（默认 30 天，最长 3650 天），纯本地计算、不调用模型
+
+**修复**
+
+- 修复备注为空（NULL）的联系人被静默跳过的问题：会导致生日提醒邮件和日历订阅对绝大多数联系人生效不了
+- 修复年度关系报告在无数据时把情绪曲线、亲密度变化、大事记返回成 `null`（前端读不到 `.length`）的问题，统一返回 `[]`
+
+**升级说明**
+
+- 全部为网页端增值功能，默认不改变现有行为：AI 抽取待跟进、AI 祝福语草稿默认关闭，日历订阅不生成密钥就不生效；`config.json` 格式不变，直接替换二进制/镜像升级即可
+- 新增的 4 张表（`contact_tags`、`contact_tag_links`、`contact_events`、`followup_items`）在启动时按需创建，随主库一起备份；即使这些表缺失，核心记录/查询/提醒功能也照常工作
+- 升级后请强制刷新一次网页（Ctrl/Cmd + Shift + R）
 
 ### v3.0.0（2026-10-03）
 

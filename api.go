@@ -263,6 +263,13 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /api/calendar.ics 是日历订阅地址：手机/电脑日历客户端无法携带 Authorization 头，
+	// 改由 URL 上的独立订阅密钥鉴权（见 calendar.go）。上面的 IP 白名单仍然生效。
+	if p == "calendar.ics" {
+		s.routeCalendarICS(w, r)
+		return
+	}
+
 	// 2. 认证检查（status 接口也要求认证，防止端口扫描探测）
 	//    接受两种凭证：
 	//    a) 网页会话令牌 —— 网页端通过 apiToken + TOTP 双因素后颁发，有期限可吊销
@@ -313,6 +320,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeArchive(w, r, parts[1:])
 	case parts[0] == "trusted":
 		s.routeTrusted(w, r, parts[1:])
+	case parts[0] == "tags":
+		s.routeTags(w, r, parts[1:])
+	case parts[0] == "search":
+		s.routeSearch(w, r, parts[1:])
+	case parts[0] == "insights":
+		s.routeInsights(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
@@ -354,6 +367,10 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.hAssistance(w, r, id, sub[0])
 	case "analyze":
 		s.hAnalyze(w, r, id)
+	case "tags":
+		s.routeContactTags(w, r, id)
+	case "timeline":
+		s.routeContactTimeline(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
@@ -429,17 +446,18 @@ func (s *apiServer) hEditProfile(w http.ResponseWriter, r *http.Request, id int6
 
 // contactJSON 联系人 API 输出结构
 type contactJSON struct {
-	ID             int64    `json:"id"`
-	Name           string   `json:"name"`
-	Remark         string   `json:"remark"`
-	ProfileJSON    string   `json:"profileJson,omitempty"`
-	ProfileSummary string   `json:"profileSummary"`
-	OtherMsgCount  int      `json:"otherMsgCount"`
-	LastUpdated    string   `json:"lastUpdated"`
-	CreatedAt      string   `json:"createdAt"`
-	MergedInto     int64    `json:"mergedInto"`
-	MergeCount     int      `json:"mergeCount"`
-	Aliases        []string `json:"aliases,omitempty"`
+	ID             int64        `json:"id"`
+	Name           string       `json:"name"`
+	Remark         string       `json:"remark"`
+	ProfileJSON    string       `json:"profileJson,omitempty"`
+	ProfileSummary string       `json:"profileSummary"`
+	OtherMsgCount  int          `json:"otherMsgCount"`
+	LastUpdated    string       `json:"lastUpdated"`
+	CreatedAt      string       `json:"createdAt"`
+	MergedInto     int64        `json:"mergedInto"`
+	MergeCount     int          `json:"mergeCount"`
+	Aliases        []string     `json:"aliases,omitempty"`
+	Tags           []ContactTag `json:"tags,omitempty"`
 }
 
 func toContactJSON(c *Contact) contactJSON {
@@ -454,9 +472,10 @@ func toContactJSON(c *Contact) contactJSON {
 func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 	includeMerged := r.URL.Query().Get("includeMerged") == "1"
 	q := r.URL.Query()
+	tagIDs := parseTagIDs(q.Get("tags"))
 	// 带分页/搜索参数时走分页响应 {list,total,offset,limit}；裸调用保持返回数组，
 	// 兼容桌面端远程模式（它一次性拿全量在本地过滤）。
-	paged := q.Get("paged") == "1" || q.Get("q") != "" || q.Get("offset") != "" || q.Get("limit") != ""
+	paged := q.Get("paged") == "1" || q.Get("q") != "" || q.Get("offset") != "" || q.Get("limit") != "" || len(tagIDs) > 0
 	if !paged {
 		contacts, err := GetAllContacts(s.db, includeMerged)
 		if err != nil {
@@ -473,7 +492,7 @@ func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	contacts, total, err := GetContactsPage(s.db, includeMerged, q.Get("q"), offset, limit)
+	contacts, total, err := GetContactsPageFiltered(s.db, includeMerged, q.Get("q"), tagIDs, offset, limit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -488,6 +507,7 @@ func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 	for i := range contacts {
 		out = append(out, toContactJSON(&contacts[i]))
 	}
+	attachContactTags(s.db, out)
 	writeJSON(w, 200, map[string]interface{}{
 		"list": out, "total": total, "offset": offset, "limit": limit,
 	})
@@ -503,6 +523,9 @@ func (s *apiServer) hGetContact(w http.ResponseWriter, r *http.Request, id int64
 	cj := toContactJSON(c)
 	cj.ProfileJSON = c.ProfileJSON
 	cj.MergeCount = len(logs)
+	if tags, terr := GetContactTags(s.db, id); terr == nil {
+		cj.Tags = tags
+	}
 	writeJSON(w, 200, cj)
 }
 
@@ -610,6 +633,7 @@ func (s *apiServer) hSetRemark(w http.ResponseWriter, r *http.Request, id int64)
 		writeErr(w, 500, err.Error())
 		return
 	}
+	RecordContactEvent(s.db, id, "remark", "修改备注", "备注改为「"+strings.TrimSpace(req.Remark)+"」", time.Now())
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -624,6 +648,7 @@ func (s *apiServer) hSetName(w http.ResponseWriter, r *http.Request, id int64) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	RecordContactEvent(s.db, id, "renamed", "修改昵称", "昵称改为「"+strings.TrimSpace(req.Name)+"」", time.Now())
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 

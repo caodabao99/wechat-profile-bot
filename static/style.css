@@ -321,6 +321,123 @@ textarea.text-input { resize: vertical; }
 .asst-cool { border-bottom: 1px dashed #e5e7eb; padding: 4px 0; }
 .asst-cool:last-child { border-bottom: none; }
 
+/* ---------- 增值功能：通用小组件 ---------- */
+.btn.xs { padding: 3px 9px; font-size: 12px; border-radius: 7px; }
+.btn.on { border-color: var(--accent); color: var(--accent); background: rgba(5,150,105,.08); font-weight: 600; }
+.btn.ghost.xs.on { background: rgba(5,150,105,.1); }
+.danger-text { color: var(--bad); }
+.danger-text:hover { border-color: var(--bad); background: #fef2f2; color: var(--bad); }
+.tag-gray { background: #f3f4f6; color: #6b7280; }
+.chip.st-warn { background: #fffbeb; color: #b45309; }
+/* 一行内放多个筛选输入：非 grow 的输入按内容宽度排，别被 width:100% 撑爆 */
+.search-row .text-input:not(.grow) { width: auto; flex: 0 1 150px; min-width: 0; }
+/* 卡片标题 + 右侧操作 */
+.tl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.tl-head h2, .tl-head h3 { margin: 0; }
+.lh-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+/* ---------- 联系人标签 ---------- */
+.tag-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.tag-chip {
+  border: 1px solid var(--line); background: #fbfbfd; color: var(--muted);
+  border-radius: 999px; padding: 3px 11px; font-size: 12.5px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px; transition: all .15s; font-family: inherit;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+.tag-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.tag-chip em { font-style: normal; opacity: .7; font-size: 11px; }
+.tag-chip.mini { cursor: default; padding: 1px 8px; font-size: 11px; }
+.tag-chip.mini:hover { border-color: var(--line); color: var(--muted); }
+.pick { width: 17px; height: 17px; margin: 2px 8px 0 0; flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
+.batch-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; }
+.tag-mgr-list { list-style: none; margin: 12px 0 0; padding: 0; }
+.tag-mgr-list li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.tag-mgr-list li:last-child { border-bottom: none; }
+.tm-name { font-weight: 600; font-size: 14px; }
+.tm-acts { margin-left: auto; display: flex; gap: 6px; }
+
+/* ---------- 时间线 ---------- */
+.tl-list { list-style: none; margin: 8px 0 0; padding: 0 0 0 14px; border-left: 2px solid var(--line); }
+.tl-list li { position: relative; padding: 0 0 14px 12px; }
+.tl-list li:last-child { padding-bottom: 2px; }
+.tl-list li::before {
+  content: ''; position: absolute; left: -20px; top: 5px;
+  width: 8px; height: 8px; border-radius: 50%; background: #d1d5db;
+}
+.tl-list li.tl-record::before { background: var(--accent); }
+.tl-time { font-size: 11.5px; color: var(--muted); margin-bottom: 2px; }
+.tl-body { font-size: 13.5px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.tl-body strong { font-weight: 600; word-break: break-all; }
+.tl-body .hint { flex-basis: 100%; margin: 0; }
+.srch-list li::before { background: var(--accent2); }
+.srch-snip { flex-basis: 100%; margin: 3px 0 0; font-size: 13px; color: var(--ink); word-break: break-word; }
+
+/* ---------- 重要日子 + AI 祝福 ---------- */
+.asst-date { border-bottom: 1px dashed var(--line); padding: 4px 0 8px; }
+.asst-date:last-child { border-bottom: none; }
+.bless-row { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; }
+.bless-item {
+  flex: 1 1 260px; display: flex; align-items: flex-start; gap: 8px;
+  background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 8px 10px;
+}
+.bless-text { flex: 1; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* ---------- 待跟进事项 ---------- */
+.fu-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
+.fu-item:last-child { border-bottom: none; }
+.fu-main { flex: 1; min-width: 0; }
+.fu-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; margin-bottom: 3px; }
+.fu-content { font-size: 14px; word-break: break-word; }
+.fu-acts { display: flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0; }
+
+/* ---------- 日历订阅 ---------- */
+.cal-url {
+  margin: 8px 0 0; background: #f9fafb; border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; overflow-x: auto;
+}
+.cal-url code { font-size: 12px; word-break: break-all; white-space: pre-wrap; color: var(--ink); }
+
+/* ---------- 洞察：网格 / 柱状 / 时段图 ---------- */
+.insight-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0 4px; }
+.ins-cell {
+  background: #f9fafb; border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.ins-cell b { font-size: 18px; font-weight: 700; color: var(--ink); word-break: break-all; }
+.ins-cell span { font-size: 12px; color: var(--muted); }
+.insight-block { margin-top: 18px; }
+.insight-block h4 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+.bar-list { display: grid; gap: 5px; }
+.bar-row { display: flex; align-items: center; gap: 8px; }
+.bar-name { width: 44px; flex-shrink: 0; font-size: 12px; color: var(--muted); }
+.bar { flex: 1; height: 12px; background: #f3f4f6; border-radius: 999px; overflow: hidden; min-width: 0; }
+.bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.bar-fill.fill-ok { background: #10b981; }
+.bar-fill.fill-warn { background: #f59e0b; }
+.bar-num { width: 46px; flex-shrink: 0; text-align: right; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.hour-chart { display: flex; align-items: flex-end; gap: 2px; height: 96px; }
+.hour-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; height: 100%; }
+.hour-bar { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; gap: 1px; }
+.hour-bar i { display: block; width: 40%; max-width: 7px; border-radius: 2px 2px 0 0; min-height: 0; }
+.hb-mine { background: var(--accent); }
+.hb-theirs { background: #93c5fd; }
+.hour-col em { font-style: normal; font-size: 10px; color: var(--muted); }
+.lg { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
+.lg-mine { background: var(--accent); }
+.lg-theirs { background: #93c5fd; }
+.phrase-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ---------- 疑似重复联系人 ---------- */
+.dup-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.dup-list li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.dup-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.dup-pair a { color: var(--ink); text-decoration: none; word-break: break-all; }
+.dup-pair a:hover { color: var(--accent); }
+.dup-pair a.dup-keep { color: var(--accent); }
+.dup-vs { font-size: 11px; color: var(--muted); font-weight: 400; }
+.dup-why { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.dup-acts { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 640px) {
   body { font-size: 14px; }
@@ -353,6 +470,19 @@ textarea.text-input { resize: vertical; }
   /* 备份表格收紧 */
   .backup-log-table { font-size: 11.5px; }
   .backup-log-table th, .backup-log-table td { padding: 5px 4px; max-width: 70px; }
+  /* 增值功能在小屏的排布 */
+  .insight-grid { grid-template-columns: repeat(2, 1fr); }
+  .ins-cell b { font-size: 16px; }
+  .phrase-cols { grid-template-columns: 1fr; }
+  .hour-chart { height: 78px; }
+  .hour-col:nth-child(even) em { visibility: hidden; }
+  .fu-item { flex-direction: column; gap: 6px; }
+  .fu-acts { width: 100%; }
+  .batch-bar { padding: 10px 14px; }
+  .dup-acts { flex-direction: column; align-items: stretch; }
+  .tag-bar { gap: 5px; }
+  .search-row .text-input:not(.grow) { flex: 1 1 100%; }
+  .tl-body { font-size: 13px; }
 }
 @media (min-width: 641px) and (max-width: 1024px) {
   .container { max-width: 760px; }

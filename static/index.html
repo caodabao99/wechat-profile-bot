@@ -60,6 +60,7 @@
         <a href="#/merges" :class="{active: route.view==='merges'}">合并记录</a>
         <a href="#/backup" :class="{active: route.view==='backup'}">备份</a>
         <a href="#/assistant" :class="{active: route.view==='assistant'}">关系助手</a>
+        <a href="#/insights" :class="{active: route.view==='insights'}">洞察</a>
         <a href="#/status" :class="{active: route.view==='status'}">状态</a>
         <a href="#/help" :class="{active: route.view==='help'}">命令说明</a>
       </nav>
@@ -81,20 +82,47 @@
           <button class="btn ghost sm" @click="loadContacts()" :disabled="loadingContacts">刷新</button>
         </div>
         <label class="check-row"><input type="checkbox" v-model="showMerged" @change="loadContacts()"> 显示已并入的联系人</label>
+
+        <!-- 标签筛选：选中多个标签时是「同时带这些标签」 -->
+        <div class="tag-bar" v-if="tags.length">
+          <span class="hint">标签：</span>
+          <button type="button" class="tag-chip" v-for="t in tags" :key="t.id"
+                  :class="{on: filterTagIds.indexOf(t.id) >= 0}"
+                  @click="toggleFilterTag(t.id)">{{ t.name }}<em v-if="t.count"> {{ t.count }}</em></button>
+          <button type="button" class="btn ghost xs" v-if="filterTagIds.length" @click="clearFilterTags">清除筛选</button>
+          <button type="button" class="btn ghost xs" @click="showTagMgr = true">管理标签</button>
+        </div>
+        <div class="tag-bar" v-else>
+          <span class="hint">给联系人打上标签（家人 / 客户 / 老同学…），可按标签筛选</span>
+          <button type="button" class="btn ghost xs" @click="showTagMgr = true">新建标签</button>
+        </div>
+      </div>
+
+      <!-- 批量操作条：勾选后出现 -->
+      <div class="card batch-bar" v-if="picked.length">
+        <span>已选 <strong>{{ picked.length }}</strong> 位联系人</span>
+        <button class="btn sm" @click="openBatchTag" :disabled="tagBusy">批量打标签</button>
+        <button class="btn ghost sm" @click="clearPicks">取消选择</button>
       </div>
 
       <div class="list-head">
-        <h2>联系人 <span class="count" v-if="contactsTotal">{{ searchApplied ? contactsTotal + ' 条匹配' : contactsTotal }}</span></h2>
+        <h2>联系人 <span class="count" v-if="contactsTotal">{{ searchApplied || filterTagIds.length ? contactsTotal + ' 条匹配' : contactsTotal }}</span></h2>
+        <div class="lh-actions">
+          <label class="check-row inline" v-if="tags.length"><input type="checkbox" :checked="!!picked.length" @change="togglePickAll"> 全选本页</label>
+        </div>
       </div>
-      <p class="empty" v-if="!loadingContacts && !contacts.length">{{ searchApplied ? '没有匹配的联系人' : '暂无联系人' }}</p>
+      <p class="empty" v-if="!loadingContacts && !contacts.length">{{ searchApplied || filterTagIds.length ? '没有匹配的联系人' : '暂无联系人' }}</p>
 
       <div class="contact-card" v-for="c in contacts" :key="c.id" @click="gotoDetail(c.id)">
+        <input class="pick" type="checkbox" v-if="tags.length" :checked="picked.indexOf(c.id) >= 0"
+               @click.stop="togglePick(c.id)" aria-label="选择联系人">
         <div class="c-main">
           <div class="c-name">{{ displayName(c) }}</div>
           <div class="c-summary" v-if="c.profileSummary">{{ c.profileSummary }}</div>
           <div class="c-meta">
             <span>{{ c.otherMsgCount }} 条对方消息</span>
             <span v-if="c.lastUpdated">更新：{{ fmtTime(c.lastUpdated) }}</span>
+            <span class="tag-chip mini" v-for="t in (c.tags || [])" :key="t.id">{{ t.name }}</span>
           </div>
         </div>
         <div class="c-side">
@@ -122,9 +150,20 @@
           <span v-if="contact.aliases && contact.aliases.length">别名：{{ contact.aliases.join('、') }}</span>
           <span class="chip st-purple" v-if="contact.mergeCount > 0">含{{ contact.mergeCount }}人</span>
           <span class="chip st-gray" v-if="contact.mergedInto">已并入 #{{ contact.mergedInto }}</span>
+          <span class="tag-chip mini" v-for="t in (contact.tags || [])" :key="t.id">{{ t.name }}</span>
         </div>
+        <!-- 标签编辑：勾选即改，点保存生效 -->
+        <div class="tag-bar" v-if="tagEditOpen && tags.length">
+          <button type="button" class="tag-chip" v-for="t in tags" :key="t.id"
+                  :class="{on: tagEditIds.indexOf(t.id) >= 0}" @click="toggleTagEdit(t.id)">{{ t.name }}</button>
+          <button type="button" class="btn primary xs" @click="saveTagEdit" :disabled="tagBusy">{{ tagBusy ? '保存中…' : '保存' }}</button>
+          <button type="button" class="btn ghost xs" @click="tagEditOpen = false">取消</button>
+        </div>
+        <p class="hint block" v-else-if="tagEditOpen">还没有标签，先在<a href="#/">联系人列表</a>页点「新建标签」</p>
         <div class="dh-actions">
           <button class="btn sm" @click="startRemark">改备注</button>
+          <button class="btn sm" @click="openTagEdit">{{ tagEditOpen ? '收起标签' : '标签' }}</button>
+          <button class="btn sm" @click="openFollowupModal(contact.id)" :disabled="!!contact.mergedInto">记一笔待跟进</button>
           <button class="btn sm" @click="startProfileEdit" :disabled="busy || !!contact.mergedInto">编辑画像</button>
           <button class="btn sm" @click="showSupplement = true; supplementNote = ''">补充画像</button>
           <button class="btn sm" @click="startMerge" :disabled="!!contact.mergedInto">关联昵称</button>
@@ -140,6 +179,7 @@
         <a :class="{active: detailTab==='messages'}" @click.prevent="switchTab('messages')" href="#">消息</a>
         <a :class="{active: detailTab==='history'}" @click.prevent="switchTab('history')" href="#">历史</a>
         <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
+        <a :class="{active: detailTab==='timeline'}" @click.prevent="switchTab('timeline')" href="#">时间线</a>
       </nav>
 
       <div class="card section" v-if="contact && contact.id === route.id && detailTab==='assist'">
@@ -240,6 +280,30 @@
           <div class="stat-row"><span class="st-label">首条消息</span><span class="st-val">{{ fmtTime(stats.FirstTime) || '—' }}</span></div>
           <div class="stat-row"><span class="st-label">最近消息</span><span class="st-val">{{ fmtTime(stats.LastTime) || '—' }}</span></div>
         </div>
+      </div>
+
+      <!-- 时间线：把这个人从认识到现在的节点串起来 -->
+      <div v-if="contact && detailTab==='timeline'" class="card">
+        <div class="tl-head">
+          <h2>关系时间线</h2>
+          <div>
+            <button class="btn sm" @click="openEventModal">记一个事件</button>
+            <button class="btn ghost sm" @click="loadTimeline" :disabled="timelineBusy">{{ timelineBusy ? '加载中…' : '刷新' }}</button>
+          </div>
+        </div>
+        <p class="hint block">自动汇总创建、首条/最近消息、画像更新、改名改备注、合并等节点；也可以手动记下「一起吃饭」「借钱给他」这类事。</p>
+        <p class="empty" v-if="!timelineBusy && !timeline.length">暂无时间线数据</p>
+        <ul class="tl-list">
+          <li v-for="(ev, i) in timeline" :key="i" :class="'tl-' + (ev.source || 'derived')">
+            <span class="tl-time">{{ ev.eventTime }}</span>
+            <span class="tl-body">
+              <span class="tag" :class="ev.source === 'record' ? 'tag-green' : 'tag-gray'">{{ tlKind(ev.kind) }}</span>
+              <strong>{{ ev.title }}</strong>
+              <span class="hint" v-if="ev.detail">{{ ev.detail }}</span>
+            </span>
+            <button class="btn ghost xs" v-if="ev.id" @click="delEvent(ev)" :disabled="timelineBusy">删除</button>
+          </li>
+        </ul>
       </div>
     </section>
 
@@ -461,6 +525,22 @@
             <input class="text-input num-input" type="number" min="1" max="50" v-model.number="asstForm.emotionDailyMax">
             <span class="hint">个联系人（控制模型花费）</span>
           </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.remindFollowup"> 待跟进提醒</label>
+            <span class="hint">把「对方问了我没回 / 我答应的事 / 钱款往来」一起放进每日邮件</span>
+          </div>
+          <div class="asst-row" v-if="asstForm.remindFollowup">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.followupEnabled"> 自动从聊天记录里抽取</label>
+            <span class="hint">近</span>
+            <input class="text-input num-input" type="number" min="1" max="180" v-model.number="asstForm.followupWindowDays">
+            <span class="hint">天，每日最多</span>
+            <input class="text-input num-input" type="number" min="1" max="30" v-model.number="asstForm.followupDailyMax">
+            <span class="hint">个联系人（要调模型，不勾选则只用手动记录，零花费）</span>
+          </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.blessingDraft"> 重要日子附 AI 祝福草稿</label>
+            <span class="hint">每日邮件里给最紧急的最多 3 条重要日子各写 3 句祝福（要调模型）</span>
+          </div>
 
           <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
           <div class="asst-row">
@@ -489,11 +569,24 @@
           <div class="card">
             <h3>📅 近期重要日子（14 天内）</h3>
             <p class="hint" v-if="!asst.upcoming.length">暂无——在联系人画像的「重要日子」里写上生日/纪念日（如 5月1日、1995-05-01）即可识别</p>
-            <div class="stat-row" v-for="(d, i) in asst.upcoming" :key="i">
-              <span class="st-label"><a :href="'#/contact/' + d.contactId">{{ d.name }}</a> · {{ d.kind }}<span class="hint">（{{ d.raw }}）</span></span>
-              <span class="st-val">{{ d.dateStr }} ·
-                <strong :class="d.daysUntil <= 1 ? 'asst-urgent' : ''">{{ d.daysUntil === 0 ? '今天' : (d.daysUntil === 1 ? '明天' : d.daysUntil + ' 天后') }}</strong>
-              </span>
+            <div class="asst-date" v-for="(d, i) in asst.upcoming" :key="i">
+              <div class="stat-row">
+                <span class="st-label"><a :href="'#/contact/' + d.contactId">{{ d.name }}</a> · {{ d.kind }}<span class="hint">（{{ d.raw }}）</span></span>
+                <span class="st-val">{{ d.dateStr }} ·
+                  <strong :class="d.daysUntil <= 1 ? 'asst-urgent' : ''">{{ d.daysUntil === 0 ? '今天' : (d.daysUntil === 1 ? '明天' : d.daysUntil + ' 天后') }}</strong>
+                </span>
+              </div>
+              <div class="bless-row">
+                <button class="btn ghost xs" @click="genBlessing(d, i)" :disabled="!!blessBusy">
+                  {{ blessBusy === i + 1 ? '写作中…' : ((d.blessings && d.blessings.length) ? '换一批祝福' : '写祝福语') }}
+                </button>
+                <template v-if="d.blessings && d.blessings.length">
+                  <div class="bless-item" v-for="(b, j) in d.blessings" :key="j">
+                    <span class="bless-text">{{ b }}</span>
+                    <button class="btn ghost xs" @click="copyText(b)">复制</button>
+                  </div>
+                </template>
+              </div>
             </div>
             <p class="hint" v-if="asst.unparsedDates && asst.unparsedDates.length">
               另有 {{ asst.unparsedDates.length }} 条日期未能识别（如农历），可改成「5月1日」或「1995-05-01」格式
@@ -539,6 +632,67 @@
               <p class="hint" style="margin:2px 0 6px" v-if="e.advice">建议：{{ e.advice }}</p>
             </div>
           </div>
+
+          <!-- 待跟进：对方问了我没回 / 我答应的事 / 钱款往来 -->
+          <div class="card status-wide">
+            <div class="tl-head">
+              <h3 style="margin:0">📌 待跟进事项</h3>
+              <div>
+                <button class="btn ghost xs" v-for="st in [['open','待处理'],['done','已完成'],['ignored','已忽略'],['','全部']]"
+                        :key="st[0]" :class="{on: followupFilter === st[0]}" @click="switchFollowup(st[0])">{{ st[1] }}</button>
+                <button class="btn sm" @click="scanFollowups" :disabled="followupBusy">{{ followupBusy ? '扫描中…' : 'AI 扫一遍聊天记录' }}</button>
+                <button class="btn sm" @click="openFollowupModal(0)">手动添加</button>
+              </div>
+            </div>
+            <p class="hint block">「AI 扫一遍」会读最近 {{ asstForm.followupWindowDays }} 天的聊天，找出你答应过的事、对方问了没回的、以及涉及钱款的往来。手动添加的记录永远保留，不依赖模型。</p>
+            <p class="empty" v-if="!followups.length">{{ followupBusy ? '加载中…' : '这个分类下没有记录' }}</p>
+            <div class="fu-item" v-for="it in followups" :key="it.id">
+              <div class="fu-main">
+                <div class="fu-top">
+                  <a :href="'#/contact/' + it.contactId">{{ it.name }}</a>
+                  <span class="tag" :class="{'tag-red': it.kind==='money', 'tag-green': it.kind==='promise'}">{{ it.kindLabel || followupKinds[it.kind] || it.kind }}</span>
+                  <span class="chip" :class="it.status==='open' ? 'st-warn' : 'st-gray'">{{ {open:'待处理',done:'已完成',ignored:'已忽略'}[it.status] || it.status }}</span>
+                  <span class="hint" v-if="it.amount">金额：{{ it.amount }}</span>
+                </div>
+                <div class="fu-content">{{ it.content }}</div>
+                <div class="c-meta"><span v-if="it.sourceTime">来源消息：{{ fmtTime(it.sourceTime) }}</span><span>记录于 {{ fmtTime(it.createdAt) }}</span></div>
+              </div>
+              <div class="fu-acts">
+                <button class="btn ghost xs" v-if="it.status !== 'open'" @click="setFollowupStatus(it, 'open')" :disabled="followupBusy">重新打开</button>
+                <button class="btn ghost xs" v-if="it.status !== 'done'" @click="setFollowupStatus(it, 'done')" :disabled="followupBusy">完成</button>
+                <button class="btn ghost xs" v-if="it.status === 'open'" @click="setFollowupStatus(it, 'ignored')" :disabled="followupBusy">忽略</button>
+                <button class="btn ghost xs danger-text" @click="delFollowup(it)" :disabled="followupBusy">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 日历订阅 -->
+        <div class="card" style="margin-top:14px">
+          <h3>📆 日历订阅（重要日子导出 .ics）</h3>
+          <p class="hint block">
+            开启后得到一个专属订阅地址，把它添加到手机/电脑日历（iPhone「设置 → 日历 → 账户 → 添加账户 → 其他 → 添加已订阅的日历」；
+            Android/Google 日历「添加订阅日历」；Outlook「添加日历 → 从 URL 订阅」），所有联系人的生日、纪念日就会按年重复出现在你自己的日历里，提前几天自动提醒。
+          </p>
+          <div class="asst-row">
+            <template v-if="cal && cal.enabled">
+              <span class="chip st-ok">已开启</span>
+              <button class="btn sm" @click="copyText(cal.url)" :disabled="calBusy">复制订阅地址</button>
+              <button class="btn ghost sm" @click="rotateCalendarKey" :disabled="calBusy">重新生成密钥</button>
+              <button class="btn ghost sm danger-text" @click="clearCalendarKey" :disabled="calBusy">关闭订阅</button>
+            </template>
+            <template v-else>
+              <span class="chip st-gray">未开启</span>
+              <button class="btn primary sm" @click="rotateCalendarKey" :disabled="calBusy">{{ calBusy ? '生成中…' : '生成订阅地址' }}</button>
+            </template>
+          </div>
+          <div class="cal-url" v-if="cal && cal.enabled">
+            <code>{{ cal.url }}</code>
+          </div>
+          <p class="hint block" v-if="cal && cal.enabled">
+            订阅内容只包含未来一年内的重要日子，每条都是全天、按年重复的透明事件（不占用忙闲时间）。
+            地址里的密钥等同于访问凭据，不要转发给别人；泄露了就点「重新生成密钥」。
+          </p>
         </div>
 
         <!-- 手动运行 + 日志 -->
@@ -578,6 +732,302 @@
             </table>
             <p class="hint" v-else>还没有发送过邮件</p>
           </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- ============ 洞察 ============ -->
+    <section v-if="route.view==='insights'">
+      <nav class="subtabs">
+        <a href="#" :class="{active: insightTab==='search'}" @click.prevent="switchInsight('search')">聊天记录搜索</a>
+        <a href="#" :class="{active: insightTab==='report'}" @click.prevent="switchInsight('report')">年度报告</a>
+        <a href="#" :class="{active: insightTab==='social'}" @click.prevent="switchInsight('social')">社交大盘</a>
+        <a href="#" :class="{active: insightTab==='dup'}" @click.prevent="switchInsight('dup')">重复联系人</a>
+      </nav>
+
+      <!-- ---- 聊天记录全文搜索 ---- -->
+      <template v-if="insightTab==='search'">
+        <div class="card">
+          <h2>聊天记录搜索</h2>
+          <form class="search-row" @submit.prevent="doSearch">
+            <input class="text-input grow" v-model.trim="srch.q" maxlength="80"
+                   placeholder="关键词，多个词用空格隔开（需同时出现）" @keyup.enter="doSearch">
+            <select class="text-input" v-model="srch.contactId">
+              <option :value="0">全部联系人</option>
+              <option v-for="c in srchContacts" :key="c.id" :value="c.id">{{ displayName(c) }}</option>
+            </select>
+            <input class="text-input" type="date" v-model="srch.from" title="开始日期">
+            <input class="text-input" type="date" v-model="srch.to" title="结束日期">
+            <label class="check-row inline"><input type="checkbox" v-model="srch.archive"> 含已归档</label>
+            <button class="btn primary" type="submit" :disabled="srchBusy">{{ srchBusy ? '搜索中…' : '搜索' }}</button>
+          </form>
+          <p class="hint block">默认只搜活跃消息，每页 100 条；勾选「含已归档」会一并搜归档库（稍慢）。</p>
+        </div>
+
+        <div class="card" v-if="srchRes">
+          <div class="tl-head">
+            <h3>搜索结果</h3>
+            <span class="hint">共 {{ srchRes.total }} 条 · 已显示 {{ (srchRes.list || []).length }} 条 · 耗时 {{ srchRes.tookMs }} ms</span>
+          </div>
+          <p class="hint block" v-if="srchRes.archiveSkipped">归档库当前不可用，本次只搜了活跃消息。</p>
+          <p class="empty" v-if="!(srchRes.list || []).length">没有找到匹配的消息</p>
+          <ul class="tl-list srch-list" v-else>
+            <li v-for="h in srchRes.list" :key="h.id">
+              <div class="tl-time">{{ h.msgTime }}</div>
+              <div class="tl-body">
+                <a href="#" @click.prevent="gotoDetail(h.contactId)">{{ h.contactName }}</a>
+                <span class="tag" :class="h.sender === 'me' ? 'tag-green' : 'tag-gray'">{{ h.sender === 'me' ? '我' : '对方' }}</span>
+                <span class="chip st-gray" v-if="h.archived">归档</span>
+                <p class="srch-snip">{{ h.snippet }}</p>
+              </div>
+            </li>
+          </ul>
+          <div class="more-row" v-if="srchHasMore">
+            <button class="btn sm" @click="searchMore" :disabled="srchBusy">{{ srchBusy ? '加载中…' : '加载更多' }}</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- 年度关系报告 ---- -->
+      <template v-if="insightTab==='report'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>年度关系报告</h2>
+            <div class="lh-actions">
+              <button class="btn ghost xs" v-for="y in [reportYear + 1, reportYear, reportYear - 1, reportYear - 2]" :key="y"
+                      :class="{on: y === reportYear}" @click="changeReportYear(y)" :disabled="reportBusy">{{ y }}</button>
+              <button class="btn sm" @click="loadReport" :disabled="reportBusy">{{ reportBusy ? '生成中…' : '刷新' }}</button>
+              <button class="btn sm primary" @click="openReportHTML" :disabled="reportBusy">生成可分享长页</button>
+            </div>
+          </div>
+          <p class="hint block">「生成可分享长页」会打开一个新标签页，是排版好的完整报告，可直接保存或转发。</p>
+
+          <template v-if="report">
+            <p class="hint block" v-if="report.truncated">数据量较大，统计做了截断，数字仅供参考。</p>
+            <div class="insight-grid">
+              <div class="ins-cell"><b>{{ report.totalMessages }}</b><span>全年消息</span></div>
+              <div class="ins-cell"><b>{{ report.myMessages }}</b><span>我发出</span></div>
+              <div class="ins-cell"><b>{{ report.theirMessages }}</b><span>对方发出</span></div>
+              <div class="ins-cell"><b>{{ report.activeContacts }}</b><span>聊过的人数</span></div>
+              <div class="ins-cell"><b>{{ report.activeDays }}</b><span>有聊天的天数</span></div>
+              <div class="ins-cell"><b>{{ report.newContacts }}</b><span>新增联系人</span></div>
+            </div>
+
+            <div class="insight-block">
+              <h4>{{ report.year }} 年的高光时刻</h4>
+              <div class="stat-row" v-if="report.busiestDay"><span class="st-label">最热闹的一天</span><span class="st-val">{{ report.busiestDay }}（{{ report.busiestDayCount }} 条）</span></div>
+              <div class="stat-row" v-if="report.busiestMonth"><span class="st-label">最热闹的月份</span><span class="st-val">{{ report.busiestMonth }} 月</span></div>
+              <div class="stat-row" v-if="report.longestSilenceDays"><span class="st-label">最长沉默</span><span class="st-val">{{ report.longestSilenceDays }} 天<span v-if="report.silenceBefore">（{{ report.silenceBefore }} → {{ report.silenceAfter }}）</span></span></div>
+              <p class="empty" v-if="!report.busiestDay && !report.longestSilenceDays">这一年还没有聊天数据</p>
+            </div>
+
+            <div class="insight-block" v-if="(report.months || []).length">
+              <h4>每月消息量</h4>
+              <div class="bar-list">
+                <div class="bar-row" v-for="m in report.months" :key="m.month">
+                  <span class="bar-name">{{ m.month }} 月</span>
+                  <span class="bar"><i class="bar-fill" :style="{width: barPct(m.total, reportMonthMax)}"></i></span>
+                  <span class="bar-num">{{ m.total }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(report.topContacts || []).length">
+              <h4>聊得最多的人</h4>
+              <table class="backup-log-table">
+                <thead><tr><th>联系人</th><th>合计</th><th>我</th><th>对方</th><th>我主动</th><th>最后聊天</th></tr></thead>
+                <tbody>
+                  <tr v-for="t in report.topContacts" :key="t.contactId">
+                    <td><a href="#" @click.prevent="gotoDetail(t.contactId)">{{ t.name }}</a></td>
+                    <td>{{ t.total }}</td><td>{{ t.mine }}</td><td>{{ t.theirs }}</td><td>{{ t.myInitiate }}</td>
+                    <td>{{ t.lastMsgTime || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="insight-block" v-if="report.emotionAvailable && (report.emotions || []).length">
+              <h4>情绪走势（月均分，5 分为中性）</h4>
+              <div class="bar-list">
+                <div class="bar-row" v-for="e in report.emotions" :key="e.month">
+                  <span class="bar-name">{{ e.month }} 月</span>
+                  <span class="bar"><i class="bar-fill" :class="e.score >= 5 ? 'fill-ok' : 'fill-warn'"
+                        :style="{width: barPct(e.score, 10)}"></i></span>
+                  <span class="bar-num">{{ (e.score || 0).toFixed(1) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(report.intimacy || []).length">
+              <h4>亲密度变化（上半年 vs 下半年）</h4>
+              <table class="backup-log-table">
+                <thead><tr><th>联系人</th><th>上半年</th><th>下半年</th><th>变化</th><th>趋势</th></tr></thead>
+                <tbody>
+                  <tr v-for="c in report.intimacy" :key="c.contactId">
+                    <td><a href="#" @click.prevent="gotoDetail(c.contactId)">{{ c.name }}</a></td>
+                    <td>{{ c.firstHalf }}</td><td>{{ c.secondHalf }}</td>
+                    <td><span class="tag" :class="c.delta > 0 ? 'tag-green' : (c.delta < 0 ? 'tag-red' : 'tag-gray')">{{ c.delta > 0 ? '+' : '' }}{{ c.delta }}</span></td>
+                    <td>{{ {up:'升温', down:'转淡', flat:'持平'}[c.trend] || c.trend }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="insight-block" v-if="(report.keywords || []).length">
+              <h4>今年的高频词</h4>
+              <div class="tag-bar">
+                <span class="tag-chip" v-for="k in report.keywords" :key="k.phrase">{{ k.phrase }}<em>{{ k.count }}</em></span>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(report.events || []).length">
+              <h4>大事记</h4>
+              <ul class="tl-list">
+                <li v-for="(e, i) in report.events" :key="i" class="tl-record">
+                  <div class="tl-time">{{ e.date }}</div>
+                  <div class="tl-body">
+                    <span class="tag tag-gray">{{ tlKind(e.kind) || e.kind }}</span>
+                    <strong>{{ e.title }}</strong>
+                    <p class="hint" v-if="e.detail">{{ e.detail }}</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </template>
+          <p class="empty" v-else>{{ reportBusy ? '正在生成…' : '还没有这一年的报告，换个年份试试' }}</p>
+        </div>
+      </template>
+
+      <!-- ---- 社交大盘 ---- -->
+      <template v-if="insightTab==='social'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>我的社交大盘</h2>
+            <div class="lh-actions">
+              <button class="btn ghost xs" v-for="d in [7, 30, 90, 365]" :key="d"
+                      :class="{on: d === socialDays}" @click="changeSocialDays(d)" :disabled="socialBusy">近 {{ d }} 天</button>
+              <button class="btn sm" @click="loadSocial" :disabled="socialBusy">{{ socialBusy ? '统计中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="hint block" v-if="social">统计区间：{{ social.from }} 起 · 生成于 {{ fmtTime(social.generatedAt) }}</p>
+          <p class="hint block" v-if="social && social.truncated">消息量较大，统计做了截断，数字仅供参考。</p>
+
+          <template v-if="social">
+            <div class="insight-grid">
+              <div class="ins-cell"><b>{{ social.totalMessages }}</b><span>消息总数</span></div>
+              <div class="ins-cell"><b>{{ social.myMessages }}</b><span>我发出</span></div>
+              <div class="ins-cell"><b>{{ social.theirMessages }}</b><span>对方发出</span></div>
+              <div class="ins-cell"><b>{{ social.activeContacts }}</b><span>聊过的人数</span></div>
+              <div class="ins-cell"><b>{{ social.activeDays }}</b><span>有聊天的天数</span></div>
+              <div class="ins-cell"><b>{{ social.myInitiateTotal }} : {{ social.theirInitiateTotal }}</b><span>我 : 对方 主动开场</span></div>
+            </div>
+
+            <div class="insight-block">
+              <h4>回复速度</h4>
+              <div class="stat-row"><span class="st-label">我平均回复</span><span class="st-val">{{ fmtDur(social.myReplyAvgSeconds) }}<span class="hint" v-if="social.myReplySamples">（中位 {{ fmtDur(social.myReplyMedianSeconds) }} · {{ social.myReplySamples }} 个样本）</span></span></div>
+              <div class="stat-row"><span class="st-label">对方平均回复我</span><span class="st-val">{{ fmtDur(social.theirReplyAvgSeconds) }}<span class="hint" v-if="social.theirReplySamples">（{{ social.theirReplySamples }} 个样本）</span></span></div>
+              <div class="stat-row" v-if="social.longestStreakDay"><span class="st-label">最热闹的一天</span><span class="st-val">{{ social.longestStreakDay }}（{{ social.longestStreakCount }} 条）</span></div>
+            </div>
+
+            <div class="insight-block" v-if="(social.hourly || []).length">
+              <h4>一天里的聊天时段</h4>
+              <div class="hour-chart">
+                <div class="hour-col" v-for="h in social.hourly" :key="h.hour"
+                     :title="h.hour + ' 点：我 ' + h.mine + ' 条 / 对方 ' + h.theirs + ' 条'">
+                  <span class="hour-bar"><i class="hb-mine" :style="{height: barPct(h.mine, socialHourMax)}"></i><i class="hb-theirs" :style="{height: barPct(h.theirs, socialHourMax)}"></i></span>
+                  <em>{{ h.hour }}</em>
+                </div>
+              </div>
+              <p class="hint block"><i class="lg lg-mine"></i>我发出　<i class="lg lg-theirs"></i>对方发出</p>
+            </div>
+
+            <div class="insight-block" v-if="(social.weekday || []).length">
+              <h4>每周哪天聊得多</h4>
+              <div class="bar-list">
+                <div class="bar-row" v-for="(n, i) in social.weekday" :key="i">
+                  <span class="bar-name">{{ weekdayNames[i] }}</span>
+                  <span class="bar"><i class="bar-fill" :style="{width: barPct(n, socialWeekMax)}"></i></span>
+                  <span class="bar-num">{{ n }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(social.topContacts || []).length">
+              <h4>聊得最多的人</h4>
+              <table class="backup-log-table">
+                <thead><tr><th>联系人</th><th>合计</th><th>我</th><th>对方</th><th>我主动</th><th>最后聊天</th></tr></thead>
+                <tbody>
+                  <tr v-for="t in social.topContacts" :key="t.contactId">
+                    <td><a href="#" @click.prevent="gotoDetail(t.contactId)">{{ t.name }}</a></td>
+                    <td>{{ t.total }}</td><td>{{ t.mine }}</td><td>{{ t.theirs }}</td><td>{{ t.myInitiate }}</td>
+                    <td>{{ t.lastMsgTime || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="insight-block" v-if="(social.initiators || []).length">
+              <h4>最常被我主动找的人</h4>
+              <table class="backup-log-table">
+                <thead><tr><th>联系人</th><th>我主动开场</th><th>合计消息</th></tr></thead>
+                <tbody>
+                  <tr v-for="t in social.initiators" :key="t.contactId">
+                    <td><a href="#" @click.prevent="gotoDetail(t.contactId)">{{ t.name }}</a></td>
+                    <td>{{ t.myInitiate }}</td><td>{{ t.total }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="insight-block" v-if="(social.myPhrases || []).length || (social.theirPhrases || []).length">
+              <h4>高频口头禅</h4>
+              <div class="phrase-cols">
+                <div v-if="(social.myPhrases || []).length">
+                  <p class="hint block">我常说</p>
+                  <div class="tag-bar"><span class="tag-chip" v-for="p in social.myPhrases" :key="p.phrase">{{ p.phrase }}<em>{{ p.count }}</em></span></div>
+                </div>
+                <div v-if="(social.theirPhrases || []).length">
+                  <p class="hint block">对方常说</p>
+                  <div class="tag-bar"><span class="tag-chip" v-for="p in social.theirPhrases" :key="p.phrase">{{ p.phrase }}<em>{{ p.count }}</em></span></div>
+                </div>
+              </div>
+            </div>
+          </template>
+          <p class="empty" v-else>{{ socialBusy ? '正在统计…' : '统计失败，点上面的「刷新」重试' }}</p>
+        </div>
+      </template>
+
+      <!-- ---- 疑似重复联系人 ---- -->
+      <template v-if="insightTab==='dup'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>疑似重复联系人</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="dup">比较了 {{ dup.scanned }} 个联系人</span>
+              <button class="btn sm" @click="loadDuplicates" :disabled="dupBusy">{{ dupBusy ? '扫描中…' : '重新扫描' }}</button>
+            </div>
+          </div>
+          <p class="hint block">名字去掉空格标点后相同、或编辑距离很近的会被列出来。合并会把聊天记录和画像历史一起搬到保留的那个上，事后可在「合并记录」里撤销。</p>
+          <p class="hint block" v-if="dup && dup.truncated">联系人较多，只比较了前一批，结果可能不全。</p>
+          <p class="empty" v-if="dup && !(dup.list || []).length">没有发现疑似重复的联系人</p>
+          <ul class="dup-list" v-if="dup && (dup.list || []).length">
+            <li v-for="(p, i) in dup.list" :key="i">
+              <div class="dup-pair">
+                <a href="#" :class="{ 'dup-keep': p.suggestedKeep === p.a.id }" @click.prevent="gotoDetail(p.a.id)">{{ dupName(p.a) }}</a>
+                <span class="dup-vs">VS</span>
+                <a href="#" :class="{ 'dup-keep': p.suggestedKeep === p.b.id }" @click.prevent="gotoDetail(p.b.id)">{{ dupName(p.b) }}</a>
+              </div>
+              <div class="dup-why">
+                <span class="chip st-warn">{{ p.reason }}</span>
+                <span class="hint">相似度 {{ p.score }}</span>
+                <span class="hint">{{ p.a.msgCount }} 条 / {{ p.b.msgCount }} 条</span>
+              </div>
+              <div class="dup-acts">
+                <span class="hint">建议保留：{{ p.suggestedKeep === p.a.id ? dupName(p.a) : dupName(p.b) }}</span>
+                <button class="btn sm primary" @click="mergeDuplicate(p)" :disabled="dupBusy">按建议合并</button>
+              </div>
+            </li>
+          </ul>
         </div>
       </template>
     </section>
@@ -812,6 +1262,97 @@
         <button class="btn danger solid" @click="confirmDelete" :disabled="busy">{{ busy ? '删除中…' : '确认删除' }}</button>
       </div>
     </div>
+  </div>
+
+  <!-- ============ 弹层：标签管理 ============ -->
+  <div class="mask" v-if="showTagMgr" @click.self="showTagMgr = false">
+    <div class="card modal">
+      <h2>管理标签</h2>
+      <form class="search-row" @submit.prevent="createTag">
+        <input class="text-input grow" v-model.trim="tagNewName" maxlength="20"
+               placeholder="新标签名，如：家人 / 客户 / 老同学" @keyup.enter="createTag">
+        <button class="btn primary" type="submit" :disabled="tagBusy || !tagNewName">新建</button>
+      </form>
+      <p class="empty" v-if="!tags.length">还没有标签，先建一个</p>
+      <ul class="tag-mgr-list" v-else>
+        <li v-for="t in tags" :key="t.id">
+          <template v-if="tagEditId === t.id">
+            <input class="text-input grow" v-model.trim="tagEditName" maxlength="20" @keyup.enter="commitTagRename">
+            <button class="btn sm primary" type="button" @click="commitTagRename" :disabled="tagBusy || !tagEditName">保存</button>
+            <button class="btn sm" type="button" @click="cancelTagRename">取消</button>
+          </template>
+          <template v-else>
+            <span class="tm-name">{{ t.name }}</span>
+            <span class="hint">{{ t.count || 0 }} 位联系人</span>
+            <span class="tm-acts">
+              <button class="btn ghost xs" type="button" @click="startTagRename(t)">改名</button>
+              <button class="btn ghost xs danger" type="button" @click="deleteTag(t)" :disabled="tagBusy">删除</button>
+            </span>
+          </template>
+        </li>
+      </ul>
+      <div class="modal-actions">
+        <button class="btn" @click="showTagMgr = false">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 弹层：批量打标签 ============ -->
+  <div class="mask" v-if="showBatchTag" @click.self="showBatchTag = false">
+    <div class="card modal">
+      <h2>批量打标签</h2>
+      <p class="hint block">已选中 {{ picked.length }} 位联系人，勾选要{{ batchTagRemove ? '移除' : '添加' }}的标签</p>
+      <p class="empty" v-if="!tags.length">还没有标签，先去联系人列表页点「新建标签」</p>
+      <div class="tag-bar" v-else>
+        <button type="button" class="tag-chip" v-for="t in tags" :key="t.id"
+                :class="{on: batchTagIds.indexOf(t.id) >= 0}" @click="toggleBatchTag(t.id)">{{ t.name }}</button>
+      </div>
+      <label class="check-row"><input type="checkbox" v-model="batchTagRemove"> 从这些联系人身上移除（而不是添加）</label>
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showBatchTag = false">取消</button>
+        <button class="btn primary" type="button" @click="applyBatchTag"
+                :disabled="tagBusy || !batchTagIds.length || !picked.length">{{ tagBusy ? '处理中…' : '确定' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 弹层：记一个时间线事件 ============ -->
+  <div class="mask" v-if="showEventModal" @click.self="showEventModal = false">
+    <form class="card modal" @submit.prevent="addEvent">
+      <h2>记一个事件</h2>
+      <p class="hint block">记到「{{ contact ? displayName(contact) : '' }}」的时间线上，和系统自动生成的事件排在一起</p>
+      <input class="text-input" v-model.trim="eventForm.title" maxlength="60" placeholder="标题，如：一起吃了饭 / 借了我 500 块">
+      <textarea class="text-input" v-model.trim="eventForm.detail" maxlength="500" rows="3"
+                style="margin-top:10px" placeholder="补充说明（可不填）"></textarea>
+      <input class="text-input" type="datetime-local" v-model="eventForm.eventTime" style="margin-top:10px">
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showEventModal = false">取消</button>
+        <button class="btn primary" type="submit" :disabled="timelineBusy || !eventForm.title">{{ timelineBusy ? '保存中…' : '记下' }}</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 弹层：手动添加待跟进 ============ -->
+  <div class="mask" v-if="showFollowupModal" @click.self="showFollowupModal = false">
+    <form class="card modal" @submit.prevent="addFollowup">
+      <h2>记一笔待跟进</h2>
+      <select class="text-input" v-model.number="followupForm.contactId">
+        <option :value="0" disabled>选择联系人</option>
+        <option v-for="c in pickContacts" :key="c.id" :value="c.id">{{ displayName(c) }}</option>
+      </select>
+      <select class="text-input" v-model="followupForm.kind" style="margin-top:10px">
+        <option v-for="(label, k) in followupKinds" :key="k" :value="k">{{ label }}</option>
+      </select>
+      <textarea class="text-input" v-model.trim="followupForm.content" maxlength="300" rows="3"
+                style="margin-top:10px" placeholder="要跟进什么，如：答应了帮他改简历 / 他问的报价还没回"></textarea>
+      <input class="text-input" v-model.trim="followupForm.amount" maxlength="40"
+             v-if="followupForm.kind === 'money'" style="margin-top:10px" placeholder="金额，如：500 元（借出 / 欠我）">
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="showFollowupModal = false">取消</button>
+        <button class="btn primary" type="submit"
+                :disabled="followupBusy || !followupForm.contactId || !followupForm.content">{{ followupBusy ? '保存中…' : '添加' }}</button>
+      </div>
+    </form>
   </div>
 
   <div class="toasts">

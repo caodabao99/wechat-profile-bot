@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -98,6 +99,22 @@ func main() {
 		slog.Warn("消息归档数据表初始化失败", "err", err)
 	} else {
 		startArchiveScheduler(db)
+	}
+
+	// 网页端增值功能数据表：标签 / 联系人时间线 / 待跟进。
+	// 建表失败只告警不退出——核心记录与画像功能不依赖这三张表，
+	// 相关接口在查询时会自行容忍「no such table」。
+	for _, init := range []struct {
+		name string
+		fn   func(*sql.DB) error
+	}{
+		{"联系人标签", ensureTagTables},
+		{"联系人时间线", ensureTimelineTables},
+		{"待跟进事项", ensureFollowupTables},
+	} {
+		if err := init.fn(db); err != nil {
+			slog.Warn(init.name+"数据表初始化失败", "err", err)
+		}
 	}
 
 	// 启动 REST API（供 Windows 桌面版远程调用）；apiPort 填负数表示禁用

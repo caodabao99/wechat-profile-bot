@@ -488,6 +488,12 @@ func GetAllContacts(db *sql.DB, includeMerged bool) ([]Contact, error) {
 // q 非空时按昵称/备注/别名模糊匹配（LIKE 忽略 ASCII 大小写，中文天然精确）。
 // GetAllContacts 保持全量语义不动（桌面端远程模式在用），网页端改用本函数避免全量渲染。
 func GetContactsPage(db *sql.DB, includeMerged bool, q string, offset, limit int) ([]Contact, int, error) {
+	return GetContactsPageFiltered(db, includeMerged, q, nil, offset, limit)
+}
+
+// GetContactsPageFiltered 与 GetContactsPage 相同，额外支持按标签筛选。
+// tagIDs 非空时要求联系人**同时**带有全部这些标签（"且"关系）；为 nil 时行为与原来完全一致。
+func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []int64, offset, limit int) ([]Contact, int, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
@@ -516,6 +522,15 @@ func GetContactsPage(db *sql.DB, includeMerged bool, q string, offset, limit int
 			where += ` AND ` + cond
 		}
 		args = append(args, like, like, like)
+	}
+	for _, tid := range tagIDs {
+		cond := `EXISTS (SELECT 1 FROM contact_tag_links tl WHERE tl.contact_id = c.id AND tl.tag_id = ?)`
+		if where == "" {
+			where = ` WHERE ` + cond
+		} else {
+			where += ` AND ` + cond
+		}
+		args = append(args, tid)
 	}
 
 	var total int

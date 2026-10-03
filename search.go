@@ -1,0 +1,258 @@
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+// 聊天记录全文搜索（网页端增值功能）：关键词 + 联系人 + 时间范围，可选覆盖归档表。
+//
+// 设计原则——对现有功能零侵入：
+//   - 只读 messages / messages_archive / contacts，不写任何表、不建索引不改表结构
+//   - 归档表可能不存在（ensureArchiveTables 初始化失败或旧库未升级），此时自动降级为只搜活跃表
+//   - LIKE 走全表扫描，因此对 limit/offset/关键词数量都设了硬上限，避免一次请求把库拖死
+
+const (
+	searchMaxKeywords   = 5   // 空格分隔的关键词个数上限（AND 关系）
+	searchMaxLimit      = 200 // 单页返回条数上限
+	searchSnippetRadius = 24  // 命中片段在关键词两侧各保留的字符数
+)
+
+// SearchOptions 搜索条件
+type SearchOptions struct {
+	Query          string // 关键词，空格分隔多个（AND）
+	ContactID      int64  // 0 = 全部联系人
+	From           string // "2026-01-01" 或 RFC3339；空 = 不限
+	To             string // 同上，含当天
+	IncludeArchive bool   // 是否一并搜索归档表
+	Offset         int
+	Limit          int
+}
+
+// SearchHit 单条命中
+type SearchHit struct {
+	ID          int64  `json:"id"`
+	ContactID   int64  `json:"contactId"`
+	ContactName string `json:"contactName"`
+	Sender      string `json:"sender"`
+	Content     string `json:"content"`
+	Snippet     string `json:"snippet"`
+	MsgTime     string `json:"msgTime"`
+	Archived    bool   `json:"archived"`
+}
+
+// SearchResult 搜索结果
+type SearchResult struct {
+	Query  string      `json:"query"`
+	Total  int         `json:"total"`
+	Offset int         `json:"offset"`
+	Limit  int         `json:"limit"`
+	List   []SearchHit `json:"list"`
+	TookMs int64       `json:"tookMs"`
+	// ArchiveSkipped 为 true 表示请求了搜归档但归档表不可用，结果只含活跃消息
+	ArchiveSkipped bool `json:"archiveSkipped"`
+}
+
+// searchKeywords 拆分并规范化关键词
+func searchKeywords(q string) ([]string, error) {
+	fields := strings.Fields(q)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("请输入搜索关键词")
+	}
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if len(out) >= searchMaxKeywords {
+			break
+		}
+		if r := utf8.RuneCountInString(f); r < 1 || r > 64 {
+			continue
+		}
+		out = append(out, f)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("关键词无效")
+	}
+	return out, nil
+}
+
+// escapeLike 转义 LIKE 通配符，让用户输入的 % _ \ 按字面匹配
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
+}
+
+// archiveTableReady 归档表是否存在且可读（旧库/初始化失败时降级）
+func archiveTableReady(db *sql.DB) bool {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_archive'`).Scan(&n)
+	return err == nil && n > 0
+}
+
+// SearchMessages 执行搜索。所有 rows 迭代都在 dbMu 锁内完成（单连接 + WAL 的硬约束）。
+func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
+	start := time.Now()
+	keywords, err := searchKeywords(opt.Query)
+	if err != nil {
+		return nil, err
+	}
+	if opt.Limit <= 0 {
+		opt.Limit = 50
+	}
+	if opt.Limit > searchMaxLimit {
+		opt.Limit = searchMaxLimit
+	}
+	if opt.Offset < 0 {
+		opt.Offset = 0
+	}
+
+	// 单表条件（messages 与 messages_archive 同构，别名不同而已）
+	buildCond := func(alias string) (string, []interface{}) {
+		cond := []string{"1=1"}
+		var args []interface{}
+		for _, kw := range keywords {
+			cond = append(cond, fmt.Sprintf(`%s.content LIKE ? ESCAPE '\'`, alias))
+			args = append(args, "%"+escapeLike(kw)+"%")
+		}
+		if opt.ContactID > 0 {
+			cond = append(cond, alias+".contact_id = ?")
+			args = append(args, opt.ContactID)
+		}
+		if from := strings.TrimSpace(opt.From); from != "" {
+			// msg_time 存的是 RFC3339 字符串，比较一律先 strftime 转 epoch，绝不能字典序比
+			cond = append(cond, fmt.Sprintf(`%s.msg_time IS NOT NULL AND %s.msg_time != '' AND strftime('%%s', %s.msg_time) >= strftime('%%s', ?)`, alias, alias, alias))
+			args = append(args, from)
+		}
+		if to := strings.TrimSpace(opt.To); to != "" {
+			// 只给日期时按"含当天"处理：上界推到次日零点
+			if len(to) == 10 {
+				to = to + "T23:59:59"
+			}
+			cond = append(cond, fmt.Sprintf(`%s.msg_time IS NOT NULL AND %s.msg_time != '' AND strftime('%%s', %s.msg_time) <= strftime('%%s', ?)`, alias, alias, alias))
+			args = append(args, to)
+		}
+		return strings.Join(cond, " AND "), args
+	}
+
+	// buildUnion 组装活跃表（+ 可选归档表）的 UNION 子查询。
+	// messages 与 messages_archive 同构，条件构造逻辑复用 buildCond。
+	buildUnion := func(withArchive bool) (string, []interface{}) {
+		activeCond, activeArgs := buildCond("m")
+		union := `SELECT m.id, m.contact_id, m.sender, m.content, m.msg_time, 0 AS archived
+			FROM messages m WHERE ` + activeCond
+		args := append([]interface{}{}, activeArgs...)
+		if withArchive {
+			archCond, archArgs := buildCond("a")
+			union += ` UNION ALL SELECT a.id, a.contact_id, a.sender, a.content, a.msg_time, 1 AS archived
+				FROM messages_archive a WHERE ` + archCond
+			args = append(args, archArgs...)
+		}
+		return union, args
+	}
+
+	archiveSkipped := opt.IncludeArchive && !archiveTableReady(db)
+
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	// 极端情况下归档表在检查之后被删掉：查询报错时降级为只搜活跃表重试一次。
+	// 注意必须在本函数内重试（不能递归调用自己），dbMu 不可重入，递归会死锁。
+	runQuery := func(withArchive bool) (int, []SearchHit, error) {
+		union, args := buildUnion(withArchive)
+		var total int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
+			return 0, nil, err
+		}
+		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, COALESCE(u.msg_time,''), u.archived,
+				COALESCE(c.remark,''), COALESCE(c.name,'')
+			FROM (` + union + `) u
+			LEFT JOIN contacts c ON c.id = u.contact_id
+			ORDER BY strftime('%s', u.msg_time) DESC, u.id DESC
+			LIMIT ? OFFSET ?`
+		pageArgs := append(append([]interface{}{}, args...), opt.Limit, opt.Offset)
+		rows, err := db.Query(pageSQL, pageArgs...)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer rows.Close()
+		list := []SearchHit{}
+		for rows.Next() {
+			var h SearchHit
+			var remark string
+			var archived int
+			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &remark, &h.ContactName); err != nil {
+				return 0, nil, err
+			}
+			h.Archived = archived == 1
+			if strings.TrimSpace(remark) != "" {
+				h.ContactName = remark + "（" + h.ContactName + "）"
+			}
+			h.Snippet = buildSnippet(h.Content, keywords)
+			list = append(list, h)
+		}
+		return total, list, rows.Err()
+	}
+
+	wantArchive := opt.IncludeArchive && !archiveSkipped
+	total, list, err := runQuery(wantArchive)
+	if err != nil && wantArchive {
+		archiveSkipped = true
+		if total, list, err = runQuery(false); err != nil {
+			return nil, err
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &SearchResult{
+		Query:          strings.Join(keywords, " "),
+		Total:          total,
+		Offset:         opt.Offset,
+		Limit:          opt.Limit,
+		List:           list,
+		TookMs:         time.Since(start).Milliseconds(),
+		ArchiveSkipped: archiveSkipped,
+	}, nil
+}
+
+// buildSnippet 截取首个命中关键词附近的片段，前后加省略号
+func buildSnippet(content string, keywords []string) string {
+	content = strings.Join(strings.Fields(content), " ")
+	lower := strings.ToLower(content)
+	pos := -1
+	for _, kw := range keywords {
+		if i := strings.Index(lower, strings.ToLower(kw)); i >= 0 && (pos < 0 || i < pos) {
+			pos = i
+		}
+	}
+	runes := []rune(content)
+	if pos < 0 {
+		if len(runes) <= searchSnippetRadius*2 {
+			return content
+		}
+		return string(runes[:searchSnippetRadius*2]) + "…"
+	}
+	// 字节偏移转 rune 偏移
+	start := utf8.RuneCountInString(content[:pos])
+	from := start - searchSnippetRadius
+	if from < 0 {
+		from = 0
+	}
+	to := start + utf8.RuneCountInString(keywords[0]) + searchSnippetRadius
+	if to > len(runes) {
+		to = len(runes)
+	}
+	out := string(runes[from:to])
+	if from > 0 {
+		out = "…" + out
+	}
+	if to < len(runes) {
+		out += "…"
+	}
+	return out
+}

@@ -141,6 +141,12 @@ func DeleteContactByID(db *sql.DB, contactID int64) error {
 	if _, err := tx.Exec(`UPDATE contacts SET merged_into = NULL WHERE merged_into = ?`, contactID); err != nil {
 		return err
 	}
+	// 清理增值功能新增的关联表（标签/事件/待跟进）；表不存在时跳过，不影响删除本身
+	for _, q := range contactCleanupStmts() {
+		if _, err := tx.Exec(q, contactID); err != nil && !strings.Contains(err.Error(), "no such table") {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM contacts WHERE id = ?`, contactID); err != nil {
 		return err
 	}

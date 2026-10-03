@@ -13,6 +13,10 @@ import (
 
 const smtpPassMask = "******"
 
+// calendarKeyMask 日历订阅密钥的打码值。真实密钥只通过 /api/assistant/calendar/key 读取，
+// 避免它随配置接口散落到前端各处；PUT 回传打码值时保留库里的原值。
+const calendarKeyMask = "******"
+
 func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub []string) {
 	if len(sub) == 0 {
 		writeErr(w, http.StatusNotFound, "未知接口")
@@ -58,6 +62,16 @@ func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub [
 			return
 		}
 		s.hAssistantRunNow(w, r)
+	case "followups":
+		s.routeFollowups(w, r, sub[1:])
+	case "blessing":
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hAssistantBlessing(w, r)
+	case "calendar":
+		s.routeCalendar(w, r, sub[1:])
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+sub[0])
 	}
@@ -165,6 +179,9 @@ func maskSMTPPass(st AssistantSettings) AssistantSettings {
 	if st.SMTP.Pass != "" {
 		st.SMTP.Pass = smtpPassMask
 	}
+	if st.CalendarKey != "" {
+		st.CalendarKey = calendarKeyMask
+	}
 	return st
 }
 
@@ -184,9 +201,14 @@ func (s *apiServer) hAssistantPutSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// 前端回传打码密码时保留库里的原值
-	if st.SMTP.Pass == smtpPassMask {
+	if st.SMTP.Pass == smtpPassMask || st.CalendarKey == calendarKeyMask {
 		if old, err := loadAssistantSettings(s.db); err == nil {
-			st.SMTP.Pass = old.SMTP.Pass
+			if st.SMTP.Pass == smtpPassMask {
+				st.SMTP.Pass = old.SMTP.Pass
+			}
+			if st.CalendarKey == calendarKeyMask {
+				st.CalendarKey = old.CalendarKey
+			}
 		}
 	}
 	st.normalize()

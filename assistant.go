@@ -38,6 +38,14 @@ type AssistantSettings struct {
 	EmotionDailyMax     int           `json:"emotionDailyMax"` // 每日最多分析几个联系人（控制 LLM 花费）
 	RemindBirthday      bool          `json:"remindBirthday"`
 	RemindCooling       bool          `json:"remindCooling"`
+
+	// ---- 增值功能（默认关闭，老配置读不到这些字段时保持零值/默认值，行为不变） ----
+	RemindFollowup     bool   `json:"remindFollowup"`     // 每日邮件是否附「待跟进」板块
+	FollowupEnabled    bool   `json:"followupEnabled"`    // 是否用 LLM 自动抽取待跟进（有模型开销）
+	FollowupDailyMax   int    `json:"followupDailyMax"`   // 每日最多扫描几个联系人
+	FollowupWindowDays int    `json:"followupWindowDays"` // 只看最近 N 天的消息
+	BlessingDraft      bool   `json:"blessingDraft"`      // 重要日子提醒里是否附 AI 祝福语草稿
+	CalendarKey        string `json:"calendarKey"`        // .ics 订阅链接的独立密钥（ICS 客户端带不了 Authorization 头）
 }
 
 func defaultAssistantSettings() AssistantSettings {
@@ -47,6 +55,9 @@ func defaultAssistantSettings() AssistantSettings {
 		WeeklyReport: true, WeeklyDay: 0, WeeklyTime: "20:00",
 		EmotionAlert: true, EmotionDailyMax: 10,
 		RemindBirthday: true, RemindCooling: true,
+		// 待跟进/祝福语都要花模型钱，默认关闭，由用户主动打开
+		RemindFollowup: true, FollowupEnabled: false, FollowupDailyMax: 8,
+		FollowupWindowDays: 30, BlessingDraft: false,
 	}
 }
 
@@ -72,6 +83,15 @@ func (s *AssistantSettings) normalize() {
 	}
 	if s.SMTP.Port <= 0 {
 		s.SMTP.Port = 465
+	}
+	if s.FollowupDailyMax <= 0 || s.FollowupDailyMax > 30 {
+		s.FollowupDailyMax = 8
+	}
+	if s.FollowupWindowDays <= 0 || s.FollowupWindowDays > 180 {
+		s.FollowupWindowDays = 30
+	}
+	if len(s.CalendarKey) > 64 {
+		s.CalendarKey = s.CalendarKey[:64]
 	}
 }
 
@@ -189,6 +209,9 @@ type AssistantDateItem struct {
 	Day       int    `json:"day"`
 	DaysUntil int    `json:"daysUntil"`
 	DateStr   string `json:"dateStr"` // 下一次发生的日期 YYYY-MM-DD
+
+	// Blessings 为 AI 生成的祝福草稿，默认关闭（BlessingDraft）时恒为空，行为与旧版一致
+	Blessings []string `json:"blessings,omitempty"`
 }
 
 var (
@@ -255,7 +278,7 @@ func daysUntilNext(now time.Time, month, day int) (int, time.Time) {
 func collectUpcomingDates(db *sql.DB, now time.Time, withinDays int) ([]AssistantDateItem, []AssistantDateItem, error) {
 	dbMu.Lock()
 	rows, err := db.Query(
-		`SELECT id, name, remark, profile_json FROM contacts WHERE merged_into IS NULL`)
+		`SELECT id, name, COALESCE(remark, ''), profile_json FROM contacts WHERE merged_into IS NULL`)
 	var contacts []Contact
 	if err == nil {
 		for rows.Next() {
@@ -674,9 +697,10 @@ func buildDailyEmailHTML(now time.Time, dates []AssistantDateItem, cooling []Ass
 			} else if d.DaysUntil > 1 {
 				when = fmt.Sprintf("%d 天后（%s）", d.DaysUntil, d.DateStr)
 			}
-			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %s：%s，就是%s<br><span style="color:#888;font-size:13px;">画像原文：%s</span></li>`,
+			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %s：%s，就是%s<br><span style="color:#888;font-size:13px;">画像原文：%s</span>%s</li>`,
 				html.EscapeString(d.Name), html.EscapeString(d.Kind),
-				fmt.Sprintf("%d月%d日", d.Month, d.Day), when, html.EscapeString(d.Raw)))
+				fmt.Sprintf("%d月%d日", d.Month, d.Day), when, html.EscapeString(d.Raw),
+				buildBlessingEmailHTML(d.Blessings)))
 		}
 		b.WriteString(`</ul>`)
 	}
@@ -872,7 +896,30 @@ func runDailyCheck(db *sql.DB, llm *LLMClient, now time.Time, force bool) (strin
 		}
 	}
 
-	if len(dates) == 0 && len(cooling) == 0 && len(alerts) == 0 {
+	// 4. 待跟进（对方问了我没回 / 我答应的事 / 钱款往来）
+	//    自动抽取默认关闭（FollowupEnabled），关闭时只读已有的手动记录，无模型开销
+	var followups []FollowupItem
+	if s.RemindFollowup {
+		if s.FollowupEnabled && llm != nil {
+			RefreshFollowups(db, llm, now, s.FollowupDailyMax, s.FollowupWindowDays)
+		}
+		items, ferr := ListFollowups(db, "open", followupEmailMax)
+		switch {
+		case ferr == nil:
+			followups = items
+		case strings.Contains(ferr.Error(), "no such table"):
+			// 表尚未建立（老库还没跑过 ensureFollowupTables），静默跳过
+		default:
+			slog.Warn("关系助手：待跟进查询失败", "err", ferr)
+		}
+	}
+
+	// 5. 重要日子祝福草稿：默认关闭，只给最紧急的几条生成，控制模型开销
+	if s.BlessingDraft && llm != nil && len(dates) > 0 {
+		attachBlessings(db, llm, dates, blessingEmailMax)
+	}
+
+	if len(dates) == 0 && len(cooling) == 0 && len(alerts) == 0 && len(followups) == 0 {
 		detail := "无提醒事项，未发送邮件"
 		updateRunDetail(db, runKind, today, detail)
 		return detail, nil
@@ -880,7 +927,11 @@ func runDailyCheck(db *sql.DB, llm *LLMClient, now time.Time, force bool) (strin
 
 	subject := fmt.Sprintf("【关系提醒】%s：%d 个重要日子，%d 位久未联系，%d 条情绪关注",
 		now.Format("1月2日"), len(dates), len(cooling), len(alerts))
-	body := buildDailyEmailHTML(now, dates, cooling, alerts)
+	if len(followups) > 0 {
+		subject += fmt.Sprintf("，%d 项待跟进", len(followups))
+	}
+	// 待跟进板块插到页脚之前，不改动 buildDailyEmailHTML 的既有输出
+	body := insertEmailSection(buildDailyEmailHTML(now, dates, cooling, alerts), buildFollowupEmailSection(followups))
 	err = sendAssistantMail(s.SMTP, subject, body)
 	status := "ok"
 	errMsg := ""
@@ -899,6 +950,9 @@ func runDailyCheck(db *sql.DB, llm *LLMClient, now time.Time, force bool) (strin
 	logEmail(db, "daily", subject, strings.Join(recipients(s.SMTP.To), ","), status, errMsg)
 	detail := fmt.Sprintf("重要日子 %d，冷却 %d，情绪关注 %d，邮件%s",
 		len(dates), len(cooling), len(alerts), status)
+	if len(followups) > 0 {
+		detail += fmt.Sprintf("，待跟进 %d", len(followups))
+	}
 	updateRunDetail(db, runKind, today, detail)
 	summaryParts = append(summaryParts, detail)
 	return strings.Join(summaryParts, "；"), err

@@ -176,6 +176,11 @@ createApp({
       birthdayAdvanceDays: 3, coolingDays: 7, dailyCheckTime: '08:00',
       weeklyReport: true, weeklyDay: 0, weeklyTime: '20:00',
       emotionAlert: true, emotionDailyMax: 10,
+      // 增值功能：待跟进提醒 + AI 祝福草稿。自动抽取和祝福草稿都要调模型，默认关闭
+      remindFollowup: true, followupEnabled: false,
+      followupDailyMax: 8, followupWindowDays: 30, blessingDraft: false,
+      // 日历订阅密钥：后端只回传打码值，保存时原样带回，避免把库里的真密钥冲掉
+      calendarKey: '',
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
     });
 
@@ -198,12 +203,21 @@ createApp({
         f.weeklyTime = st.weeklyTime || '20:00';
         f.emotionAlert = st.emotionAlert !== false;
         f.emotionDailyMax = st.emotionDailyMax || 10;
+        f.remindFollowup = st.remindFollowup !== false;
+        f.followupEnabled = !!st.followupEnabled;
+        f.followupDailyMax = st.followupDailyMax || 8;
+        f.followupWindowDays = st.followupWindowDays || 30;
+        f.blessingDraft = !!st.blessingDraft;
+        f.calendarKey = st.calendarKey || '';
         const sm = st.smtp || {};
         f.smtp = {
           host: sm.host || '', port: sm.port || 465, ssl: sm.ssl !== false,
           user: sm.user || '', pass: sm.pass || '', from: sm.from || '',
           toText: (sm.to || []).join(', '),
         };
+        // 看板之外的两块增值数据：待跟进列表 + 日历订阅密钥
+        loadFollowups();
+        loadCalendarKey();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -226,6 +240,9 @@ createApp({
             dailyCheckTime: f.dailyCheckTime, weeklyReport: f.weeklyReport,
             weeklyDay: f.weeklyDay, weeklyTime: f.weeklyTime,
             emotionAlert: f.emotionAlert, emotionDailyMax: f.emotionDailyMax,
+            remindFollowup: f.remindFollowup, followupEnabled: f.followupEnabled,
+            followupDailyMax: f.followupDailyMax, followupWindowDays: f.followupWindowDays,
+            blessingDraft: f.blessingDraft, calendarKey: f.calendarKey,
             smtp,
           },
         });
@@ -545,6 +562,9 @@ createApp({
       } else if (h.startsWith('#/assistant')) {
         route.view = 'assistant';
         route.id = 0;
+      } else if (h.startsWith('#/insights')) {
+        route.view = 'insights';
+        route.id = 0;
       } else if (h.startsWith('#/help')) {
         route.view = 'help';
         route.id = 0;
@@ -561,11 +581,12 @@ createApp({
     function onRouteEnter() {
       stopStatusTimer();
       if (!authed.value) return;
-      if (route.view === 'contacts') loadContacts();
+      if (route.view === 'contacts') { loadContacts(); loadTags(); }
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
       if (route.view === 'assistant') loadAssistant();
+      if (route.view === 'insights') switchInsight(insightTab.value);
       if (route.view === 'status') {
         loadStatus();
         statusTimer = setInterval(loadStatus, 5000);
@@ -584,6 +605,8 @@ createApp({
       showSupplement.value = false;
       showMerge.value = false;
       showDelete.value = false;
+      timeline.value = [];
+      tagEditOpen.value = false;
     }
 
     function gotoDetail(id) {
@@ -600,6 +623,8 @@ createApp({
       p.set('limit', String(contactsLimit));
       if (showMerged.value) p.set('includeMerged', '1');
       if (searchApplied.value) p.set('q', searchApplied.value);
+      // 标签筛选：后端多个标签是「且」的关系
+      if (filterTagIds.value.length) p.set('tags', filterTagIds.value.join(','));
       return '?' + p.toString();
     }
     async function loadContacts(reset) {
@@ -614,6 +639,7 @@ createApp({
         const list = (out && out.list) || [];
         if (contactsOffset.value === 0) {
           contacts.value = list;
+          picked.value = []; // 列表换了一批，之前的勾选不再有意义
         } else {
           contacts.value = contacts.value.concat(list);
         }
@@ -653,6 +679,7 @@ createApp({
         if (detailTab.value === 'messages' && !messages.value.length) loadMessages(false);
         if (detailTab.value === 'history') loadHistory();
         if (detailTab.value === 'stats') loadStats();
+        if (detailTab.value === 'timeline' && !timeline.value.length) loadTimeline();
       } catch (e) {
         toast(e.message, 'error');
         contact.value = null;
@@ -666,6 +693,7 @@ createApp({
       if (tab === 'messages' && !messages.value.length) loadMessages(false);
       if (tab === 'history' && !history.value.length) loadHistory();
       if (tab === 'stats' && !stats.value) loadStats();
+      if (tab === 'timeline' && !timeline.value.length) loadTimeline();
     }
 
     // 画像按桌面端 profile.go 固定分节铺开
@@ -1125,6 +1153,496 @@ createApp({
       }
     }
 
+    // ---------- 联系人标签 ----------
+    const tags = ref([]);           // [{id,name,count}]
+    const filterTagIds = ref([]);   // 列表页生效的标签筛选（多个为「且」）
+    const picked = ref([]);         // 批量勾选的联系人 id
+    const showTagMgr = ref(false);
+    const showBatchTag = ref(false);
+    const tagBusy = ref(false);
+    const tagNewName = ref('');
+    const tagEditId = ref(0);
+    const tagEditName = ref('');
+    const batchTagIds = ref([]);
+    const batchTagRemove = ref(false);
+    const tagEditOpen = ref(false); // 详情页标签编辑展开
+    const tagEditIds = ref([]);
+
+    async function loadTags() {
+      try {
+        const out = await api('/api/tags');
+        tags.value = (out && out.list) || [];
+      } catch (e) {
+        // 标签是增值功能，取不到不该打断联系人列表
+        tags.value = [];
+      }
+    }
+    async function createTag() {
+      const name = tagNewName.value.trim();
+      if (!name) return;
+      tagBusy.value = true;
+      try {
+        await api('/api/tags', { method: 'POST', body: { name } });
+        tagNewName.value = '';
+        await loadTags();
+        toast('标签已创建');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { tagBusy.value = false; }
+    }
+    function startTagRename(t) { tagEditId.value = t.id; tagEditName.value = t.name; }
+    function cancelTagRename() { tagEditId.value = 0; tagEditName.value = ''; }
+    async function commitTagRename() {
+      const name = tagEditName.value.trim();
+      if (!name || !tagEditId.value) return;
+      tagBusy.value = true;
+      try {
+        await api('/api/tags/' + tagEditId.value, { method: 'PUT', body: { name } });
+        tagEditId.value = 0;
+        await loadTags();
+        loadContacts();
+        toast('标签已改名');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { tagBusy.value = false; }
+    }
+    async function deleteTag(t) {
+      if (!confirm('删除标签「' + t.name + '」？\n该标签会从 ' + (t.count || 0) + ' 位联系人身上移除，联系人本身不受影响。')) return;
+      tagBusy.value = true;
+      try {
+        await api('/api/tags/' + t.id, { method: 'DELETE' });
+        filterTagIds.value = filterTagIds.value.filter(id => id !== t.id);
+        await loadTags();
+        loadContacts();
+        toast('标签已删除');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { tagBusy.value = false; }
+    }
+    function toggleFilterTag(id) {
+      const i = filterTagIds.value.indexOf(id);
+      if (i >= 0) filterTagIds.value.splice(i, 1); else filterTagIds.value.push(id);
+      loadContacts();
+    }
+    function clearFilterTags() {
+      if (!filterTagIds.value.length) return;
+      filterTagIds.value = [];
+      loadContacts();
+    }
+    function togglePick(id) {
+      const i = picked.value.indexOf(id);
+      if (i >= 0) picked.value.splice(i, 1); else picked.value.push(id);
+    }
+    function togglePickAll() {
+      if (picked.value.length) picked.value = [];
+      else picked.value = contacts.value.map(c => c.id);
+    }
+    function clearPicks() { picked.value = []; }
+    function openBatchTag() {
+      if (!picked.value.length) return;
+      batchTagIds.value = [];
+      batchTagRemove.value = false;
+      showBatchTag.value = true;
+    }
+    function toggleBatchTag(id) {
+      const i = batchTagIds.value.indexOf(id);
+      if (i >= 0) batchTagIds.value.splice(i, 1); else batchTagIds.value.push(id);
+    }
+    async function applyBatchTag() {
+      if (!batchTagIds.value.length || !picked.value.length) return;
+      tagBusy.value = true;
+      try {
+        const out = await api('/api/tags/batch', {
+          method: 'POST',
+          body: { contactIds: picked.value, tagIds: batchTagIds.value, remove: batchTagRemove.value },
+        });
+        toast((batchTagRemove.value ? '已移除标签，影响 ' : '已添加标签，影响 ') + (out.affected || 0) + ' 位联系人');
+        showBatchTag.value = false;
+        clearPicks();
+        loadContacts();
+        loadTags();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { tagBusy.value = false; }
+    }
+    // 详情页标签编辑：直接用 contact.tags 初始化，省一次请求
+    function openTagEdit() {
+      const c = contact.value;
+      tagEditIds.value = ((c && c.tags) || []).map(t => t.id);
+      tagEditOpen.value = true;
+      if (!tags.value.length) loadTags();
+    }
+    function toggleTagEdit(id) {
+      const i = tagEditIds.value.indexOf(id);
+      if (i >= 0) tagEditIds.value.splice(i, 1); else tagEditIds.value.push(id);
+    }
+    async function saveTagEdit() {
+      tagBusy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/tags', { method: 'PUT', body: { tagIds: tagEditIds.value } });
+        tagEditOpen.value = false;
+        toast('标签已保存');
+        loadDetail();
+        loadTags();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { tagBusy.value = false; }
+    }
+
+    // ---------- 洞察页 ----------
+    const insightTab = ref('search');
+    const insightLoaded = reactive({ report: false, social: false, dup: false });
+    function switchInsight(tab) {
+      insightTab.value = tab;
+      if (tab === 'report' && !insightLoaded.report) loadReport();
+      if (tab === 'social' && !insightLoaded.social) loadSocial();
+      if (tab === 'dup' && !insightLoaded.dup) loadDuplicates();
+    }
+
+    // 聊天记录全文搜索
+    const srch = reactive({ q: '', contactId: 0, from: '', to: '', archive: false });
+    const srchRes = ref(null);
+    const srchBusy = ref(false);
+    const srchContacts = ref([]);
+    function buildSearchQuery(offset) {
+      const p = new URLSearchParams();
+      p.set('q', srch.q.trim());
+      p.set('offset', String(offset));
+      if (srch.contactId) p.set('contactId', String(srch.contactId));
+      if (srch.from) p.set('from', srch.from);
+      if (srch.to) p.set('to', srch.to);
+      if (srch.archive) p.set('archive', '1');
+      return '?' + p.toString();
+    }
+    async function doSearch() {
+      if (!srch.q.trim()) { toast('请输入搜索关键词', 'error'); return; }
+      srchBusy.value = true;
+      try {
+        if (!srchContacts.value.length) srchContacts.value = (await api('/api/contacts')) || [];
+        srchRes.value = await api('/api/search/messages' + buildSearchQuery(0));
+      } catch (e) { toast(e.message, 'error'); }
+      finally { srchBusy.value = false; }
+    }
+    async function searchMore() {
+      const r = srchRes.value;
+      if (!r || srchBusy.value || (r.list || []).length >= (r.total || 0)) return;
+      srchBusy.value = true;
+      try {
+        const out = await api('/api/search/messages' + buildSearchQuery(r.list.length));
+        srchRes.value = Object.assign({}, out, { list: r.list.concat(out.list || []) });
+      } catch (e) { toast(e.message, 'error'); }
+      finally { srchBusy.value = false; }
+    }
+    const srchHasMore = computed(() => {
+      const r = srchRes.value;
+      return !!r && (r.list || []).length < (r.total || 0);
+    });
+
+    // 疑似重复联系人
+    const dup = ref(null);
+    const dupBusy = ref(false);
+    async function loadDuplicates() {
+      dupBusy.value = true;
+      try {
+        dup.value = await api('/api/insights/duplicates');
+        insightLoaded.dup = true;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { dupBusy.value = false; }
+    }
+    function dupName(x) {
+      if (!x) return '';
+      return x.remark ? x.remark + '（' + x.name + '）' : x.name;
+    }
+    async function mergeDuplicate(pair) {
+      const keep = pair.suggestedKeep === pair.b.id ? pair.b : pair.a;
+      const drop = keep === pair.a ? pair.b : pair.a;
+      if (!confirm('把「' + dupName(drop) + '」并入「' + dupName(keep) + '」？\n聊天记录和画像历史会一起搬过去，事后可在「合并记录」里撤销。')) return;
+      dupBusy.value = true;
+      try {
+        await api('/api/merge', {
+          method: 'POST',
+          body: { sourceId: drop.id, targetId: keep.id, useSourceName: false, regenerate: true },
+        });
+        toast('已合并，画像正在后台重新生成');
+        loadDuplicates();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { dupBusy.value = false; }
+    }
+
+    // 社交大盘
+    const social = ref(null);
+    const socialDays = ref(30);
+    const socialBusy = ref(false);
+    const weekdayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    async function loadSocial() {
+      socialBusy.value = true;
+      try {
+        social.value = await api('/api/insights/social?days=' + socialDays.value);
+        insightLoaded.social = true;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { socialBusy.value = false; }
+    }
+    function changeSocialDays(d) { socialDays.value = d; loadSocial(); }
+    const socialHourMax = computed(() => {
+      const s = social.value;
+      if (!s || !s.hourly) return 1;
+      let m = 1;
+      s.hourly.forEach(h => { m = Math.max(m, h.mine || 0, h.theirs || 0); });
+      return m;
+    });
+    const socialWeekMax = computed(() => {
+      const s = social.value;
+      if (!s || !s.weekday) return 1;
+      return Math.max(1, ...s.weekday);
+    });
+    // 秒数转可读时长（回复速度用）
+    function fmtDur(sec) {
+      if (sec == null || sec <= 0) return '—';
+      if (sec < 60) return Math.round(sec) + ' 秒';
+      if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+      if (sec < 86400) return (sec / 3600).toFixed(1) + ' 小时';
+      return (sec / 86400).toFixed(1) + ' 天';
+    }
+    // 柱状图百分比宽度：模板里不用 Math，避免全局对象解析的坑
+    function barPct(v, max) {
+      const n = Number(v) || 0;
+      const m = Number(max) || 1;
+      if (n <= 0) return '0%';
+      const p = Math.round((n * 100) / m);
+      return Math.min(100, Math.max(1, p)) + '%';
+    }
+
+    // 年度关系报告
+    const report = ref(null);
+    const reportYear = ref(new Date().getFullYear());
+    const reportBusy = ref(false);
+    async function loadReport() {
+      reportBusy.value = true;
+      try {
+        report.value = await api('/api/insights/report?year=' + reportYear.value);
+        insightLoaded.report = true;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { reportBusy.value = false; }
+    }
+    function changeReportYear(y) { reportYear.value = y; loadReport(); }
+    const reportMonthMax = computed(() => {
+      const r = report.value;
+      if (!r || !r.months) return 1;
+      let m = 1;
+      r.months.forEach(x => { m = Math.max(m, x.total || 0); });
+      return m;
+    });
+    // HTML 长页要带 Authorization 头，window.open 直接给 URL 会被 401 拦下；
+    // 改成先 fetch 拿文本，再转 Blob URL 打开新标签页
+    async function openReportHTML() {
+      reportBusy.value = true;
+      try {
+        const res = await fetch('/api/insights/report?year=' + reportYear.value + '&format=html', {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) },
+        });
+        if (res.status === 401) { localStorage.removeItem(TOKEN_KEY); authed.value = false; throw new Error('登录已过期，请重新输入 Token'); }
+        if (!res.ok) {
+          let msg = '生成失败 (' + res.status + ')';
+          try { msg = (await res.json()).error || msg; } catch (e) { /* 非 JSON */ }
+          throw new Error(msg);
+        }
+        const html = await res.text();
+        const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+        const w = window.open(url, '_blank');
+        if (!w) toast('浏览器拦截了新窗口，请允许本站弹窗后重试', 'error');
+        setTimeout(() => URL.revokeObjectURL(url), 120000);
+      } catch (e) { toast(e.message, 'error'); }
+      finally { reportBusy.value = false; }
+    }
+
+    // ---------- 联系人时间线 ----------
+    const timeline = ref([]);
+    const timelineBusy = ref(false);
+    const showEventModal = ref(false);
+    const eventForm = reactive({ title: '', detail: '', eventTime: '' });
+    const timelineKinds = {
+      created: '创建', first_message: '首条消息', last_message: '最近消息',
+      profile: '画像更新', merge: '合并进来', merged_into: '被合并',
+      renamed: '改名', remark: '改备注', custom: '手动记录',
+    };
+    function tlKind(k) { return timelineKinds[k] || k || ''; }
+    async function loadTimeline() {
+      timelineBusy.value = true;
+      try {
+        const out = await api('/api/contacts/' + route.id + '/timeline');
+        timeline.value = (out && out.list) || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { timelineBusy.value = false; }
+    }
+    function openEventModal() {
+      const d = new Date(), pad = n => String(n).padStart(2, '0');
+      eventForm.title = '';
+      eventForm.detail = '';
+      eventForm.eventTime = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+        'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      showEventModal.value = true;
+    }
+    async function addEvent() {
+      if (!eventForm.title.trim()) { toast('请填写事件标题', 'error'); return; }
+      // datetime-local 只给到分钟，后端 parseTimeLoose 不认这个格式，补上秒
+      let when = eventForm.eventTime;
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(when)) when += ':00';
+      timelineBusy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/timeline', {
+          method: 'POST',
+          body: { title: eventForm.title.trim(), detail: eventForm.detail.trim(), eventTime: when },
+        });
+        showEventModal.value = false;
+        toast('事件已记录');
+        loadTimeline();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { timelineBusy.value = false; }
+    }
+    async function delEvent(ev) {
+      if (!ev || !ev.id) return;
+      if (!confirm('删除手动记录的事件「' + ev.title + '」？')) return;
+      timelineBusy.value = true;
+      try {
+        await api('/api/contacts/' + route.id + '/timeline?eventId=' + ev.id, { method: 'DELETE' });
+        toast('已删除');
+        loadTimeline();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { timelineBusy.value = false; }
+    }
+
+    // ---------- 待跟进事项 ----------
+    const followups = ref([]);
+    const followupFilter = ref('open');
+    const followupBusy = ref(false);
+    const showFollowupModal = ref(false);
+    const followupForm = reactive({ contactId: 0, kind: 'custom', content: '', amount: '' });
+    const pickContacts = ref([]);
+    const followupKinds = { question: '待回复', promise: '我答应的事', money: '钱款往来', custom: '手动记录' };
+    async function loadFollowups() {
+      try {
+        const out = await api('/api/assistant/followups?status=' + followupFilter.value + '&limit=200');
+        followups.value = (out && out.list) || [];
+      } catch (e) {
+        if (route.view === 'assistant') toast(e.message, 'error');
+      }
+    }
+    function switchFollowup(st) {
+      if (followupFilter.value === st) return;
+      followupFilter.value = st;
+      loadFollowups();
+    }
+    async function setFollowupStatus(it, st) {
+      followupBusy.value = true;
+      try {
+        await api('/api/assistant/followups/' + it.id, { method: 'PUT', body: { status: st } });
+        toast(st === 'done' ? '已标记完成' : '已更新状态');
+        loadFollowups();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { followupBusy.value = false; }
+    }
+    async function delFollowup(it) {
+      if (!confirm('删除这条待跟进？\n' + it.content)) return;
+      followupBusy.value = true;
+      try {
+        await api('/api/assistant/followups/' + it.id, { method: 'DELETE' });
+        toast('已删除');
+        loadFollowups();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { followupBusy.value = false; }
+    }
+    async function scanFollowups() {
+      if (followupBusy.value) return;
+      followupBusy.value = true;
+      try {
+        const out = await api('/api/assistant/followups/scan', { method: 'POST' });
+        toast('扫描完成：看了 ' + (out.scanned || 0) + ' 位联系人，新增 ' + (out.added || 0) + ' 条');
+        loadFollowups();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { followupBusy.value = false; }
+    }
+    async function openFollowupModal(cid) {
+      try {
+        if (!pickContacts.value.length) pickContacts.value = (await api('/api/contacts')) || [];
+      } catch (e) { toast(e.message, 'error'); return; }
+      followupForm.contactId = cid || (contact.value ? contact.value.id : 0);
+      followupForm.kind = 'custom';
+      followupForm.content = '';
+      followupForm.amount = '';
+      showFollowupModal.value = true;
+    }
+    async function addFollowup() {
+      if (!followupForm.contactId) { toast('请选择联系人', 'error'); return; }
+      if (!followupForm.content.trim()) { toast('请填写内容', 'error'); return; }
+      followupBusy.value = true;
+      try {
+        await api('/api/assistant/followups', {
+          method: 'POST',
+          body: {
+            contactId: followupForm.contactId,
+            kind: followupForm.kind,
+            content: followupForm.content.trim(),
+            // 只有钱款往来才带金额，切换类型后不要把残留值提交上去
+            amount: followupForm.kind === 'money' ? followupForm.amount.trim() : '',
+          },
+        });
+        showFollowupModal.value = false;
+        toast('已添加');
+        loadFollowups();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { followupBusy.value = false; }
+    }
+
+    // ---------- 日历订阅 ----------
+    const cal = ref(null);
+    const calBusy = ref(false);
+    async function loadCalendarKey() {
+      try { cal.value = await api('/api/assistant/calendar/key'); }
+      catch (e) { cal.value = null; }
+    }
+    async function rotateCalendarKey() {
+      if (cal.value && cal.value.enabled &&
+        !confirm('重新生成订阅密钥后，旧的订阅链接会立刻失效，需要在日历客户端里重新添加。确定继续？')) return;
+      calBusy.value = true;
+      try {
+        cal.value = await api('/api/assistant/calendar/key', { method: 'POST' });
+        // 表单里存的是打码值，保存设置时后端凭它保留库中真密钥；
+        // 不同步的话，密钥从无到有时表单仍是空串，一保存就把新密钥冲掉
+        asstForm.value.calendarKey = (cal.value && cal.value.enabled) ? '******' : '';
+        toast('订阅已开启，把下面的地址添加到手机/电脑日历');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { calBusy.value = false; }
+    }
+    async function clearCalendarKey() {
+      if (!confirm('关闭日历订阅？密钥会被清除，已添加的订阅会失效。')) return;
+      calBusy.value = true;
+      try {
+        cal.value = await api('/api/assistant/calendar/key', { method: 'DELETE' });
+        asstForm.value.calendarKey = '';
+        toast('日历订阅已关闭');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { calBusy.value = false; }
+    }
+    async function copyText(t) {
+      if (!t) return;
+      try { await navigator.clipboard.writeText(t); toast('已复制'); }
+      catch (e) { toast('复制失败，请选中文字手动复制', 'error'); }
+    }
+
+    // ---------- 重要日子祝福草稿 ----------
+    const blessBusy = ref(0); // 正在生成的条目下标，0 表示空闲（数组下标从 1 记）
+    async function genBlessing(d, idx) {
+      if (blessBusy.value) return;
+      blessBusy.value = idx + 1;
+      try {
+        const out = await api('/api/assistant/blessing', {
+          method: 'POST',
+          body: {
+            contactId: d.contactId, kind: d.kind, raw: d.raw,
+            month: d.month, day: d.day, dateStr: d.dateStr, daysUntil: d.daysUntil,
+          },
+        });
+        d.blessings = (out && out.list) || [];
+        if (!d.blessings.length) toast('模型没返回内容，稍后再试', 'error');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { blessBusy.value = 0; }
+    }
+
     // ---------- 服务器状态 ----------
     const sysStatus = ref(null);
     const statusLoading = ref(false);
@@ -1225,6 +1743,28 @@ createApp({
       startMerge, doMerge, doDelete, confirmDelete,
       loadMergeLogs, undoMerge, fmtTime,
       sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
+      // 标签
+      tags, filterTagIds, picked, showTagMgr, showBatchTag, tagBusy, tagNewName,
+      tagEditId, tagEditName, batchTagIds, batchTagRemove, tagEditOpen, tagEditIds,
+      loadTags, createTag, startTagRename, cancelTagRename, commitTagRename, deleteTag,
+      toggleFilterTag, clearFilterTags, togglePick, togglePickAll, clearPicks,
+      openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
+      // 洞察页
+      insightTab, switchInsight,
+      srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
+      dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,
+      social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,
+      socialHourMax, socialWeekMax, fmtDur, barPct,
+      report, reportYear, reportBusy, loadReport, changeReportYear, reportMonthMax, openReportHTML,
+      // 时间线
+      timeline, timelineBusy, showEventModal, eventForm, tlKind,
+      loadTimeline, openEventModal, addEvent, delEvent,
+      // 待跟进 / 日历订阅 / 祝福草稿
+      followups, followupFilter, followupBusy, showFollowupModal, followupForm,
+      pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,
+      delFollowup, scanFollowups, openFollowupModal, addFollowup,
+      cal, calBusy, loadCalendarKey, rotateCalendarKey, clearCalendarKey, copyText,
+      blessBusy, genBlessing,
     };
   },
 }).mount('#app');
