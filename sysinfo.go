@@ -10,7 +10,7 @@ import (
 )
 
 // appVersion 程序版本号，/api/status 与日志使用
-const appVersion = "v2.4.0"
+const appVersion = "v3.0.0"
 
 // progStart 进程启动时刻（包初始化即记录，早于 main 里的扫码登录）
 var progStart = time.Now()

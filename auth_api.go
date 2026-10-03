@@ -20,17 +20,31 @@ import (
 
 type loginRequest struct {
 	Token string `json:"token"`
+	trustRequest
 }
 
 type twofaEnableRequest struct {
 	Token  string `json:"token"`
 	Secret string `json:"secret"`
 	Code   string `json:"code"`
+	trustRequest
 }
 
 type twofaVerifyRequest struct {
 	Token string `json:"token"`
 	Code  string `json:"code"`
+	trustRequest
+}
+
+// trustRequest 登录请求里的「信任此设备」附加字段
+type trustRequest struct {
+	TrustDevice bool   `json:"trustDevice"`
+	DeviceName  string `json:"deviceName"`
+}
+
+// trustedLoginRequest 用可信令牌直接换会话
+type trustedLoginRequest struct {
+	TrustedToken string `json:"trustedToken"`
 }
 
 func decodeAuthBody(w http.ResponseWriter, r *http.Request, v interface{}) bool {
@@ -55,6 +69,8 @@ func (s *apiServer) routeAuth(w http.ResponseWriter, r *http.Request, sub []stri
 		s.hAuthVerify(w, r)
 	case len(sub) == 2 && sub[0] == "2fa" && sub[1] == "disable":
 		s.hAuthDisable(w, r)
+	case len(sub) == 2 && sub[0] == "trusted" && sub[1] == "login":
+		s.hAuthTrustedLogin(w, r)
 	case len(sub) == 1 && sub[0] == "logout":
 		s.hAuthLogout(w, r)
 	default:
@@ -71,13 +87,8 @@ func (s *apiServer) hAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 未配置 apiToken（不推荐）：直接颁发会话，保证页面仍可进
 	if s.cfg.APIToken == "" {
-		tok, err := s.sessions.create()
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "会话创建失败")
-			return
-		}
 		slog.Warn("apiToken 未配置，网页登录跳过双因素认证")
-		writeJSON(w, http.StatusOK, map[string]string{"stage": "ok", "session": tok})
+		s.issueSession(w, r, req.trustRequest)
 		return
 	}
 
@@ -118,15 +129,58 @@ func (s *apiServer) hAuthLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// issueSession 双因素通过后统一颁发会话，并清除该 IP 的登录失败计数
-func (s *apiServer) issueSession(w http.ResponseWriter, r *http.Request) {
+// issueSession 双因素通过后统一颁发会话，并清除该 IP 的登录失败计数。
+// trust.TrustDevice 为真时同时签发可信客户端令牌（90 天免登录），随响应返回。
+func (s *apiServer) issueSession(w http.ResponseWriter, r *http.Request, trust trustRequest) {
 	tok, err := s.sessions.create()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "会话创建失败")
 		return
 	}
 	s.guard.RecordAuthSuccess(s.realIP(r))
-	writeJSON(w, http.StatusOK, map[string]string{"stage": "ok", "session": tok})
+	resp := map[string]string{"stage": "ok", "session": tok}
+	if trust.TrustDevice {
+		name := strings.TrimSpace(trust.DeviceName)
+		if runes := []rune(name); len(runes) > 40 {
+			name = string(runes[:40])
+		}
+		if name == "" {
+			name = "未命名设备"
+		}
+		if tc, err := s.trusted.create(name, s.realIP(r)); err != nil {
+			// 可信令牌签发失败不影响本次登录，只是下次仍要手动输
+			slog.Warn("签发可信客户端令牌失败", "err", err)
+		} else {
+			resp["trustedToken"] = tc.Token
+			resp["trustedName"] = tc.Name
+			slog.Info("已添加可信客户端", "name", tc.Name, "ip", s.realIP(r))
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// hAuthTrustedLogin 可信客户端免登录：用长效令牌直接换普通网页会话。
+// 令牌无效按普通拒绝处理（不计入封禁——过期/被清理是常态，计数的话
+// 老浏览器缓存的旧令牌会把用户自己封死），但会在安全日志留痕。
+func (s *apiServer) hAuthTrustedLogin(w http.ResponseWriter, r *http.Request) {
+	var req trustedLoginRequest
+	if !decodeAuthBody(w, r, &req) {
+		return
+	}
+	tc := s.trusted.validate(strings.TrimSpace(req.TrustedToken), s.realIP(r))
+	if tc == nil {
+		s.guard.RecordDenied(s.realIP(r), "/api/auth/trusted/login", "可信令牌无效")
+		writeErr(w, http.StatusUnauthorized, "可信令牌无效或已过期，请重新完整登录")
+		return
+	}
+	s.guard.RecordAuthSuccess(s.realIP(r))
+	tok, err := s.sessions.create()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "会话创建失败")
+		return
+	}
+	slog.Info("可信客户端免登录成功", "name", tc.Name, "ip", s.realIP(r))
+	writeJSON(w, http.StatusOK, map[string]string{"stage": "ok", "session": tok, "trustedName": tc.Name})
 }
 
 // hAuthEnable 首次绑定：校验验证码 → 保存密钥 → 颁发会话
@@ -166,7 +220,7 @@ func (s *apiServer) hAuthEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("网页端双因素认证已启用", "secret_file", totpSecretPath())
-	s.issueSession(w, r)
+	s.issueSession(w, r, req.trustRequest)
 }
 
 // hAuthVerify 已绑定用户的日常登录：校验 TOTP 动态码
@@ -193,7 +247,7 @@ func (s *apiServer) hAuthVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "动态码无效或已过期，请确认输入的是验证器当前显示的 6 位码且手机时间准确")
 		return
 	}
-	s.issueSession(w, r)
+	s.issueSession(w, r, req.trustRequest)
 }
 
 // hAuthLogout 退出：吊销当前网页会话（apiToken 不是会话，无法在此吊销）
@@ -239,7 +293,8 @@ func (s *apiServer) hAuthDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sessions.revokeAll()
-	s.guard.RecordEvent(s.realIP(r), "2FA 已关闭，全部网页会话已吊销")
+	s.trusted.revokeAll() // 安全状态变化：免登录便利凭证一并作废
+	s.guard.RecordEvent(s.realIP(r), "2FA 已关闭，全部网页会话与可信客户端已吊销")
 	slog.Warn("网页端双因素认证已关闭")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

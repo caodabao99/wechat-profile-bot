@@ -43,6 +43,7 @@
         <button class="btn ghost" type="button" @click="backToToken">返回上一步</button>
       </form>
 
+      <label class="check-row trust-row"><input type="checkbox" v-model="trustDevice"> 信任此设备，90 天内免输 Token 和动态码</label>
       <p class="login-err" v-if="loginError">{{ loginError }}</p>
     </div>
   </main>
@@ -322,6 +323,88 @@
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- 消息归档 -->
+      <div class="card">
+        <h2>消息归档</h2>
+        <p class="hint block">
+          把超过保留期的旧消息移入同库的归档表，缩小活动数据、加快日常查询。
+          归档消息不再出现在联系人聊天记录里，但会随备份一起导出，随时可恢复。
+        </p>
+        <div v-if="archive">
+          <div class="backup-actions">
+            <label class="check-row inline"><input type="checkbox" v-model="archiveForm.enabled"> 每日自动归档</label>
+            <span class="hint">保留最近</span>
+            <input class="text-input" style="width:90px" type="number" min="30" v-model.number="archiveForm.retentionDays">
+            <span class="hint">天的消息（默认 730 天 ≈ 2 年）</span>
+            <button class="btn sm" @click="saveArchiveSettings" :disabled="archiveBusy">保存设置</button>
+          </div>
+          <p class="hint block">
+            活动消息 {{ archive.stats.activeMessages }} 条 ·
+            已归档 {{ archive.stats.archivedMessages }} 条 ·
+            当前可归档 {{ archive.stats.eligible }} 条
+            <template v-if="archive.stats.lastRunAt"> · 上次归档 {{ fmtTime(archive.stats.lastRunAt) }}</template>
+          </p>
+          <div class="backup-actions">
+            <button class="btn primary" @click="runArchive" :disabled="archiveBusy || !archive.stats.eligible">
+              {{ archiveBusy === 'run' ? '正在归档…' : '立即归档超期消息' }}
+            </button>
+            <button class="btn danger" @click="restoreArchive(0)" :disabled="archiveBusy || !archive.stats.archivedMessages">
+              {{ archiveBusy === 'restore' ? '正在恢复…' : '恢复全部归档' }}
+            </button>
+          </div>
+          <p class="hint block" v-if="archiveResult">{{ archiveResult }}</p>
+          <div class="backup-log-section" v-if="archive.byContact.length">
+            <h3>归档明细（按联系人）</h3>
+            <table class="backup-log-table">
+              <thead>
+                <tr><th>联系人</th><th>归档条数</th><th>时间范围</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="a in archive.byContact" :key="a.contactId">
+                  <td>
+                    <span v-if="a.deleted" class="tag tag-red">已删除的联系人</span>
+                    <template v-else>{{ a.name || ('#' + a.contactId) }}</template>
+                  </td>
+                  <td>{{ a.count }}</td>
+                  <td>{{ a.oldest ? fmtTime(a.oldest).slice(0,10) : '?' }} ~ {{ a.newest ? fmtTime(a.newest).slice(0,10) : '?' }}</td>
+                  <td><button class="btn sm ghost" @click="restoreArchive(a.contactId)" :disabled="archiveBusy">恢复</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="hint block" v-if="archive.byContact.some(a => a.deleted)">「已删除的联系人」的归档消息无法恢复到聊天中（联系人不存在），恢复全部时会原地保留。</p>
+          </div>
+        </div>
+        <p class="hint block" v-else>正在读取归档状态…</p>
+      </div>
+
+      <!-- 可信设备 -->
+      <div class="card">
+        <h2>可信设备（免登录）</h2>
+        <p class="hint block">
+          登录时勾选「信任此设备」后，该浏览器 90 天内打开页面免输 Token 和动态码（每次使用自动续期）。
+          设备丢失或不再使用时在这里吊销；关闭 2FA 会自动吊销全部可信设备。
+        </p>
+        <p class="empty" v-if="trustedList && !trustedList.length">暂无可信设备——下次登录时勾选「信任此设备」即可添加</p>
+        <table class="backup-log-table" v-if="trustedList && trustedList.length">
+          <thead>
+            <tr><th>设备名</th><th>令牌</th><th>添加时间</th><th>最近使用</th><th>到期</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in trustedList" :key="t.tokenPrefix">
+              <td>{{ t.name }}</td>
+              <td><code>{{ t.token }}</code></td>
+              <td>{{ fmtTime(t.createdAt).slice(0,16) }}</td>
+              <td>{{ t.lastUsedAt ? fmtAgo(t.lastUsedAt) : '未使用' }}<span v-if="t.lastIp" class="hint">（{{ t.lastIp }}）</span></td>
+              <td>{{ fmtTime(t.expiresAt).slice(0,10) }}</td>
+              <td><button class="btn sm danger" @click="revokeTrusted(t)" :disabled="trustedBusy">吊销</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="backup-actions" v-if="trustedList && trustedList.length">
+          <button class="btn danger" @click="revokeAllTrusted" :disabled="trustedBusy">吊销全部可信设备</button>
         </div>
       </div>
     </section>

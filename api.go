@@ -42,10 +42,11 @@ type apiServer struct {
 	db       *sql.DB
 	llm      *LLMClient
 	cfg      *Config
-	client   *ILinkClient     // 微信连接状态查询；CLI/测试场景可为 nil
-	sessions *webSessionStore // 网页端 2FA 通过后颁发的会话
-	guard    *securityGuard   // 登录失败计数 + IP 永久封禁 + 安全日志
-	ingestRL *rateLimiter     // /api/ingest 限流，防止 token 泄露后被刷爆 LLM 账单
+	client   *ILinkClient        // 微信连接状态查询；CLI/测试场景可为 nil
+	sessions *webSessionStore    // 网页端 2FA 通过后颁发的会话
+	trusted  *trustedClientStore // 可信客户端长效令牌（免重复登录）
+	guard    *securityGuard      // 登录失败计数 + IP 永久封禁 + 安全日志
+	ingestRL *rateLimiter        // /api/ingest 限流，防止 token 泄露后被刷爆 LLM 账单
 }
 
 // clientIP 从请求中提取直连客户端 IP（去掉端口，兼容 IPv4/IPv6）。
@@ -142,6 +143,7 @@ func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config
 		client:   client,
 		cfg:      cfg,
 		sessions: initWebSessionStore(),
+		trusted:  initTrustedClientStore(),
 		guard:    newSecurityGuard(),
 		// /api/ingest 每被调用一次就真实消耗一次 LLM 额度。apiToken 一旦泄露，
 		// 没有上限的调用次数意味着账单可以在几小时内被刷爆。这里按 token（无 token
@@ -307,6 +309,10 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.hBackupLogs(w, r)
 	case parts[0] == "assistant":
 		s.routeAssistant(w, r, parts[1:])
+	case parts[0] == "archive":
+		s.routeArchive(w, r, parts[1:])
+	case parts[0] == "trusted":
+		s.routeTrusted(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

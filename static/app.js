@@ -51,8 +51,11 @@ createApp({
   setup() {
     // ---------- 登录态（Token + TOTP 两步登录） ----------
     const TOKEN_KEY = 'wp_api_token'; // 登录成功后这里存的是「网页会话令牌」，不再存 apiToken
+    const TRUSTED_KEY = 'wp_trusted_token'; // 可信客户端长效令牌（90 天免登录）
+    const SKIP_TRUSTED_KEY = 'wp_skip_trusted'; // 本标签页登出后不再自动免登录
     const authed = ref(false);
     const tokenInput = ref('');
+    const trustDevice = ref(true); // 登录页「信任此设备」勾选框，默认勾选
     // authStage: token=输Token / setup=首次绑定验证器 / 2fa=输6位动态码
     const authStage = ref('token');
     const pendingToken = ref('');
@@ -388,8 +391,27 @@ createApp({
       return data;
     }
 
-    function enterApp(session) {
+    // guessDeviceName 从 UA 猜一个人类可读的设备名（可信设备列表展示用）
+    function guessDeviceName() {
+      const ua = navigator.userAgent;
+      let os = '未知设备';
+      if (/iPhone|iPad|iPod/i.test(ua)) os = 'iPhone/iPad';
+      else if (/Android/i.test(ua)) os = 'Android 手机';
+      else if (/Windows/i.test(ua)) os = 'Windows';
+      else if (/Mac OS X/i.test(ua)) os = 'Mac';
+      else if (/Linux/i.test(ua)) os = 'Linux';
+      let br = '浏览器';
+      if (/Edg\//i.test(ua)) br = 'Edge';
+      else if (/Firefox\//i.test(ua)) br = 'Firefox';
+      else if (/Chrome\//i.test(ua)) br = 'Chrome';
+      else if (/Safari\//i.test(ua)) br = 'Safari';
+      return os + ' · ' + br;
+    }
+
+    function enterApp(session, trustedToken) {
       localStorage.setItem(TOKEN_KEY, session);
+      if (trustedToken) localStorage.setItem(TRUSTED_KEY, trustedToken);
+      sessionStorage.removeItem(SKIP_TRUSTED_KEY);
       authed.value = true;
       authStage.value = 'token';
       tokenInput.value = '';
@@ -408,6 +430,13 @@ createApp({
       loginError.value = '';
     }
 
+    // trustFields 登录请求附带的「信任此设备」字段
+    function trustFields() {
+      return trustDevice.value
+        ? { trustDevice: true, deviceName: guessDeviceName() }
+        : { trustDevice: false };
+    }
+
     // 第一步：提交 apiToken，由后端决定下一步是首次绑定还是输动态码
     async function login() {
       const t = tokenInput.value.trim();
@@ -415,8 +444,8 @@ createApp({
       loginChecking.value = true;
       loginError.value = '';
       try {
-        const r = await authPost('/api/auth/login', { token: t });
-        if (r.stage === 'ok') { enterApp(r.session); return; }
+        const r = await authPost('/api/auth/login', Object.assign({ token: t }, trustFields()));
+        if (r.stage === 'ok') { enterApp(r.session, r.trustedToken); return; }
         pendingToken.value = t;
         if (r.stage === 'setup') {
           setupSecret.value = r.secret;
@@ -440,10 +469,10 @@ createApp({
       loginChecking.value = true;
       loginError.value = '';
       try {
-        const r = await authPost('/api/auth/2fa/enable', {
+        const r = await authPost('/api/auth/2fa/enable', Object.assign({
           token: pendingToken.value, secret: setupSecret.value, code,
-        });
-        if (r.stage === 'ok') enterApp(r.session);
+        }, trustFields()));
+        if (r.stage === 'ok') enterApp(r.session, r.trustedToken);
       } catch (e) {
         loginError.value = e.message;
       } finally {
@@ -458,10 +487,10 @@ createApp({
       loginChecking.value = true;
       loginError.value = '';
       try {
-        const r = await authPost('/api/auth/2fa/verify', {
+        const r = await authPost('/api/auth/2fa/verify', Object.assign({
           token: pendingToken.value, code,
-        });
-        if (r.stage === 'ok') enterApp(r.session);
+        }, trustFields()));
+        if (r.stage === 'ok') enterApp(r.session, r.trustedToken);
       } catch (e) {
         loginError.value = e.message;
         codeInput.value = '';
@@ -470,11 +499,27 @@ createApp({
       }
     }
 
+    // tryTrustedLogin 打开页面时用可信令牌静默换取会话（免输 Token+动态码）。
+    // 本标签页刚登出过（SKIP_TRUSTED_KEY）则跳过；令牌失效就清掉不再试。
+    async function tryTrustedLogin() {
+      const tt = localStorage.getItem(TRUSTED_KEY);
+      if (!tt || sessionStorage.getItem(SKIP_TRUSTED_KEY)) return false;
+      try {
+        const r = await authPost('/api/auth/trusted/login', { trustedToken: tt });
+        if (r.stage === 'ok') { enterApp(r.session); return true; }
+      } catch (e) {
+        localStorage.removeItem(TRUSTED_KEY);
+      }
+      return false;
+    }
+
     async function logout() {
       try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 忽略，本地照样清 */ }
       stopStatusTimer();
       sysStatus.value = null;
       localStorage.removeItem(TOKEN_KEY);
+      // 可信令牌保留（下次打开页面仍免登录），但本标签页登出后不再自动登录
+      sessionStorage.setItem(SKIP_TRUSTED_KEY, '1');
       authed.value = false;
       authStage.value = 'token';
       loginError.value = '';
@@ -519,7 +564,7 @@ createApp({
       if (route.view === 'contacts') loadContacts();
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
-      if (route.view === 'backup') loadBackupLogs();
+      if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
       if (route.view === 'assistant') loadAssistant();
       if (route.view === 'status') {
         loadStatus();
@@ -876,6 +921,118 @@ createApp({
       }
     }
 
+    // ---------- 消息归档 ----------
+    const archive = ref(null);   // {stats, byContact}
+    const archiveBusy = ref(''); // '' / 'run' / 'restore' / 'save'
+    const archiveResult = ref('');
+    const archiveForm = reactive({ enabled: false, retentionDays: 730 });
+
+    async function loadArchive() {
+      try {
+        const d = await api('/api/archive/status');
+        archive.value = d;
+        archiveForm.enabled = !!d.stats.enabled;
+        archiveForm.retentionDays = d.stats.retentionDays;
+      } catch (e) {
+        archive.value = null;
+      }
+    }
+
+    async function saveArchiveSettings() {
+      archiveBusy.value = 'save';
+      try {
+        await api('/api/archive/settings', { method: 'POST', body: {
+          enabled: archiveForm.enabled, retentionDays: archiveForm.retentionDays,
+        } });
+        toast('归档设置已保存');
+        loadArchive();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        archiveBusy.value = '';
+      }
+    }
+
+    async function runArchive() {
+      if (!confirm('将把超过 ' + archiveForm.retentionDays + ' 天的消息移入归档表（可随时恢复）。继续吗？')) return;
+      archiveBusy.value = 'run';
+      archiveResult.value = '';
+      try {
+        const r = await api('/api/archive/run', { method: 'POST', body: {} });
+        archiveResult.value = '本次归档 ' + r.moved + ' 条消息';
+        toast(archiveResult.value);
+        loadArchive();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        archiveBusy.value = '';
+      }
+    }
+
+    async function restoreArchive(contactId) {
+      const all = !contactId;
+      if (all && !confirm('将把全部归档消息恢复到聊天记录中。继续吗？')) return;
+      archiveBusy.value = 'restore';
+      archiveResult.value = '';
+      try {
+        const r = await api('/api/archive/restore', { method: 'POST', body: { contactId: contactId || 0 } });
+        let msg = '已恢复 ' + r.result.restored + ' 条消息';
+        if (r.result.skipped) msg += '，' + r.result.skipped + ' 条因联系人已删除留在归档';
+        archiveResult.value = msg;
+        toast(msg);
+        loadArchive();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        archiveBusy.value = '';
+      }
+    }
+
+    // ---------- 可信设备（免登录） ----------
+    const trustedList = ref(null);
+    const trustedBusy = ref(false);
+
+    async function loadTrusted() {
+      try {
+        const d = await api('/api/trusted/list');
+        trustedList.value = d.clients || [];
+      } catch (e) {
+        trustedList.value = [];
+      }
+    }
+
+    async function revokeTrusted(t) {
+      if (!confirm('吊销「' + t.name + '」后，该设备下次打开页面需要重新完整登录。继续吗？')) return;
+      trustedBusy.value = true;
+      try {
+        await api('/api/trusted/revoke', { method: 'POST', body: { token: t.tokenPrefix } });
+        // 吊销的正是本机令牌时，把本地缓存也清掉
+        const local = localStorage.getItem(TRUSTED_KEY) || '';
+        if (local.startsWith(t.tokenPrefix)) localStorage.removeItem(TRUSTED_KEY);
+        toast('已吊销');
+        loadTrusted();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        trustedBusy.value = false;
+      }
+    }
+
+    async function revokeAllTrusted() {
+      if (!confirm('将吊销全部可信设备，所有设备下次都需要重新完整登录。继续吗？')) return;
+      trustedBusy.value = true;
+      try {
+        await api('/api/trusted/revoke-all', { method: 'POST' });
+        localStorage.removeItem(TRUSTED_KEY);
+        toast('已吊销全部可信设备');
+        loadTrusted();
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        trustedBusy.value = false;
+      }
+    }
+
     async function exportBackup() {
       const pwd = encPassword.value.trim();
       if (pwd && !confirm('将用密码加密备份中的密钥文件（模型 Key、微信登录凭据、2FA 密钥）。\n\n' +
@@ -1023,16 +1180,20 @@ createApp({
     onMounted(() => {
       window.addEventListener('hashchange', parseRoute);
       parseRoute();
-      // 本地存的是网页会话令牌（7 天有效），启动时向后端验真，过期/被吊销就回登录页
+      // 本地存的是网页会话令牌（7 天有效），启动时向后端验真，过期/被吊销就回登录页；
+      // 无有效会话时若存有可信令牌（且本标签页没刚登出过），静默换取新会话免登录
       (async () => {
-        if (!localStorage.getItem(TOKEN_KEY)) return;
-        try {
-          await api('/api/status');
-          authed.value = true;
-          parseRoute();
-        } catch (e) {
-          localStorage.removeItem(TOKEN_KEY);
+        if (localStorage.getItem(TOKEN_KEY)) {
+          try {
+            await api('/api/status');
+            authed.value = true;
+            parseRoute();
+            return;
+          } catch (e) {
+            localStorage.removeItem(TOKEN_KEY);
+          }
         }
+        if (await tryTrustedLogin()) parseRoute();
       })();
     });
     onUnmounted(() => { window.removeEventListener('hashchange', parseRoute); stopStatusTimer(); });
@@ -1042,7 +1203,10 @@ createApp({
       profileEditor, profileSaving, profileEditError, profileSchema, startProfileEdit, saveProfileEdit,
       authed, tokenInput, loginChecking, loginError, login, logout,
       authStage, codeInput, setupSecret, setupOtpauth, setupQr,
-      enable2FA, verify2FA, backToToken,
+      enable2FA, verify2FA, backToToken, trustDevice,
+      archive, archiveBusy, archiveResult, archiveForm,
+      loadArchive, saveArchiveSettings, runArchive, restoreArchive,
+      trustedList, trustedBusy, loadTrusted, revokeTrusted, revokeAllTrusted,
       route, contacts, contactsTotal, contactsHasMore, loadingContacts, search, searchApplied, showMerged,
       loadContacts, loadMoreContacts, applySearch, clearSearch,
       contact, loadingDetail, detailTab, messages, messagesLoading, messagesHasMore,

@@ -93,6 +93,13 @@ func main() {
 		startAssistantScheduler(db, llmClient)
 	}
 
+	// 消息归档：建表 + 每日自动归档调度（未启用时调度器只读一行配置即返回）
+	if err := ensureArchiveTables(db); err != nil {
+		slog.Warn("消息归档数据表初始化失败", "err", err)
+	} else {
+		startArchiveScheduler(db)
+	}
+
 	// 启动 REST API（供 Windows 桌面版远程调用）；apiPort 填负数表示禁用
 	if cfg.APIPort > 0 {
 		apiSrv := startAPIServer(db, llmClient, client, cfg, cfg.APIPort)

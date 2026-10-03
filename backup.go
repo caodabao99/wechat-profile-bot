@@ -67,6 +67,7 @@ var backupTables = []string{
 	"contacts",
 	"contact_aliases",
 	"messages",
+	"messages_archive",
 	"profile_history",
 	"merge_log",
 }
@@ -568,6 +569,10 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 	// 先清空目标（子表→父表）
 	for i := len(backupTables) - 1; i >= 0; i-- {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM main.`+quoteIdent(backupTables[i])); err != nil {
+			// 目标库还没有该表（如归档表未建）就跳过，下面的拷贝会因 0 同名列同样跳过
+			if strings.Contains(err.Error(), "no such table") {
+				continue
+			}
 			return nil, fmt.Errorf("清空 %s 失败: %w", backupTables[i], err)
 		}
 	}

@@ -13,12 +13,14 @@
 - **联系人管理**：备注、合并（换昵称后关联）、撤销合并、删除
 - **REST API**：内置 HTTP 接口（默认端口 17965），Windows 桌面版可远程复用同一份数据与模型分析
 - **关系助手**（网页端，默认关闭）：重要日子提醒、久未联系提醒、亲密度评分、AI 情绪预警，每日提醒 / 每周报告通过 SMTP 邮件发送
+- **消息归档**：超过保留期（默认 730 天 ≈ 2 年）的旧消息可一键或每日自动移入同库归档表，缩小活动数据、加快日常查询；随时可按联系人或全部恢复，随备份一起导出
+- **可信设备（免登录）**：登录时勾选「信任此设备」，该浏览器 90 天内打开网页免输 Token 和动态验证码（使用即自动续期）；可在网页端查看、单独或全部吊销
 
 ## 快速开始
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.4.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.0.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -35,7 +37,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -253,7 +255,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.4.0.tar.gz`，得到 `wechat-profile-bot:v2.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.0.0.tar.gz`，得到 `wechat-profile-bot:v3.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -508,10 +510,33 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 | `ilink_credentials.json` | 微信登录凭据，删掉需重新扫码 |
 | `totp_secret.json` | 网页登录的 2FA 密钥，删掉后下次登录重新绑定 |
 | `web_sessions.json` | 网页会话令牌（7 天有效），刻意不进备份 |
+| `trusted_clients.json` | 可信设备令牌（90 天免登录，使用即续期），刻意不进备份，可在网页端吊销 |
 
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v3.0.0（2026-10-03）
+
+**新增：消息归档（默认关闭，对现有功能零侵入）**
+
+- 把超过保留期（默认 730 天 ≈ 2 年，可配 30 ~ 36500 天）的旧消息从 `messages` 表移入同库的 `messages_archive` 归档表，缩小活动数据、加快日常查询
+- 网页端「备份」页新增「消息归档」卡片：开关每日自动归档（每 24 小时跑一次）、设置保留天数、立即归档、查看活动/已归档/可归档统计与按联系人明细
+- 随时可恢复：按单个联系人或一键恢复全部；联系人已删除的归档消息不会写回（避免悬空），原地保留并单独标注
+- 安全性：归档/恢复都在单事务里先复制、确认入档后再删除，`msg_hash` 撞车也不丢消息；`msg_time` 为空或非法的历史数据原地保留，宁少归不错归
+- 归档表与主库同一个 SQLite 文件，备份（VACUUM INTO）天然覆盖，恢复时随表一起搬回
+
+**新增：可信设备（免重复登录）**
+
+- 登录页新增「信任此设备」勾选（默认勾选）：完整通过 Token + 2FA 登录后签发一枚 90 天有效的长效令牌存在浏览器，之后打开网页免输 Token 和动态验证码，每次使用自动滑动续期
+- 网页端「备份」页新增「可信设备」卡片：查看全部可信设备（名称、打码令牌、添加/最近使用/到期时间、最近 IP）、单独吊销、一键吊销全部
+- 安全边界：免登录换取会话仍受 IP 白名单和封禁名单约束；关闭 2FA 时自动吊销全部可信设备；令牌文件 `trusted_clients.json` 权限 0600、不进备份；设备数上限 20 台，超出自动淘汰最久未使用的
+- 浏览器端点「退出登录」只对本标签页生效（不会立刻又自动登进去），重新打开页面仍免登录；要彻底退出请在「可信设备」里吊销
+
+**升级说明**
+
+- 两项功能默认均不改变现有行为：归档默认不启用（不开启就只是多建两张空表），可信设备只在登录时勾选才生效；`config.json` 格式不变，直接替换二进制/镜像升级即可
+- 升级后请强制刷新一次网页（Ctrl/Cmd + Shift + R）
 
 ### v2.4.0（2026-10-03）
 
