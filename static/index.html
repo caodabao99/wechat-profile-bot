@@ -430,10 +430,10 @@
 （内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
 
 【回复辅助（仅展示，不代发）】
-改写 昵称 | 风格 | 原回复 — 风格：稳妥得体/简洁直接/亲切热情/委婉留余地
-草稿检查 昵称 | 准备发送的话 — 检查歧义并给出改进版本
+改写 昵称｜风格｜原回复 — 竖线中英文输入法都可以；风格：稳妥得体/简洁直接/亲切热情/委婉留余地
+草稿检查 昵称｜准备发送的话 — 检查歧义并给出改进版本
 画像变化 昵称 — 对比当前与上一历史画像，不调用模型
-昵称含空格也可使用，竖线分隔；原文中的竖线会保留。
+昵称含空格也可使用；原文中的竖线会保留。
 
 【查询类】
 画像 [昵称]        — 查看联系人画像（不填昵称显示最近更新的）
@@ -451,7 +451,7 @@
 删除 昵称           — 删除联系人及其所有数据（需再回复「确认删除 昵称」）
 
 【系统类】
-状态           — 查看登录和运行状态
+状态           — 查看登录、运行状态和服务器磁盘/内存（磁盘将满会提醒备份迁移）
 重登           — 重新扫码登录（会话过期时用）
 
 【提示】
@@ -465,21 +465,33 @@
   </main>
 
   <div class="mask" v-if="profileEditor">
-    <form class="card modal" style="max-height:90vh;overflow-y:auto" @submit.prevent="saveProfileEdit">
+    <form class="card modal pe-modal" style="max-height:90vh;overflow-y:auto" @submit.prevent="saveProfileEdit">
       <h2>编辑当前画像</h2>
-      <p class="hint">清空字段或列表项即可删除。再次 AI 生成可能重新提取这些信息。</p>
+      <p class="hint">分节与画像页完全一致；清空字段或列表项即可删除，再次 AI 生成可能重新提取。</p>
       <fieldset :disabled="profileSaving" style="border:0;padding:0">
-        <label v-for="field in profileFields" :key="field[0]" style="display:block;margin:12px 0">
-          {{ field[1] }}{{ field[2] ? '（每行一项）' : '' }}
-          <textarea class="text-input" :rows="field[2] ? 3 : 2" v-model="profileEditor.values[field[0]]"></textarea>
-        </label>
-        <p>意图模式</p>
-        <div v-for="(row, i) in profileEditor.intents" :key="i" style="margin:10px 0">
-          <input class="text-input" v-model="row.name" aria-label="意图名称" placeholder="意图名称">
-          <textarea class="text-input" v-model="row.description" aria-label="意图描述" placeholder="典型表现"></textarea>
-          <button type="button" class="btn sm" @click="profileEditor.intents.splice(i, 1)">删除此意图</button>
+        <div class="pe-sec" v-for="sec in profileSchema" :key="sec.title">
+          <h3 class="pe-sec-title">{{ sec.title }}</h3>
+          <template v-for="f in sec.fields" :key="f.path">
+            <!-- 典型意图：名称 + 表现逐行编辑，与查看时「- 名称：表现」对应 -->
+            <div v-if="f.kind === 'map'">
+              <div class="pe-intent-row" v-for="(row, i) in profileEditor.intents" :key="i">
+                <input class="text-input pe-intent-name" v-model="row.name" aria-label="意图名称" placeholder="意图名称">
+                <input class="text-input" v-model="row.description" aria-label="典型表现" placeholder="典型表现（可留空）">
+                <button type="button" class="btn sm" @click="profileEditor.intents.splice(i, 1)">删除</button>
+              </div>
+              <button type="button" class="btn sm" @click="profileEditor.intents.push({name:'',description:''})">添加意图</button>
+            </div>
+            <label v-else style="display:block;margin:8px 0">
+              <span class="pe-label">
+                <template v-if="f.label">{{ f.label }}</template>
+                <template v-else>{{ sec.title }}</template>
+                <em class="pe-hint" v-if="f.kind === 'list'">每行一项</em>
+                <em class="pe-hint" v-else-if="f.hint">{{ f.hint }}</em>
+              </span>
+              <textarea class="text-input" :rows="f.kind === 'list' ? 3 : 2" v-model="profileEditor.values[f.path]"></textarea>
+            </label>
+          </template>
         </div>
-        <button type="button" class="btn sm" @click="profileEditor.intents.push({name:'',description:''})">添加意图</button>
       </fieldset>
       <p role="alert" v-if="profileEditError">{{ profileEditError }}</p>
       <div class="modal-actions">

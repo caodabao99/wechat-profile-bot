@@ -244,3 +244,28 @@ func TestAssistanceAPIContract(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitAssistArgs(t *testing.T) {
+	// 半角 |、全角 ｜、中英混排都应切成相同的三段
+	want := []string{"小齐", "简洁直接", "嗯好，那再说"}
+	cases := []string{
+		"小齐|简洁直接|嗯好，那再说",
+		"小齐｜简洁直接｜嗯好，那再说",
+		"小齐｜简洁直接|嗯好，那再说",
+	}
+	for _, in := range cases {
+		if got := splitAssistArgs(in, 3); !reflect.DeepEqual(got, want) {
+			t.Fatalf("splitAssistArgs(%q) = %v, want %v", in, got, want)
+		}
+	}
+	// 原回复里的竖线（半角/全角）在最后一段保留；全角统一识别为半角
+	got := splitAssistArgs("小齐｜简洁直接｜a｜b|c", 3)
+	wantKeep := []string{"小齐", "简洁直接", "a|b|c"}
+	if !reflect.DeepEqual(got, wantKeep) {
+		t.Fatalf("got=%v want=%v", got, wantKeep)
+	}
+	// 草稿检查两段；昵称里的空格不受影响
+	if got := splitAssistArgs(" 张 三 ｜明天有空吗", 2); !reflect.DeepEqual(got, []string{" 张 三 ", "明天有空吗"}) {
+		t.Fatalf("got=%v", got)
+	}
+}

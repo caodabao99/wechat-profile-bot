@@ -331,10 +331,10 @@ func (b *Bot) helpText() string {
 （内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
 
 【回复辅助（仅展示，不代发）】
-改写 昵称 | 风格 | 原回复 — 风格：稳妥得体/简洁直接/亲切热情/委婉留余地
-草稿检查 昵称 | 准备发送的话 — 检查歧义并给出改进版本
+改写 昵称｜风格｜原回复 — 竖线中英文输入法都可以；风格：稳妥得体/简洁直接/亲切热情/委婉留余地
+草稿检查 昵称｜准备发送的话 — 检查歧义并给出改进版本
 画像变化 昵称 — 对比当前与上一历史画像，不调用模型
-昵称含空格也可使用，竖线分隔；原文中的竖线会保留。
+昵称含空格也可使用；原文中的竖线会保留。
 
 【查询类】
 画像 [昵称]        — 查看联系人画像（不填昵称显示最近更新的）
@@ -352,7 +352,7 @@ func (b *Bot) helpText() string {
 删除 昵称           — 删除联系人及其所有数据（需再回复「确认删除 昵称」）
 
 【系统类】
-状态           — 查看登录和运行状态
+状态           — 查看登录、运行状态和服务器磁盘/内存（磁盘将满会提醒备份迁移）
 重登           — 重新扫码登录（会话过期时用）
 
 【提示】
@@ -906,8 +906,12 @@ func (b *Bot) status() string {
 		dbStatus = "异常: " + err.Error()
 	}
 
-	return fmt.Sprintf("运行状态\n登录状态: %s\nBot ID: %s\n用户 ID: %s\n数据库: %s",
-		status, b.client.GetBotID(), b.client.GetUserID(), dbStatus)
+	// 服务器资源（重点是数据盘剩余空间），让用户能在微信里提前发现磁盘将满，
+	// 赶在写满前备份并迁移服务器。
+	sysBlock := CollectSysInfo(filepath.Dir(dbPath())).WeChatServerBlock()
+
+	return fmt.Sprintf("运行状态\n登录状态: %s\nBot ID: %s\n用户 ID: %s\n数据库: %s%s",
+		status, b.client.GetBotID(), b.client.GetUserID(), dbStatus, sysBlock)
 }
 
 // handleChatLog 处理粘贴的聊天记录（复用 ingestAndStore 核心逻辑）

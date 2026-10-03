@@ -239,6 +239,16 @@ textarea.text-input { resize: vertical; }
 .modal { max-width: 520px; width: 100%; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
 
+/* ---------- 画像编辑弹窗：分节与画像查看页一一对应 ---------- */
+.pe-modal { max-width: 680px; }
+.pe-sec { padding: 10px 0 4px; border-top: 1px solid #eef0f3; }
+.pe-sec:first-of-type { border-top: 0; }
+.pe-sec-title { margin: 4px 0 8px; font-size: 14px; color: #4338ca; }
+.pe-label { display: block; font-size: 12.5px; color: #374151; margin-bottom: 3px; }
+.pe-hint { font-style: normal; color: #9ca3af; font-size: 11.5px; margin-left: 6px; font-weight: normal; }
+.pe-intent-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.pe-intent-name { max-width: 150px; }
+
 /* ---------- 状态徽章 ---------- */
 .chip {
   display: inline-block; padding: 1px 9px; border-radius: 999px;

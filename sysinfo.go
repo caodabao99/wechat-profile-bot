@@ -1,14 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
 
 // appVersion 程序版本号，/api/status 与日志使用
-const appVersion = "v2.2"
+const appVersion = "v2.3.1"
 
 // progStart 进程启动时刻（包初始化即记录，早于 main 里的扫码登录）
 var progStart = time.Now()
@@ -126,4 +128,69 @@ func CollectSysInfo(diskPath string) SysInfo {
 
 func roundPercent(v float64) float64 {
 	return float64(int64(v*10+0.5)) / 10
+}
+
+// formatSizeMB 把 MB 数转成易读字符串，与网页端 fmtMB 口径一致（≥1024MB 显示一位小数 GB）。
+func formatSizeMB(mb int64) string {
+	if mb >= 1024 {
+		return fmt.Sprintf("%.1f GB", float64(mb)/1024)
+	}
+	return fmt.Sprintf("%d MB", mb)
+}
+
+// formatUptime 把秒数转成「3天2小时10分」式中文时长。
+func formatUptime(sec int64) string {
+	if sec < 0 {
+		sec = 0
+	}
+	d := sec / 86400
+	h := sec % 86400 / 3600
+	m := sec % 3600 / 60
+	var parts []string
+	if d > 0 {
+		parts = append(parts, fmt.Sprintf("%d天", d))
+	}
+	if h > 0 {
+		parts = append(parts, fmt.Sprintf("%d小时", h))
+	}
+	if m > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%d分", m))
+	}
+	return strings.Join(parts, "")
+}
+
+// WeChatServerBlock 渲染微信「状态」命令里的服务器资源段落。
+// 重点是数据盘剩余空间：磁盘写满会导致数据库写入失败，
+// 阈值与网页状态页一致（≥70% 提醒、≥90% 紧急），提示用户提前备份迁移。
+func (s SysInfo) WeChatServerBlock() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n已运行: %s", formatUptime(s.UptimeSec))
+	fmt.Fprintf(&b, "\n\n服务器资源（数据目录: %s）", s.DiskPath)
+
+	if s.DiskTotalMB > 0 {
+		usedMB := s.DiskTotalMB - s.DiskFreeMB
+		fmt.Fprintf(&b, "\n磁盘: 已用 %s / %s（%.0f%%），剩余 %s",
+			formatSizeMB(usedMB), formatSizeMB(s.DiskTotalMB), s.DiskUsedPercent, formatSizeMB(s.DiskFreeMB))
+	} else {
+		b.WriteString("\n磁盘: 采集失败")
+	}
+
+	if s.MemTotalMB > 0 {
+		fmt.Fprintf(&b, "\n内存: %s / %s（%.0f%%）",
+			formatSizeMB(s.MemTotalMB-s.MemAvailableMB), formatSizeMB(s.MemTotalMB), s.MemUsedPercent)
+	}
+	if s.Load1 >= 0 {
+		fmt.Fprintf(&b, "\n负载: %.2f / %.2f / %.2f（%d 核）", s.Load1, s.Load5, s.Load15, s.NumCPU)
+	}
+	fmt.Fprintf(&b, "\n程序占用: CPU %.1f%%，内存 %s", s.ProcessCPUPercent, formatSizeMB(s.ProcessRSSMB))
+
+	switch {
+	case s.DiskTotalMB > 0 && s.DiskUsedPercent >= 90:
+		fmt.Fprintf(&b, "\n【紧急】磁盘已用 %.0f%%，仅剩 %s！磁盘写满会导致数据库异常，请尽快到网页端备份下载，然后迁移到磁盘更大的服务器",
+			s.DiskUsedPercent, formatSizeMB(s.DiskFreeMB))
+	case s.DiskTotalMB > 0 && s.DiskUsedPercent >= 70:
+		fmt.Fprintf(&b, "\n【提醒】磁盘已用 %.0f%%，剩余 %s，建议提前在网页端备份；空间继续减少请准备迁移服务器",
+			s.DiskUsedPercent, formatSizeMB(s.DiskFreeMB))
+	}
+	return b.String()
 }

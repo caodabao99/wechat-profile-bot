@@ -20,7 +20,7 @@ func TestSuggestedReplies(t *testing.T) {
 		input map[string]interface{}
 		want  []string
 	}{
-		{map[string]interface{}{"suggested_replies": []interface{}{" 你好 ", "", "你好", 12, "明天见", "谢谢", "第四条"}}, []string{"你好", "明天见", "谢谢"}},
+		{map[string]interface{}{"suggested_replies": []interface{}{" 你好 ", "", "你好", 12, "明天见", "谢谢", "第四条", "第五条挤掉"}}, []string{"你好", "明天见", "谢谢", "第四条"}},
 		{map[string]interface{}{"suggested_replies": []string{" a ", "a", "b"}}, []string{"a", "b"}},
 		{map[string]interface{}{"suggested_replies": []interface{}{nil}, "suggested_reply": " 旧回复 "}, []string{"旧回复"}},
 		// 新版对象数组：取 text/reply 字段，风格名非法时回退默认风格
@@ -44,7 +44,7 @@ func TestAnalyzeRepliesSingleCall(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"suggested_replies\":[\" 好的 \",\"好的\",\"收到\",\"谢谢\"]}"}}]}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"suggested_replies\":[\" 好的 \",\"好的\",\"收到\",\"谢谢\",\"行吧\"]}"}}]}`)
 	}))
 	defer server.Close()
 	cfg := &Config{}
@@ -53,7 +53,7 @@ func TestAnalyzeRepliesSingleCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 1 || result["suggested_reply"] != "好的" || len(suggestedReplies(result)) != 3 {
+	if calls.Load() != 1 || result["suggested_reply"] != "好的" || len(suggestedReplies(result)) != 4 {
 		t.Fatalf("calls=%d result=%v", calls.Load(), result)
 	}
 	text, replies := formatIntentResult(result)
@@ -61,20 +61,48 @@ func TestAnalyzeRepliesSingleCall(t *testing.T) {
 	if strings.Contains(text, "【稳妥得体】") || strings.Contains(text, "建议回复 1") {
 		t.Fatalf("建议回复不应出现在主体文本中: %s", text)
 	}
-	if len(replies) != 3 {
+	if len(replies) != 4 {
 		t.Fatalf("replies=%v", replies)
 	}
-	// 纯字符串数组按顺序赋予固定风格
+	// 纯字符串数组按顺序赋予固定风格，四种风格全部给出
 	want := []SuggestedReply{
 		{Style: "稳妥得体", Text: "好的"},
 		{Style: "简洁直接", Text: "收到"},
 		{Style: "亲切热情", Text: "谢谢"},
+		{Style: "委婉留余地", Text: "行吧"},
 	}
 	if !reflect.DeepEqual(replies, want) {
 		t.Fatalf("replies=%v want=%v", replies, want)
 	}
 	if !strings.Contains(text, "长按单条即可复制") {
 		t.Fatal(text)
+	}
+}
+
+func TestSuggestedReplyItemsCap(t *testing.T) {
+	// 模型多给（5 条）或重复风格时，最多保留 4 条且四种风格各一，不出现第 5 种/重复风格
+	in := map[string]interface{}{"suggested_replies": []interface{}{
+		map[string]interface{}{"style": "稳妥得体", "text": "一"},
+		map[string]interface{}{"style": "简洁直接", "text": "二"},
+		map[string]interface{}{"style": "亲切热情", "text": "三"},
+		map[string]interface{}{"style": "委婉留余地", "text": "四"},
+		map[string]interface{}{"style": "稳妥得体", "text": "五（应被丢弃）"},
+	}}
+	got := suggestedReplyItems(in)
+	if len(got) != 4 {
+		t.Fatalf("got=%v", got)
+	}
+	seen := map[string]bool{}
+	for _, r := range got {
+		if seen[r.Style] {
+			t.Fatalf("风格重复: %v", got)
+		}
+		seen[r.Style] = true
+	}
+	for _, s := range replyStyles {
+		if !seen[s] {
+			t.Fatalf("缺少风格 %s: %v", s, got)
+		}
 	}
 }
 

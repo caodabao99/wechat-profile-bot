@@ -2,6 +2,51 @@
 /* global Vue */
 const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
 
+// 画像分节定义：查看页（buildSections）与编辑弹窗共用同一份，
+// 保证「看到的字段/顺序/叫法」和「编辑时」完全一致，编辑器不许自造另一套字段。
+// kind: text=单值（label 为空时整节就是一段文字，如概要）；list=每行一项；map=名称：描述。
+const PROFILE_SCHEMA = [
+  { title: '概要', fields: [
+    { path: 'summary', kind: 'text', hint: '一段话概括' },
+  ]},
+  { title: '基本信息', fields: [
+    { path: 'basic_info.occupation', label: '职业', kind: 'text' },
+    { path: 'basic_info.location', label: '所在地', kind: 'text' },
+    { path: 'basic_info.important_dates', label: '重要日子', kind: 'list' },
+  ]},
+  { title: '性格特征', fields: [
+    { path: 'personality', kind: 'list', hint: '每行一项' },
+  ]},
+  { title: '沟通风格', fields: [
+    { path: 'communication_style.reply_length', label: '回复长短', kind: 'text' },
+    { path: 'communication_style.tone', label: '语气', kind: 'text' },
+    { path: 'communication_style.frequent_phrases', label: '口头禅', kind: 'list' },
+    { path: 'communication_style.emoji_usage', label: '表情使用', kind: 'text' },
+    { path: 'communication_style.initiative', label: '主动程度', kind: 'text' },
+  ]},
+  { title: '兴趣爱好', fields: [
+    { path: 'interests', kind: 'list', hint: '每行一项' },
+  ]},
+  { title: '情绪模式', fields: [
+    { path: 'emotional_patterns.stressors', label: '压力源', kind: 'list' },
+    { path: 'emotional_patterns.comfort_topics', label: '安慰有效话题', kind: 'list' },
+    { path: 'emotional_patterns.when_upset', label: '不高兴时的表现', kind: 'text' },
+  ]},
+  { title: '关系', fields: [
+    { path: 'relationship.closeness', label: '亲密程度', kind: 'text' },
+    { path: 'relationship.recent_events', label: '近期共同事件', kind: 'list' },
+    { path: 'relationship.interaction_pattern', label: '互动模式', kind: 'text' },
+  ]},
+  { title: '典型意图', fields: [
+    { path: 'intent_patterns', kind: 'map', hint: '名称 + 典型表现' },
+  ]},
+  { title: '重要事实', fields: [
+    { path: 'important_facts', kind: 'list', hint: '每行一项' },
+  ]},
+];
+
+const profileGetPath = (obj, path) => path.split('.').reduce((o, key) => (o == null ? o : o[key]), obj);
+
 createApp({
   setup() {
     // ---------- 登录态（Token + TOTP 两步登录） ----------
@@ -52,7 +97,7 @@ createApp({
     // 兼容旧版纯字符串数组：[{style,text}] 优先，字符串则按顺序补默认风格
     function normalizeReplies(raw, single) {
       const list = Array.isArray(raw) ? raw : (single ? [single] : []);
-      return list.slice(0, 3).map((r, i) => {
+      return list.slice(0, 4).map((r, i) => {
         if (typeof r === 'string') return { text: r, style: styles[i] || styles[0], target: '', busy: false };
         const text = (r.text || r.reply || '').trim();
         const style = styles.includes(r.style) ? r.style : (styles[i] || styles[0]);
@@ -132,28 +177,36 @@ createApp({
     const profileEditor = ref(null);
     const profileSaving = ref(false);
     const profileEditError = ref('');
-    const profileFields = [
-      ['summary', '核心摘要'], ['basic_info.occupation', '职业'], ['basic_info.location', '城市/地区'],
-      ['basic_info.important_dates', '重要日子', true], ['personality', '性格特征', true],
-      ['communication_style.reply_length', '回复长短'], ['communication_style.tone', '语气'],
-      ['communication_style.frequent_phrases', '常用表达', true], ['communication_style.emoji_usage', '表情习惯'],
-      ['communication_style.initiative', '主动程度'], ['interests', '兴趣爱好', true],
-      ['emotional_patterns.stressors', '压力源/雷点', true], ['emotional_patterns.comfort_topics', '安慰话题', true],
-      ['emotional_patterns.when_upset', '不高兴时的表现'], ['relationship.closeness', '亲密程度'],
-      ['relationship.recent_events', '近期共同事件', true], ['relationship.interaction_pattern', '互动模式'],
-      ['important_facts', '重要事实', true],
-    ];
+    // 编辑器按 PROFILE_SCHEMA 的分节铺开，与画像查看页同一套字段定义。
+    const profileSchema = PROFILE_SCHEMA;
     function startProfileEdit() {
       try {
         const base = contact.value.profileJson || '';
         const p = JSON.parse(base || '{}') || {};
         const values = {};
-        for (const [path, , list] of profileFields) {
-          let v = path.split('.').reduce((obj, key) => obj && obj[key], p);
-          if (path === 'basic_info.important_dates' && v && !Array.isArray(v)) v = Object.entries(v).map(([k, val]) => k + ': ' + val);
-          values[path] = list ? (v || []).join('\n') : (v || '');
+        for (const sec of profileSchema) {
+          for (const f of sec.fields) {
+            if (f.kind === 'map') continue; // 典型意图单独用 name/description 行编辑
+            const v = profileGetPath(p, f.path);
+            if (f.kind === 'list') {
+              if (Array.isArray(v)) {
+                values[f.path] = v.filter(x => x !== null && x !== '').map(x => String(x)).join('\n');
+              } else if (v && typeof v === 'object') {
+                // important_dates 旧快照可能是 {生日: '5月1日'} 对象，转成每行「键: 值」
+                values[f.path] = Object.entries(v).map(([k, val]) => k + ': ' + val).join('\n');
+              } else {
+                values[f.path] = v == null || v === '' ? '' : String(v);
+              }
+            } else {
+              values[f.path] = v == null ? '' : String(v);
+            }
+          }
         }
-        profileEditor.value = { id: contact.value.id, base, values, intents: Object.entries(p.intent_patterns || {}).map(([name, description]) => ({ name, description })) };
+        const intentObj = p.intent_patterns;
+        const intents = (intentObj && typeof intentObj === 'object' && !Array.isArray(intentObj))
+          ? Object.keys(intentObj).sort().map(name => ({ name, description: String(intentObj[name] ?? '') }))
+          : [];
+        profileEditor.value = { id: contact.value.id, base, values, intents };
         profileEditError.value = '';
       } catch (e) { toast('画像无法解析：' + e.message, 'error'); }
     }
@@ -161,11 +214,17 @@ createApp({
       if (profileSaving.value) return;
       const draft = profileEditor.value;
       const p = {};
-      for (const [path, , list] of profileFields) {
-        const keys = path.split('.');
-        let obj = p;
-        for (const key of keys.slice(0, -1)) obj = obj[key] || (obj[key] = {});
-        obj[keys[keys.length - 1]] = list ? draft.values[path].split('\n').map(s => s.trim()).filter(Boolean) : draft.values[path].trim();
+      for (const sec of profileSchema) {
+        for (const f of sec.fields) {
+          if (f.kind === 'map') continue;
+          const keys = f.path.split('.');
+          let obj = p;
+          for (const key of keys.slice(0, -1)) obj = obj[key] || (obj[key] = {});
+          const raw = draft.values[f.path] || '';
+          obj[keys[keys.length - 1]] = f.kind === 'list'
+            ? raw.split('\n').map(s => s.trim()).filter(Boolean)
+            : raw.trim();
+        }
       }
       p.intent_patterns = Object.create(null);
       for (const row of draft.intents) {
@@ -487,65 +546,30 @@ createApp({
       let p;
       try { p = JSON.parse(pj); } catch (e) { return []; }
       const secs = [];
-      const push = (title, lines) => {
-        if (lines && lines.length) secs.push({ title, lines });
-      };
-      push('概要', p.summary ? [p.summary] : []);
-      const bi = (p.basic_info && typeof p.basic_info === 'object') ? p.basic_info : {};
-      const biLines = [];
-      if (bi.occupation) biLines.push('职业：' + bi.occupation);
-      if (bi.location) biLines.push('所在地：' + bi.location);
-      const dates = asArr(bi.important_dates);
-      if (dates.length) {
-        biLines.push('重要日子：');
-        dates.forEach(d => biLines.push('- ' + d));
+      for (const sec of PROFILE_SCHEMA) {
+        const lines = [];
+        for (const f of sec.fields) {
+          const v = profileGetPath(p, f.path);
+          if (f.kind === 'map') {
+            if (v && typeof v === 'object' && !Array.isArray(v)) {
+              Object.keys(v).sort().forEach(k => {
+                lines.push('- ' + k + '：' + (v[k] == null ? '' : v[k]));
+              });
+            }
+          } else if (f.kind === 'list') {
+            const arr = asArr(v);
+            if (!arr.length) continue;
+            // 有标签的列表（重要日子/口头禅等）先出一行小标题；性格特征/兴趣爱好这类整节即列表的直接列项
+            if (f.label) lines.push(f.label + '：');
+            arr.forEach(x => lines.push('- ' + x));
+          } else {
+            const s = v == null ? '' : String(v).trim();
+            if (!s) continue;
+            lines.push(f.label ? f.label + '：' + s : s);
+          }
+        }
+        if (lines.length) secs.push({ title: sec.title, lines });
       }
-      push('基本信息', biLines);
-      push('性格特征', asArr(p.personality).map(x => '- ' + x));
-      const cs = (p.communication_style && typeof p.communication_style === 'object') ? p.communication_style : {};
-      const csLines = [];
-      if (cs.reply_length) csLines.push('回复长短：' + cs.reply_length);
-      if (cs.tone) csLines.push('语气：' + cs.tone);
-      const phrases = asArr(cs.frequent_phrases);
-      if (phrases.length) {
-        csLines.push('口头禅：');
-        phrases.forEach(x => csLines.push('- ' + x));
-      }
-      if (cs.emoji_usage) csLines.push('表情使用：' + cs.emoji_usage);
-      if (cs.initiative) csLines.push('主动程度：' + cs.initiative);
-      push('沟通风格', csLines);
-      push('兴趣爱好', asArr(p.interests).map(x => '- ' + x));
-      const ep = (p.emotional_patterns && typeof p.emotional_patterns === 'object') ? p.emotional_patterns : {};
-      const epLines = [];
-      const stressors = asArr(ep.stressors);
-      if (stressors.length) {
-        epLines.push('压力源：');
-        stressors.forEach(x => epLines.push('- ' + x));
-      }
-      const comforts = asArr(ep.comfort_topics);
-      if (comforts.length) {
-        epLines.push('安慰有效话题：');
-        comforts.forEach(x => epLines.push('- ' + x));
-      }
-      if (ep.when_upset) epLines.push('不高兴时的表现：' + ep.when_upset);
-      push('情绪模式', epLines);
-      const rel = (p.relationship && typeof p.relationship === 'object') ? p.relationship : {};
-      const relLines = [];
-      if (rel.closeness) relLines.push('亲密程度：' + rel.closeness);
-      const events = asArr(rel.recent_events);
-      if (events.length) {
-        relLines.push('近期共同事件：');
-        events.forEach(x => relLines.push('- ' + x));
-      }
-      if (rel.interaction_pattern) relLines.push('互动模式：' + rel.interaction_pattern);
-      push('关系', relLines);
-      if (p.intent_patterns && typeof p.intent_patterns === 'object' && !Array.isArray(p.intent_patterns)
-        && Object.keys(p.intent_patterns).length) {
-        const ipLines = Object.keys(p.intent_patterns).sort()
-          .map(k => '- ' + k + '：' + p.intent_patterns[k]);
-        push('典型意图', ipLines);
-      }
-      push('重要事实', asArr(p.important_facts).map(x => '- ' + x));
       return secs;
     }
 
@@ -921,7 +945,7 @@ createApp({
 
     return {
       assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges, closeChanges,
-      profileEditor, profileSaving, profileEditError, profileFields, startProfileEdit, saveProfileEdit,
+      profileEditor, profileSaving, profileEditError, profileSchema, startProfileEdit, saveProfileEdit,
       authed, tokenInput, loginChecking, loginError, login, logout,
       authStage, codeInput, setupSecret, setupOtpauth, setupQr,
       enable2FA, verify2FA, backToToken,
