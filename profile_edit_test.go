@@ -23,6 +23,12 @@ func TestSuggestedReplies(t *testing.T) {
 		{map[string]interface{}{"suggested_replies": []interface{}{" 你好 ", "", "你好", 12, "明天见", "谢谢", "第四条"}}, []string{"你好", "明天见", "谢谢"}},
 		{map[string]interface{}{"suggested_replies": []string{" a ", "a", "b"}}, []string{"a", "b"}},
 		{map[string]interface{}{"suggested_replies": []interface{}{nil}, "suggested_reply": " 旧回复 "}, []string{"旧回复"}},
+		// 新版对象数组：取 text/reply 字段，风格名非法时回退默认风格
+		{map[string]interface{}{"suggested_replies": []interface{}{
+			map[string]interface{}{"style": "亲切热情", "text": "嗨～"},
+			map[string]interface{}{"style": "胡编的风格", "text": "在吗"},
+			map[string]interface{}{"style": "简洁直接", "reply": "说"},
+		}}, []string{"嗨～", "在吗", "说"}},
 		{map[string]interface{}{}, []string{}},
 	} {
 		if got := suggestedReplies(tt.input); !reflect.DeepEqual(got, tt.want) {
@@ -50,11 +56,43 @@ func TestAnalyzeRepliesSingleCall(t *testing.T) {
 	if calls.Load() != 1 || result["suggested_reply"] != "好的" || len(suggestedReplies(result)) != 3 {
 		t.Fatalf("calls=%d result=%v", calls.Load(), result)
 	}
-	text := formatIntentResult(result)
-	for _, s := range []string{"建议回复 1: 好的", "建议回复 2: 收到", "建议回复 3: 谢谢"} {
-		if !strings.Contains(text, s) {
-			t.Fatal(text)
-		}
+	text, replies := formatIntentResult(result)
+	// 建议回复不进主体文本，逐条单独返回（微信里方便长按复制单条）
+	if strings.Contains(text, "【稳妥得体】") || strings.Contains(text, "建议回复 1") {
+		t.Fatalf("建议回复不应出现在主体文本中: %s", text)
+	}
+	if len(replies) != 3 {
+		t.Fatalf("replies=%v", replies)
+	}
+	// 纯字符串数组按顺序赋予固定风格
+	want := []SuggestedReply{
+		{Style: "稳妥得体", Text: "好的"},
+		{Style: "简洁直接", Text: "收到"},
+		{Style: "亲切热情", Text: "谢谢"},
+	}
+	if !reflect.DeepEqual(replies, want) {
+		t.Fatalf("replies=%v want=%v", replies, want)
+	}
+	if !strings.Contains(text, "长按单条即可复制") {
+		t.Fatal(text)
+	}
+}
+
+func TestSuggestedReplyItemsStyle(t *testing.T) {
+	// 模型给了非法风格名 → 回退稳妥得体；同风格重复 → 补一个未使用的风格
+	in := map[string]interface{}{"suggested_replies": []interface{}{
+		map[string]interface{}{"style": "火星语", "text": "第一条"},
+		map[string]interface{}{"style": "稳妥得体", "text": "第二条"},
+		map[string]interface{}{"style": "简洁直接", "text": "第三条"},
+	}}
+	got := suggestedReplyItems(in)
+	want := []SuggestedReply{
+		{Style: "稳妥得体", Text: "第一条"},
+		{Style: "简洁直接", Text: "第二条"},
+		{Style: "亲切热情", Text: "第三条"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got=%v want=%v", got, want)
 	}
 }
 

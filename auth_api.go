@@ -83,7 +83,7 @@ func (s *apiServer) hAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	if !tokenMatches(strings.TrimSpace(req.Token), s.cfg.APIToken) {
 		// 登录通道第一因素失败：计入封禁计数（同一 IP 累计 10 次即永久封禁）
-		s.guard.RecordAuthFailure(clientIP(r), "Token 错误")
+		s.guard.RecordAuthFailure(s.realIP(r), "Token 错误")
 		writeErr(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
@@ -125,7 +125,7 @@ func (s *apiServer) issueSession(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "会话创建失败")
 		return
 	}
-	s.guard.RecordAuthSuccess(clientIP(r))
+	s.guard.RecordAuthSuccess(s.realIP(r))
 	writeJSON(w, http.StatusOK, map[string]string{"stage": "ok", "session": tok})
 }
 
@@ -136,7 +136,7 @@ func (s *apiServer) hAuthEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.APIToken != "" && !tokenMatches(strings.TrimSpace(req.Token), s.cfg.APIToken) {
-		s.guard.RecordAuthFailure(clientIP(r), "绑定时 Token 错误")
+		s.guard.RecordAuthFailure(s.realIP(r), "绑定时 Token 错误")
 		writeErr(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
@@ -155,7 +155,7 @@ func (s *apiServer) hAuthEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	step, ok := totpValidate(req.Secret, req.Code, 0)
 	if !ok {
-		s.guard.RecordAuthFailure(clientIP(r), "绑定验证码错误")
+		s.guard.RecordAuthFailure(s.realIP(r), "绑定验证码错误")
 		writeErr(w, http.StatusBadRequest, "验证码无效或已过期，请确认验证器时间准确后重试")
 		return
 	}
@@ -178,7 +178,7 @@ func (s *apiServer) hAuthVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.APIToken != "" && !tokenMatches(strings.TrimSpace(req.Token), s.cfg.APIToken) {
-		s.guard.RecordAuthFailure(clientIP(r), "登录时 Token 错误")
+		s.guard.RecordAuthFailure(s.realIP(r), "登录时 Token 错误")
 		writeErr(w, http.StatusUnauthorized, "Token 无效")
 		return
 	}
@@ -192,7 +192,7 @@ func (s *apiServer) hAuthVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	step, ok := totpValidate(f.Secret, req.Code, f.LastUsedStep)
 	if !ok {
-		s.guard.RecordAuthFailure(clientIP(r), "动态码错误")
+		s.guard.RecordAuthFailure(s.realIP(r), "动态码错误")
 		writeErr(w, http.StatusBadRequest, "动态码无效或已过期（同一验证码不能重复使用）")
 		return
 	}
@@ -238,7 +238,7 @@ func (s *apiServer) hAuthDisable(w http.ResponseWriter, r *http.Request) {
 	if _, ok := totpValidate(f.Secret, req.Code, f.LastUsedStep); !ok {
 		// 已持有有效会话才能走到这里，不计入封禁（避免用户手滑输错码把自己封死），
 		// 但要在安全日志留痕：会话令牌若被盗，攻击者会在这里试动态码
-		s.guard.RecordDenied(clientIP(r), "/api/auth/2fa/disable", "关闭2FA动态码错误")
+		s.guard.RecordDenied(s.realIP(r), "/api/auth/2fa/disable", "关闭2FA动态码错误")
 		writeErr(w, http.StatusBadRequest, "动态码无效或已过期")
 		return
 	}
@@ -247,7 +247,7 @@ func (s *apiServer) hAuthDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sessions.revokeAll()
-	s.guard.RecordEvent(clientIP(r), "2FA 已关闭，全部网页会话已吊销")
+	s.guard.RecordEvent(s.realIP(r), "2FA 已关闭，全部网页会话已吊销")
 	slog.Warn("网页端双因素认证已关闭")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

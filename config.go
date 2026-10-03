@@ -28,12 +28,13 @@ type ProfileConfig struct {
 
 // Config 程序总配置
 type Config struct {
-	MyName       string        `json:"myName"`       // 我自己的微信昵称，用于区分消息发送方
-	APIPort      int           `json:"apiPort"`      // REST API 端口（供 Windows 桌面版远程调用）；不填按 17965，填负数表示禁用 API
-	APIToken     string        `json:"apiToken"`     // REST API 认证 Token，桌面端调用时需在请求头携带
-	APIWhitelist []string      `json:"apiWhitelist"` // API 访问 IP 白名单（如 ["1.2.3.4", "192.168.1.0/24"]），空数组=不限制
-	LLM          LLMConfig     `json:"llm"`
-	Profile      ProfileConfig `json:"profile"`
+	MyName         string        `json:"myName"`         // 我自己的微信昵称，用于区分消息发送方
+	APIPort        int           `json:"apiPort"`        // REST API 端口（供 Windows 桌面版远程调用）；不填按 17965，填负数表示禁用 API
+	APIToken       string        `json:"apiToken"`       // REST API 认证 Token，桌面端调用时需在请求头携带
+	APIWhitelist   []string      `json:"apiWhitelist"`   // API 访问 IP 白名单（如 ["1.2.3.4", "192.168.1.0/24"]），空数组=不限制
+	TrustedProxies []string      `json:"trustedProxies"` // 可信反向代理 IP/CIDR（如 ["127.0.0.1", "10.0.0.0/8"]）；仅直连 IP 命中时才采纳 X-Forwarded-For，为空=忽略该头
+	LLM            LLMConfig     `json:"llm"`
+	Profile        ProfileConfig `json:"profile"`
 }
 
 // config 全局配置单例
@@ -49,6 +50,8 @@ const defaultConfigTemplate = `{
   "apiToken": "",
   "_comment4": "apiWhitelist: API 访问 IP 白名单。留空或空数组表示不限制；填写后仅允许列表内的 IP/CIDR 段访问，其他 IP 一律拒绝。如 [\"1.2.3.4\", \"192.168.1.0/24\"]",
   "apiWhitelist": [],
+  "_comment4b": "trustedProxies: 可信反向代理列表，仅在 nginx/Caddy 等反代后部署时填写，内容为反代服务器的来源 IP 或网段（同机反代填 [\"127.0.0.1\"]）。命中时白名单/封禁/限流按 X-Forwarded-For 里的真实访客 IP 判定；直连 IP 不在此列表时一律忽略 X-Forwarded-For（防止伪造）。注意不要把 0.0.0.0/0 之类大网段填进来，否则等于信任所有人伪造的头",
+  "trustedProxies": [],
   "_comment5": "llm: 大模型配置。apiKey 填入你的密钥；baseURL 为 OpenAI 兼容接口地址；model 为模型名称；disableThinking 默认 true 关闭思考/推理模式——本程序不需要推理，开着只会拖慢响应、多耗 token。deepseek-v4-flash、qwen3.8-flash 等默认开思考的模型必须保持 true；不支持该参数的接口会自动忽略",
   "llm": {
     "apiKey": "sk-xxx",

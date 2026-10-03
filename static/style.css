@@ -262,16 +262,76 @@ textarea.text-input { resize: vertical; }
 .toast-enter-active, .toast-leave-active { transition: all .25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(8px); }
 
+/* ---------- 区块标题行（标题+收起按钮） ---------- */
+.block-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 8px; }
+.block-head:first-child { margin-top: 0; }
+
+/* ---------- 候选回复：风格单选条 ---------- */
+.reply-card h3 { margin-bottom: 6px; }
+.rewrite-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
+.rewrite-label { font-size: 13px; color: var(--ink-soft, #6b7280); }
+.style-opt { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; cursor: pointer; user-select: none; padding: 3px 8px; border: 1px solid #e5e7eb; border-radius: 999px; background: #fff; }
+.style-opt:has(input:checked) { border-color: var(--accent); background: #ecfdf5; color: var(--accent2); font-weight: 600; }
+.style-opt input { margin: 0; cursor: pointer; }
+.style-opt:has(input:disabled) { cursor: default; opacity: .55; }
+
+/* ---------- 服务器状态 ---------- */
+.status-head-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.status-grid .status-wide { grid-column: 1 / -1; }
+.status-grid h3 { margin: 0 0 10px; font-size: 15px; }
+.status-err { margin-top: 8px; padding: 7px 10px; border-radius: 8px; background: #fef2f2; color: #b91c1c; font-size: 12.5px; word-break: break-all; }
+
+.meter-block { margin-bottom: 14px; }
+.meter-block:last-child { margin-bottom: 4px; }
+.meter-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 5px; flex-wrap: wrap; }
+.meter-val { color: var(--ink); font-weight: 600; }
+.meter { height: 10px; border-radius: 999px; background: #f3f4f6; overflow: hidden; }
+.meter-bar { height: 100%; border-radius: 999px; transition: width .4s ease; }
+.meter-bar.lv-ok { background: #10b981; }
+.meter-bar.lv-warn { background: #f59e0b; }
+.meter-bar.lv-bad { background: #ef4444; }
+
+.chip.st-ok { background: #ecfdf5; color: #047857; }
+.chip.st-bad { background: #fef2f2; color: #b91c1c; }
+
+@media (max-width: 720px) {
+  .status-grid { grid-template-columns: 1fr; }
+}
+
+.more-row { display: flex; justify-content: center; margin: 6px 0 24px; }
+.more-row .btn { width: 100%; }
+.end-hint { padding: 12px 0 24px; font-size: 13px; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 640px) {
   body { font-size: 14px; }
   .container { padding: 14px 12px 50px; }
   .card { padding: 14px; border-radius: 12px; }
-  .tabs a { padding: 6px 10px; font-size: 13.5px; }
-  .btn.logout { padding: 5px 10px; font-size: 12px; }
-  .dh-actions .btn { flex: 1 1 28%; }
+  /* 顶栏：导航允许横向滚动，不换行挤压布局 */
+  .topbar-inner { gap: 8px; }
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs a { padding: 6px 12px; font-size: 13.5px; white-space: nowrap; }
+  .btn.logout { padding: 5px 10px; font-size: 12px; flex-shrink: 0; }
+  /* 联系人卡片：小屏允许侧标换行（摘要默认已限两行） */
+  .contact-card { flex-wrap: wrap; }
+  /* 详情头部操作：按钮小一点，不强制 flex 比例 */
+  .dh-actions .btn { flex: 1 1 40%; }
+  /* 详情子页签允许横向滚动 */
+  .subtabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .subtabs::-webkit-scrollbar { display: none; }
+  .subtabs a { white-space: nowrap; flex-shrink: 0; }
   .msg-row .m-body { max-width: 88%; }
   .merge-card { flex-direction: column; align-items: stretch; }
+  /* 弹窗占满宽度，上滑关闭 */
+  .modal { max-width: none; width: calc(100% - 24px); margin: auto 12px; max-height: 86vh; overflow-y: auto; }
+  /* 状态页网格单列 */
+  .status-grid { grid-template-columns: 1fr; }
+  .status-wide { grid-column: auto; }
+  /* 备份表格收紧 */
+  .backup-log-table { font-size: 11.5px; }
+  .backup-log-table th, .backup-log-table td { padding: 5px 4px; max-width: 70px; }
 }
 @media (min-width: 641px) and (max-width: 1024px) {
   .container { max-width: 760px; }

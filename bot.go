@@ -331,7 +331,7 @@ func (b *Bot) helpText() string {
 （内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
 
 【回复辅助（仅展示，不代发）】
-改写 昵称 | 更简短 | 原回复 — 风格可选更简短/更自然/更委婉/更直接
+改写 昵称 | 风格 | 原回复 — 风格：稳妥得体/简洁直接/亲切热情/委婉留余地
 草稿检查 昵称 | 准备发送的话 — 检查歧义并给出改进版本
 画像变化 昵称 — 对比当前与上一历史画像，不调用模型
 昵称含空格也可使用，竖线分隔；原文中的竖线会保留。
@@ -971,19 +971,29 @@ func (b *Bot) handleChatLog(msg *ILinkMessage, text string) string {
 			return
 		}
 
-		if analysis := formatIntentResult(result); analysis != "" {
-			// 用缓存中最新的 context_token 发送（比本次消息的 token 更新）
-			b.push(msgFromUserID, analysis)
+		analysis, replies := formatIntentResult(result)
+		if analysis == "" {
+			return
+		}
+		// 用缓存中最新的 context_token 发送（比本次消息的 token 更新）
+		b.push(msgFromUserID, analysis)
+		// 建议回复逐条单独发送：微信里整条结果只能整段复制，
+		// 单独成消息长按就能只复制这一条，方便直接粘贴回复。
+		// 风格标签放在末尾：复制后如不想要标签，从末尾一删即可，比开头好处理。
+		for _, reply := range replies {
+			b.push(msgFromUserID, fmt.Sprintf("%s【%s】", reply.Text, reply.Style))
 		}
 	}()
 
 	return sb.String()
 }
 
-// formatIntentResult 格式化意图分析结果
-func formatIntentResult(result map[string]interface{}) string {
+// formatIntentResult 格式化意图分析结果。
+// 返回的 body 只含分析字段和置信度；建议回复单独返回，由调用方逐条发送
+// （微信里整段消息只能整段复制，建议回复单独成消息才方便长按复制单条）。
+func formatIntentResult(result map[string]interface{}) (string, []SuggestedReply) {
 	if result == nil {
-		return ""
+		return "", nil
 	}
 
 	// get 取字段并统一转成展示用字符串。
@@ -1025,14 +1035,15 @@ func formatIntentResult(result map[string]interface{}) string {
 	if v := get("subtext"); v != "" {
 		fmt.Fprintf(&sb, "潜台词: %s\n", v)
 	}
-	for i, reply := range suggestedReplies(result) {
-		fmt.Fprintf(&sb, "建议回复 %d: %s\n", i+1, reply)
+	replies := suggestedReplyItems(result)
+	if len(replies) > 0 {
+		sb.WriteString("建议回复见下方单独消息，长按单条即可复制\n")
 	}
 	if v := get("confidence"); v != "" {
 		fmt.Fprintf(&sb, "置信度: %s\n", v)
 	}
 
-	return sb.String()
+	return sb.String(), replies
 }
 
 // formatConfidence 把模型给的置信度数字格式化成人能读的文本。

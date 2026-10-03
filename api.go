@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,12 +42,14 @@ type apiServer struct {
 	db       *sql.DB
 	llm      *LLMClient
 	cfg      *Config
+	client   *ILinkClient     // 微信连接状态查询；CLI/测试场景可为 nil
 	sessions *webSessionStore // 网页端 2FA 通过后颁发的会话
 	guard    *securityGuard   // 登录失败计数 + IP 永久封禁 + 安全日志
 	ingestRL *rateLimiter     // /api/ingest 限流，防止 token 泄露后被刷爆 LLM 账单
 }
 
-// clientIP 从请求中提取客户端 IP（去掉端口，兼容 IPv4/IPv6）
+// clientIP 从请求中提取直连客户端 IP（去掉端口，兼容 IPv4/IPv6）。
+// 注意：这是 TCP 连接对端地址，无法伪造；反代场景下它是反代服务器的 IP。
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -55,18 +58,9 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// checkIPWhitelist 检查请求 IP 是否在白名单内。
-// whitelist 为空时不限制（返回 true）；非空时必须命中其中任一 IP 或 CIDR 段。
-func checkIPWhitelist(r *http.Request, whitelist []string) bool {
-	if len(whitelist) == 0 {
-		return true
-	}
-	ipStr := clientIP(r)
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-	for _, entry := range whitelist {
+// ipInList 判断 IP（ipStr 为其字符串形式）是否命中 IP/CIDR 列表。
+func ipInList(ip net.IP, ipStr string, list []string) bool {
+	for _, entry := range list {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -89,11 +83,63 @@ func checkIPWhitelist(r *http.Request, whitelist []string) bool {
 	return false
 }
 
+// realClientIP 返回真实访客 IP。
+// 安全规则：只有 TCP 直连对端（clientIP）在可信代理列表里时，才采纳
+// X-Forwarded-For；否则该头可被任意外部客户端伪造，必须直接忽略。
+// 采纳时从 XFF 链最右侧（离服务最近）向左跳过所有可信代理，第一个非可信
+// 地址即真实访客——这样即使访客在 XFF 左侧伪造 IP，单级反代追加真实地址后
+// 伪造项也不会被采用（nginx $proxy_add_x_forwarded_for 即此结构）。
+func realClientIP(r *http.Request, trustedProxies []string) string {
+	direct := clientIP(r)
+	directIP := net.ParseIP(direct)
+	if directIP == nil || !ipInList(directIP, direct, trustedProxies) {
+		return direct
+	}
+	// XFF: "访客, 代理1, 代理2"，最右是离本服务最近的一跳（已用 direct 验证可信）
+	parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	chain := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			chain = append(chain, p)
+		}
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip := net.ParseIP(chain[i])
+		if ip != nil && ipInList(ip, chain[i], trustedProxies) {
+			continue
+		}
+		return chain[i] // 第一个非可信跳：真实访客（含"无法解析"的异常值也返回，交由白名单拒绝）
+	}
+	if len(chain) > 0 {
+		return chain[0] // 整条链全是可信代理，退而取最左
+	}
+	return direct
+}
+
+func (s *apiServer) realIP(r *http.Request) string {
+	return realClientIP(r, s.cfg.TrustedProxies)
+}
+
+// checkIPWhitelist 检查真实访客 IP 是否在白名单内。
+// whitelist 为空时不限制（返回 true）；非空时必须命中其中任一 IP 或 CIDR 段。
+func checkIPWhitelist(r *http.Request, whitelist, trustedProxies []string) bool {
+	if len(whitelist) == 0 {
+		return true
+	}
+	ipStr := realClientIP(r, trustedProxies)
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	return ipInList(ip, ipStr, whitelist)
+}
+
 // startAPIServer 启动 HTTP API 服务（供 Windows 桌面版远程调用）
-func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Server {
+func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config, port int) *http.Server {
 	s := &apiServer{
 		db:       db,
 		llm:      llm,
+		client:   client,
 		cfg:      cfg,
 		sessions: initWebSessionStore(),
 		guard:    newSecurityGuard(),
@@ -112,7 +158,7 @@ func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Ser
 		Addr: fmt.Sprintf(":%d", port),
 		// 安全头 + IP 封禁拦截包在最外层：封禁要覆盖网页界面和静态资源，
 		// 不能只拦 /api/，否则被封的 IP 还能加载页面反复试。
-		Handler: withSecurity(mux, s.guard),
+		Handler: withSecurity(mux, s.guard, cfg.TrustedProxies),
 		// ReadHeaderTimeout 是防 slowloris 慢速攻击的关键。默认值 0 表示永不超时，
 		// 攻击者只发一半请求头就能永久占住连接 + goroutine + 文件描述符，而 IP 白名单
 		// 和 token 检查都发生在"请求头收完整之后"，根本管不到这一层。
@@ -133,6 +179,10 @@ func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Ser
 			slog.Info("API 访问白名单已启用", "allow", cfg.APIWhitelist)
 		} else {
 			slog.Info("API 访问白名单未启用（不限制来源 IP）")
+		}
+		if len(cfg.TrustedProxies) > 0 {
+			slog.Info("可信反向代理已配置", "proxies", cfg.TrustedProxies,
+				"hint", "白名单/封禁按 X-Forwarded-For 真实访客 IP 判定；非可信直连来源的 XFF 头将被忽略")
 		}
 		if cfg.APIToken != "" {
 			slog.Info("API 认证: Bearer Token 已启用")
@@ -157,9 +207,9 @@ func startAPIServer(db *sql.DB, llm *LLMClient, cfg *Config, port int) *http.Ser
 // withSecurity 在业务路由外层套两道防护：安全响应头 + IP 封禁拦截。
 // 封禁检查放在最前面，比 IP 白名单和 token 校验都早——已被封的 IP 连一次业务
 // 处理都不该消耗（否则封禁就失去了"止血"的意义）。
-func withSecurity(next http.Handler, g *securityGuard) http.Handler {
+func withSecurity(next http.Handler, g *securityGuard, trustedProxies []string) http.Handler {
 	return securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := realClientIP(r, trustedProxies)
 		if g.IsBanned(ip) {
 			g.RecordBannedHit(ip, r.URL.Path)
 			writeErr(w, http.StatusForbidden, "该 IP 已被永久封禁，如为误封请在服务器执行 --unban 解封")
@@ -195,8 +245,8 @@ func writeProfileErr(w http.ResponseWriter, err error) {
 // route 路由分发（含 IP 白名单 + Bearer Token 认证）
 func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	// 1. IP 白名单检查（优先于认证，避免被未授权 IP 探测 token）
-	if !checkIPWhitelist(r, s.cfg.APIWhitelist) {
-		s.guard.RecordDenied(clientIP(r), r.URL.Path, "whitelist")
+	if !checkIPWhitelist(r, s.cfg.APIWhitelist, s.cfg.TrustedProxies) {
+		s.guard.RecordDenied(s.realIP(r), r.URL.Path, "whitelist")
 		writeErr(w, http.StatusForbidden, "该 IP 未在白名单内，访问被拒绝")
 		return
 	}
@@ -219,7 +269,7 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		tok := bearerToken(r)
 		if !s.sessions.valid(tok) && !tokenMatches(tok, s.cfg.APIToken) {
 			// 只审计不计数：桌面端 token 配错会高频重试，计入封禁会把用户自己封死
-			s.guard.RecordDenied(clientIP(r), r.URL.Path, "unauthorized")
+			s.guard.RecordDenied(s.realIP(r), r.URL.Path, "unauthorized")
 			writeErr(w, http.StatusUnauthorized, "未授权：请先在网页完成 Token + 2FA 登录，或在请求头携带有效的 apiToken")
 			return
 		}
@@ -395,16 +445,44 @@ func toContactJSON(c *Contact) contactJSON {
 
 func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 	includeMerged := r.URL.Query().Get("includeMerged") == "1"
-	contacts, err := GetAllContacts(s.db, includeMerged)
+	q := r.URL.Query()
+	// 带分页/搜索参数时走分页响应 {list,total,offset,limit}；裸调用保持返回数组，
+	// 兼容桌面端远程模式（它一次性拿全量在本地过滤）。
+	paged := q.Get("paged") == "1" || q.Get("q") != "" || q.Get("offset") != "" || q.Get("limit") != ""
+	if !paged {
+		contacts, err := GetAllContacts(s.db, includeMerged)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		out := make([]contactJSON, 0, len(contacts))
+		for i := range contacts {
+			out = append(out, toContactJSON(&contacts[i]))
+		}
+		writeJSON(w, 200, out)
+		return
+	}
+
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	contacts, total, err := GetContactsPage(s.db, includeMerged, q.Get("q"), offset, limit)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 30 // 与 GetContactsPage 的默认/上限保持一致
 	}
 	out := make([]contactJSON, 0, len(contacts))
 	for i := range contacts {
 		out = append(out, toContactJSON(&contacts[i]))
 	}
-	writeJSON(w, 200, out)
+	writeJSON(w, 200, map[string]interface{}{
+		"list": out, "total": total, "offset": offset, "limit": limit,
+	})
 }
 
 func (s *apiServer) hGetContact(w http.ResponseWriter, r *http.Request, id int64) {
@@ -782,10 +860,10 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 	// 正常用法（人工粘贴聊天记录）一分钟也就几次，120 次的上限碰不到。
 	rlKey := bearerToken(r)
 	if rlKey == "" {
-		rlKey = clientIP(r)
+		rlKey = s.realIP(r)
 	}
 	if ok, retry := s.ingestRL.Allow(rlKey); !ok {
-		s.guard.RecordDenied(clientIP(r), "/api/ingest", "触发限流")
+		s.guard.RecordDenied(s.realIP(r), "/api/ingest", "触发限流")
 		w.Header().Set("Retry-After", strconv.Itoa(retry))
 		writeErr(w, http.StatusTooManyRequests,
 			fmt.Sprintf("请求过于频繁（每分钟最多 %d 次），请 %d 秒后重试", ingestRateLimit, retry))
@@ -853,8 +931,36 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 
 func (s *apiServer) hStatus(w http.ResponseWriter, r *http.Request) {
 	contacts, _ := GetAllContacts(s.db, false)
+
+	var messages int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); err != nil {
+		slog.Warn("状态接口统计消息数失败", "err", err)
+	}
+
+	loggedIn, sessionExpired := false, false
+	if s.client != nil {
+		loggedIn = s.client.IsLoggedIn()
+		sessionExpired = s.client.SessionExpired()
+	}
+
+	// 磁盘统计以数据文件所在目录为准（Docker 下即 /config 挂载卷）
+	dataDir := filepath.Dir(dbPath())
+	sysInfo := CollectSysInfo(dataDir)
+
 	writeJSON(w, 200, map[string]interface{}{
-		"ok":       true,
-		"contacts": len(contacts),
+		"ok":             true,
+		"version":        appVersion,
+		"contacts":       len(contacts),
+		"messages":       messages,
+		"loggedIn":       loggedIn,
+		"sessionExpired": sessionExpired,
+		"poll":           snapshotPollStatus(),
+		"serverTime":     time.Now().Format(time.RFC3339),
+		// clientIp 是服务端按白名单/封禁口径识别到的真实访客 IP；
+		// 反代部署时用它核对 XFF 解析是否符合预期（应显示你的公网 IP 而非反代 IP）
+		"clientIp":         s.realIP(r),
+		"trustedProxy":     len(s.cfg.TrustedProxies) > 0,
+		"whitelistEnabled": len(s.cfg.APIWhitelist) > 0,
+		"sys":              sysInfo,
 	})
 }

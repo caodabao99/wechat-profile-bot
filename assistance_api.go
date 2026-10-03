@@ -54,7 +54,7 @@ func (s *apiServer) hAssistance(w http.ResponseWriter, r *http.Request, id int64
 	}
 	key := bearerToken(r)
 	if key == "" {
-		key = clientIP(r)
+		key = s.realIP(r)
 	}
 	if s.ingestRL != nil {
 		if ok, retry := s.ingestRL.Allow(key); !ok {

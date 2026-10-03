@@ -17,7 +17,7 @@ func (b *Bot) assistCommand(cmd, args string) string {
 	}
 	parts := strings.SplitN(args, "|", n)
 	if len(parts) != n || strings.TrimSpace(parts[0]) == "" {
-		return "用法：改写 昵称 | 更自然 | 原回复\n草稿检查 昵称 | 准备发送的话\n画像变化 昵称"
+		return "用法：改写 昵称 | 风格 | 原回复\n风格可选：稳妥得体 / 简洁直接 / 亲切热情 / 委婉留余地\n草稿检查 昵称 | 准备发送的话\n画像变化 昵称"
 	}
 	id, _, err := FindContactID(b.db, strings.TrimSpace(parts[0]))
 	if err != nil {

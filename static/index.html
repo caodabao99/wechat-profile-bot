@@ -58,6 +58,7 @@
         <a href="#/" :class="{active: route.view==='contacts' || route.view==='detail'}">联系人</a>
         <a href="#/merges" :class="{active: route.view==='merges'}">合并记录</a>
         <a href="#/backup" :class="{active: route.view==='backup'}">备份</a>
+        <a href="#/status" :class="{active: route.view==='status'}">状态</a>
         <a href="#/help" :class="{active: route.view==='help'}">命令说明</a>
       </nav>
       <button class="btn logout" @click="logout">退出</button>
@@ -70,18 +71,22 @@
     <section v-if="route.view==='contacts'">
       <div class="card">
         <div class="search-row">
-          <input class="text-input grow" type="search" v-model="search" placeholder="搜索昵称 / 备注 / 别名（忽略大小写）">
-          <button class="btn ghost sm" @click="loadContacts" :disabled="loadingContacts">刷新</button>
+          <input class="text-input grow" type="search" v-model="search"
+                 placeholder="搜索昵称 / 备注 / 别名（忽略大小写）"
+                 @keyup.enter="applySearch">
+          <button class="btn sm" @click="applySearch" :disabled="loadingContacts">查询</button>
+          <button class="btn ghost sm" v-if="searchApplied" @click="clearSearch" :disabled="loadingContacts">清除</button>
+          <button class="btn ghost sm" @click="loadContacts()" :disabled="loadingContacts">刷新</button>
         </div>
-        <label class="check-row"><input type="checkbox" v-model="showMerged" @change="loadContacts"> 显示已并入的联系人</label>
+        <label class="check-row"><input type="checkbox" v-model="showMerged" @change="loadContacts()"> 显示已并入的联系人</label>
       </div>
 
       <div class="list-head">
-        <h2>联系人 <span class="count" v-if="filteredContacts.length">{{ filteredContacts.length }}</span></h2>
+        <h2>联系人 <span class="count" v-if="contactsTotal">{{ searchApplied ? contactsTotal + ' 条匹配' : contactsTotal }}</span></h2>
       </div>
-      <p class="empty" v-if="!loadingContacts && !filteredContacts.length">没有匹配的联系人</p>
+      <p class="empty" v-if="!loadingContacts && !contacts.length">{{ searchApplied ? '没有匹配的联系人' : '暂无联系人' }}</p>
 
-      <div class="contact-card" v-for="c in filteredContacts" :key="c.id" @click="gotoDetail(c.id)">
+      <div class="contact-card" v-for="c in contacts" :key="c.id" @click="gotoDetail(c.id)">
         <div class="c-main">
           <div class="c-name">{{ displayName(c) }}</div>
           <div class="c-summary" v-if="c.profileSummary">{{ c.profileSummary }}</div>
@@ -95,6 +100,11 @@
           <span class="chip st-purple" v-else-if="c.mergeCount > 0">含{{ c.mergeCount }}人</span>
         </div>
       </div>
+
+      <div class="more-row" v-if="contactsHasMore">
+        <button class="btn" @click="loadMoreContacts" :disabled="loadingContacts">{{ loadingContacts ? '加载中…' : '加载更多（已显示 ' + contacts.length + ' / ' + contactsTotal + '）' }}</button>
+      </div>
+      <p class="empty end-hint" v-else-if="contacts.length > 0 && !searchApplied && contactsTotal > 30">已显示全部 {{ contactsTotal }} 个联系人</p>
     </section>
 
     <!-- ============ 联系人详情 ============ -->
@@ -121,15 +131,16 @@
         </div>
       </div>
 
-      <!-- 页签：画像 / 消息 / 历史 / 统计 -->
+      <!-- 页签：画像 / 辅助 / 消息 / 历史 / 统计 -->
       <nav class="subtabs" v-if="contact">
         <a :class="{active: detailTab==='profile'}" @click.prevent="detailTab = 'profile'" href="#">画像</a>
+        <a :class="{active: detailTab==='assist'}" @click.prevent="detailTab = 'assist'" href="#">辅助</a>
         <a :class="{active: detailTab==='messages'}" @click.prevent="switchTab('messages')" href="#">消息</a>
         <a :class="{active: detailTab==='history'}" @click.prevent="switchTab('history')" href="#">历史</a>
         <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
       </nav>
 
-      <div class="card section" v-if="contact && contact.id === route.id">
+      <div class="card section" v-if="contact && contact.id === route.id && detailTab==='assist'">
         <h2>回复前帮我看看</h2>
         <p>结合画像和最近上下文检查歧义，保留原意。仅展示和复制，不自动发送。</p>
         <textarea class="text-input" rows="3" maxlength="4000" v-model="assist.draft" :disabled="assist.reviewBusy" placeholder="粘贴自己准备发送的话"></textarea>
@@ -143,14 +154,23 @@
         <h2>候选回复 · 换个说法</h2>
         <textarea class="text-input" rows="2" maxlength="4000" v-model="assist.message" :disabled="assist.analyzeBusy" placeholder="粘贴对方最新消息，生成候选回复"></textarea>
         <button class="btn" @click="analyzeReplies" :disabled="assist.analyzeBusy || !assist.message.trim()">{{ assist.analyzeBusy ? '生成中…' : '生成候选回复' }}</button>
-        <div v-for="(reply, i) in assist.replies" :key="i" class="card section">
-          <h3>建议回复 {{ i + 1 }}</h3><p style="white-space:pre-wrap">{{ reply.text }}</p>
-          <select v-model="reply.style" :disabled="reply.busy"><option v-for="style in styles" :key="style">{{ style }}</option></select>
-          <button class="btn sm" @click="rewriteReply(reply)" :disabled="reply.busy">{{ reply.busy ? '改写中…' : '换个说法' }}</button>
-          <button class="btn sm" @click="copyAssist(reply.text)">复制</button>
+        <div v-for="(reply, i) in assist.replies" :key="i" class="card section reply-card">
+          <h3><span class="chip st-purple">{{ reply.style }}</span></h3>
+          <p style="white-space:pre-wrap">{{ reply.text }}</p>
+          <div class="rewrite-row">
+            <span class="rewrite-label">换成:</span>
+            <label class="style-opt" v-for="s in styles" :key="s">
+              <input type="radio" :name="'target-style-'+i" :value="s" v-model="reply.target" :disabled="reply.busy">{{ s }}
+            </label>
+            <button class="btn sm" @click="rewriteReply(reply)" :disabled="reply.busy">{{ reply.busy ? '改写中…' : '换个说法' }}</button>
+            <button class="btn sm" @click="copyAssist(reply.text)">复制</button>
+          </div>
         </div>
-        <h2>画像变化</h2>
-        <button class="btn" @click="loadChanges" :disabled="assist.changesBusy">{{ assist.changesBusy ? '读取中…' : '查看 / 刷新变化' }}</button>
+        <div class="block-head">
+          <h2 style="margin:0">画像变化</h2>
+          <button v-if="assist.changes" class="btn ghost sm" @click="closeChanges">收起</button>
+        </div>
+        <button class="btn" @click="loadChanges" :disabled="assist.changesBusy">{{ assist.changesBusy ? '读取中…' : (assist.changes ? '刷新变化' : '查看变化') }}</button>
         <div v-if="assist.changes">
           <p>{{ assist.changes.note }}</p>
           <div v-for="change in assist.changes.changes" :key="change.field" class="card section">
@@ -305,6 +325,100 @@
       </div>
     </section>
 
+    <!-- ============ 服务器状态 ============ -->
+    <section v-if="route.view==='status'">
+      <div class="card status-head-card">
+        <div>
+          <h2 style="margin:0">服务器状态</h2>
+          <p class="hint" style="margin:4px 0 0" v-if="sysStatus">每 5 秒自动刷新 · 服务器时间 {{ fmtTime(sysStatus.serverTime) }}</p>
+        </div>
+        <button class="btn sm" @click="loadStatus" :disabled="statusLoading">{{ statusLoading ? '刷新中…' : '立即刷新' }}</button>
+      </div>
+
+      <div v-if="!sysStatus && statusLoading" class="card">正在读取服务器状态…</div>
+      <div v-if="!sysStatus && !statusLoading" class="card">状态读取失败，点击右上角「立即刷新」重试。</div>
+
+      <div v-if="sysStatus" class="status-grid">
+        <!-- 微信连接 -->
+        <div class="card">
+          <h3>微信连接</h3>
+          <div class="stat-row">
+            <span class="st-label">登录状态</span>
+            <span :class="['chip', sysStatus.loggedIn && !sysStatus.sessionExpired ? 'st-ok' : 'st-bad']">
+              {{ sysStatus.sessionExpired ? '会话已过期' : (sysStatus.loggedIn ? '已登录' : '未登录') }}
+            </span>
+          </div>
+          <div class="stat-row"><span class="st-label">最后成功轮询</span><span class="st-val">{{ fmtAgo(sysStatus.poll.lastOkSecAgo) }}</span></div>
+          <div class="stat-row"><span class="st-label">最近轮询报错</span><span class="st-val">{{ sysStatus.poll.lastErrSecAgo < 0 ? '无' : fmtAgo(sysStatus.poll.lastErrSecAgo) }}</span></div>
+          <div v-if="sysStatus.poll.lastErrSecAgo >= 0 && sysStatus.poll.lastErrMsg" class="status-err">{{ sysStatus.poll.lastErrMsg }}</div>
+        </div>
+
+        <!-- 服务运行 -->
+        <div class="card">
+          <h3>服务运行</h3>
+          <div class="stat-row"><span class="st-label">程序版本</span><span class="st-val">{{ sysStatus.version }}</span></div>
+          <div class="stat-row"><span class="st-label">主机名</span><span class="st-val">{{ sysStatus.sys.hostname || '—' }}</span></div>
+          <div class="stat-row"><span class="st-label">操作系统</span><span class="st-val">{{ sysStatus.sys.os }} / {{ sysStatus.sys.arch }}</span></div>
+          <div class="stat-row"><span class="st-label">已连续运行</span><span class="st-val">{{ fmtUptime(sysStatus.sys.uptimeSec) }}</span></div>
+          <div class="stat-row">
+            <span class="st-label">识别到的你的 IP</span>
+            <span class="st-val">{{ sysStatus.clientIp || '—' }}</span>
+          </div>
+          <div class="stat-row">
+            <span class="st-label">访问限制</span>
+            <span class="st-val">
+              <span class="chip" :class="sysStatus.whitelistEnabled ? 'st-ok' : 'st-gray'">{{ sysStatus.whitelistEnabled ? '白名单已启用' : '白名单未启用' }}</span>
+              <span class="chip" :class="sysStatus.trustedProxy ? 'st-purple' : 'st-gray'">{{ sysStatus.trustedProxy ? '反代可信' : '直连模式' }}</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 服务器资源 -->
+        <div class="card status-wide">
+          <h3>服务器资源</h3>
+
+          <div class="meter-block">
+            <div class="meter-head"><span>CPU 占用（本程序进程）</span>
+              <span class="meter-val">{{ sysStatus.sys.processCpuPercent }}% · {{ sysStatus.sys.numCpu }} 核</span></div>
+            <div class="meter"><div :class="['meter-bar', pctClass(sysStatus.sys.processCpuPercent)]" :style="{width: sysStatus.sys.processCpuPercent + '%'}"></div></div>
+          </div>
+
+          <div class="meter-block">
+            <div class="meter-head"><span>系统内存</span>
+              <span class="meter-val">{{ fmtMB(sysStatus.sys.memTotalMb - sysStatus.sys.memAvailableMb) }} / {{ fmtMB(sysStatus.sys.memTotalMb) }} · {{ sysStatus.sys.memUsedPercent }}%</span></div>
+            <div class="meter"><div :class="['meter-bar', pctClass(sysStatus.sys.memUsedPercent)]" :style="{width: sysStatus.sys.memUsedPercent + '%'}"></div></div>
+          </div>
+
+          <div class="meter-block">
+            <div class="meter-head"><span>数据盘（{{ sysStatus.sys.diskPath }}）</span>
+              <span class="meter-val">已用 {{ fmtMB(sysStatus.sys.diskTotalMb - sysStatus.sys.diskFreeMb) }} / {{ fmtMB(sysStatus.sys.diskTotalMb) }} · {{ sysStatus.sys.diskUsedPercent }}%</span></div>
+            <div class="meter"><div :class="['meter-bar', pctClass(sysStatus.sys.diskUsedPercent)]" :style="{width: sysStatus.sys.diskUsedPercent + '%'}"></div></div>
+          </div>
+
+          <div class="stat-row"><span class="st-label">系统负载 1/5/15 分钟</span>
+            <span class="st-val">
+              <template v-if="sysStatus.sys.load1 >= 0">{{ sysStatus.sys.load1 }} / {{ sysStatus.sys.load5 }} / {{ sysStatus.sys.load15 }}</template>
+              <template v-else>—（Windows 不提供）</template>
+            </span></div>
+        </div>
+
+        <!-- 程序占用 -->
+        <div class="card">
+          <h3>程序占用</h3>
+          <div class="stat-row"><span class="st-label">常驻内存（RSS）</span><span class="st-val">{{ fmtMB(sysStatus.sys.processRssMb) }}</span></div>
+          <div class="stat-row"><span class="st-label">Go 堆在用</span><span class="st-val">{{ fmtMB(sysStatus.sys.goHeapAllocMb) }}</span></div>
+          <div class="stat-row"><span class="st-label">协程数</span><span class="st-val">{{ sysStatus.sys.goroutines }}</span></div>
+        </div>
+
+        <!-- 数据 -->
+        <div class="card">
+          <h3>数据</h3>
+          <div class="stat-row"><span class="st-label">联系人</span><span class="st-val">{{ sysStatus.contacts }} 人</span></div>
+          <div class="stat-row"><span class="st-label">消息总数</span><span class="st-val">{{ sysStatus.messages }} 条</span></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ 微信命令说明（内容来自 bot.go helpText） ============ -->
     <section v-if="route.view==='help'">
       <div class="card help-card">
@@ -314,6 +428,12 @@
 【直接粘贴聊天记录】
 多选复制微信聊天记录发给我，自动识别并存入，同时返回意图分析
 （内容较长被微信拆成多条发送时会自动合并，发完后稍等几秒出结果）
+
+【回复辅助（仅展示，不代发）】
+改写 昵称 | 风格 | 原回复 — 风格：稳妥得体/简洁直接/亲切热情/委婉留余地
+草稿检查 昵称 | 准备发送的话 — 检查歧义并给出改进版本
+画像变化 昵称 — 对比当前与上一历史画像，不调用模型
+昵称含空格也可使用，竖线分隔；原文中的竖线会保留。
 
 【查询类】
 画像 [昵称]        — 查看联系人画像（不填昵称显示最近更新的）
@@ -336,6 +456,7 @@
 
 【提示】
 - 聊天记录识别靠的是微信"多选复制"功能，复制后直接粘贴发给我
+- 设置备注后，所有命令里的「昵称」位置填昵称或备注都能识别
 - 首次生成画像需要积累一定数量的对方消息
 - 发"帮助"查看本说明</pre>
       </div>

@@ -86,12 +86,12 @@ func TestAssistanceProfileChanges(t *testing.T) {
 }
 
 func TestAssistanceValidationAndParsing(t *testing.T) {
-	for _, style := range rewriteStyles {
+	for _, style := range replyStyles {
 		if err := validateAssist(strings.Repeat("字", 4000), style, true); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, v := range []struct{ text, style string }{{" ", "更自然"}, {strings.Repeat("字", 4001), "更自然"}, {"你好", "编造"}} {
+	for _, v := range []struct{ text, style string }{{" ", "稳妥得体"}, {strings.Repeat("字", 4001), "稳妥得体"}, {"你好", "编造"}} {
 		if validateAssist(v.text, v.style, true) == nil {
 			t.Fatalf("accepted %+v", v)
 		}
@@ -114,13 +114,13 @@ func TestAssistanceValidationAndParsing(t *testing.T) {
 	cfg := &Config{}
 	cfg.LLM.BaseURL = server.URL
 	client := NewLLMClient(cfg)
-	out, err := RewriteReply(context.Background(), db, client, id, "好", "更自然")
+	out, err := RewriteReply(context.Background(), db, client, id, "好", "稳妥得体")
 	if err != nil || out != "好的" {
 		t.Fatalf("%q %v", out, err)
 	}
 	for _, raw := range []string{`{}`, `{"reply":3}`, `{"reply":" "}`, `broken`} {
 		response = raw
-		if _, err := RewriteReply(context.Background(), db, client, id, "好", "更自然"); err == nil {
+		if _, err := RewriteReply(context.Background(), db, client, id, "好", "稳妥得体"); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
 	}
@@ -140,7 +140,7 @@ func TestAssistanceValidationAndParsing(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := RewriteReply(ctx, db, client, id, "好", "更自然"); err == nil {
+	if _, err := RewriteReply(ctx, db, client, id, "好", "稳妥得体"); err == nil {
 		t.Fatal("ignored cancellation")
 	}
 }
@@ -164,7 +164,7 @@ func TestAssistanceRequestCancellation(t *testing.T) {
 	s := &apiServer{db: db, cfg: cfg, llm: NewLLMClient(cfg)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r := httptest.NewRequest("POST", fmt.Sprintf("/api/contacts/%d/rewrite", id), strings.NewReader(`{"text":"原话","style":"更自然"}`)).WithContext(ctx)
+	r := httptest.NewRequest("POST", fmt.Sprintf("/api/contacts/%d/rewrite", id), strings.NewReader(`{"text":"原话","style":"稳妥得体"}`)).WithContext(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); s.route(httptest.NewRecorder(), r) }()
 	select {
@@ -195,12 +195,12 @@ func TestAssistanceAPIContract(t *testing.T) {
 		auth                 bool
 		code                 int
 	}{
-		{"rewrite", "POST", `{"text":"原文","style":"更自然"}`, false, 401},
+		{"rewrite", "POST", `{"text":"原文","style":"稳妥得体"}`, false, 401},
 		{"rewrite", "GET", "", true, 405},
 		{"rewrite", "POST", `{"text":"原文","style":"invalid"}`, true, 400},
-		{"rewrite", "POST", `{"text":"原文","style":"更自然","unknown":1}`, true, 400},
-		{"rewrite", "POST", `{"text":"原文","style":"更自然"} {}`, true, 400},
-		{"rewrite", "POST", `{"text":"原文","style":"更自然"}`, true, 200},
+		{"rewrite", "POST", `{"text":"原文","style":"稳妥得体","unknown":1}`, true, 400},
+		{"rewrite", "POST", `{"text":"原文","style":"稳妥得体"} {}`, true, 400},
+		{"rewrite", "POST", `{"text":"原文","style":"稳妥得体"}`, true, 200},
 		{"review-draft", "POST", `{"text":"原文"}`, true, 200},
 		{"profile-changes", "GET", "", true, 200},
 	} {
@@ -226,7 +226,7 @@ func TestAssistanceAPIContract(t *testing.T) {
 			}
 		})
 	}
-	r := httptest.NewRequest("POST", "/api/contacts/99999/rewrite", strings.NewReader(`{"text":"原文","style":"更自然"}`))
+	r := httptest.NewRequest("POST", "/api/contacts/99999/rewrite", strings.NewReader(`{"text":"原文","style":"稳妥得体"}`))
 	r.Header.Set("Authorization", "Bearer test-assist-token")
 	w := httptest.NewRecorder()
 	s.route(w, r)

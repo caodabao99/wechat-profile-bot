@@ -21,10 +21,14 @@ createApp({
     // ---------- 路由（hash） ----------
     const route = reactive({ view: 'contacts', id: 0 });
 
-    // ---------- 联系人列表 ----------
+    // ---------- 联系人列表（分页 + 服务端搜索） ----------
     const contacts = ref([]);
+    const contactsTotal = ref(0);
+    const contactsOffset = ref(0);
+    const contactsLimit = 30;
     const loadingContacts = ref(false);
-    const search = ref('');
+    const search = ref('');        // 输入框内容
+    const searchApplied = ref(''); // 实际生效的搜索词（点查询/回车后）
     const showMerged = ref(false);
 
     // ---------- 联系人详情 ----------
@@ -43,7 +47,18 @@ createApp({
       const id = route.id;
       return assistance[id] || (assistance[id] = { draft: '', review: null, reviewBusy: false, message: '', analyzeBusy: false, replies: [], changes: null, changesBusy: false });
     });
-    const styles = ['更简短', '更自然', '更委婉', '更直接'];
+    // 候选回复与「换个说法」共用的四种固定风格，需与服务端 replyStyles 保持一致
+    const styles = ['稳妥得体', '简洁直接', '亲切热情', '委婉留余地'];
+    // 兼容旧版纯字符串数组：[{style,text}] 优先，字符串则按顺序补默认风格
+    function normalizeReplies(raw, single) {
+      const list = Array.isArray(raw) ? raw : (single ? [single] : []);
+      return list.slice(0, 3).map((r, i) => {
+        if (typeof r === 'string') return { text: r, style: styles[i] || styles[0], target: '', busy: false };
+        const text = (r.text || r.reply || '').trim();
+        const style = styles.includes(r.style) ? r.style : (styles[i] || styles[0]);
+        return { text, style, target: '', busy: false };
+      }).filter(r => r.text);
+    }
     async function copyAssist(text) {
       try { await navigator.clipboard.writeText(text); toast('已复制'); }
       catch (e) { toast('复制失败，请选中文字手动复制', 'error'); }
@@ -62,17 +77,22 @@ createApp({
       state.analyzeBusy = true;
       try {
         const out = await api('/api/contacts/' + id + '/analyze', { method: 'POST', body: { message } });
-        if (state.message === message) state.replies = (out.suggested_replies || (out.suggested_reply ? [out.suggested_reply] : [])).map(text => ({ text, style: '更自然', busy: false }));
+        if (state.message === message) state.replies = normalizeReplies(out.suggested_replies, out.suggested_reply);
       } catch (e) { toast(e.message, 'error'); }
       finally { state.analyzeBusy = false; }
     }
     async function rewriteReply(reply) {
-      const id = route.id, state = assist.value, original = reply.text, style = reply.style;
+      const id = route.id, state = assist.value, original = reply.text, style = reply.target;
       if (reply.busy) return;
+      if (!style) { toast('请先点选一种目标风格', 'error'); return; }
       reply.busy = true;
       try {
         const out = await api('/api/contacts/' + id + '/rewrite', { method: 'POST', body: { text: original, style } });
-        if (state.replies.includes(reply) && reply.text === original) reply.text = out.reply;
+        if (state.replies.includes(reply) && reply.text === original) {
+          reply.text = out.reply;
+          reply.style = style;   // 卡片标题跟随改写后的风格
+          reply.target = '';    // 清空单选项
+        }
       } catch (e) { toast(e.message, 'error'); }
       finally { reply.busy = false; }
     }
@@ -84,6 +104,7 @@ createApp({
       catch (e) { toast(e.message, 'error'); }
       finally { state.changesBusy = false; }
     }
+    function closeChanges() { assist.value.changes = null; }
 
     // ---------- 合并记录 ----------
     const mergeLogs = ref([]);
@@ -302,6 +323,8 @@ createApp({
 
     async function logout() {
       try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 忽略，本地照样清 */ }
+      stopStatusTimer();
+      sysStatus.value = null;
       localStorage.removeItem(TOKEN_KEY);
       authed.value = false;
       authStage.value = 'token';
@@ -328,6 +351,9 @@ createApp({
       } else if (h.startsWith('#/help')) {
         route.view = 'help';
         route.id = 0;
+      } else if (h.startsWith('#/status')) {
+        route.view = 'status';
+        route.id = 0;
       } else {
         route.view = 'contacts';
         route.id = 0;
@@ -336,11 +362,16 @@ createApp({
     }
 
     function onRouteEnter() {
+      stopStatusTimer();
       if (!authed.value) return;
       if (route.view === 'contacts') loadContacts();
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') loadBackupLogs();
+      if (route.view === 'status') {
+        loadStatus();
+        statusTimer = setInterval(loadStatus, 5000);
+      }
     }
 
     function resetDetail() {
@@ -362,30 +393,54 @@ createApp({
     }
 
     // ---------- 联系人列表 ----------
-    async function loadContacts() {
+    // 分页加载：不再一次性取全量，避免联系人多了首屏卡顿。
+    // 搜索走后端：本地 filter 只能搜已加载的页，会漏掉后面的联系人。
+    function buildContactsQuery(offset) {
+      const p = new URLSearchParams();
+      p.set('paged', '1');
+      p.set('offset', String(offset));
+      p.set('limit', String(contactsLimit));
+      if (showMerged.value) p.set('includeMerged', '1');
+      if (searchApplied.value) p.set('q', searchApplied.value);
+      return '?' + p.toString();
+    }
+    async function loadContacts(reset) {
+      if (reset !== false) {
+        contactsOffset.value = 0;
+      }
       loadingContacts.value = true;
       try {
         // 兜底成 []：后端空列表若返回 null，ref 变成 null，
-        // 模板里 .length/.filter 会抛 TypeError 导致整页白屏
-        contacts.value = (await api('/api/contacts' + (showMerged.value ? '?includeMerged=1' : ''))) || [];
+        // 模板里 .length 会抛 TypeError 导致整页白屏
+        const out = await api('/api/contacts' + buildContactsQuery(contactsOffset.value));
+        const list = (out && out.list) || [];
+        if (contactsOffset.value === 0) {
+          contacts.value = list;
+        } else {
+          contacts.value = contacts.value.concat(list);
+        }
+        contactsTotal.value = (out && out.total) || 0;
       } catch (e) {
         toast(e.message, 'error');
       } finally {
         loadingContacts.value = false;
       }
     }
-
-    // 搜索：昵称、备注、别名任一命中，忽略大小写（对齐桌面端 matchContact）
-    const filteredContacts = computed(() => {
-      const q = search.value.trim().toLowerCase();
-      if (!q) return contacts.value;
-      return contacts.value.filter(c => {
-        if ((c.name || '').toLowerCase().includes(q)) return true;
-        if ((c.remark || '').toLowerCase().includes(q)) return true;
-        if (c.aliases && c.aliases.some(a => a.toLowerCase().includes(q))) return true;
-        return false;
-      });
-    });
+    function loadMoreContacts() {
+      if (loadingContacts.value || contacts.value.length >= contactsTotal.value) return;
+      contactsOffset.value = contacts.value.length;
+      loadContacts(false);
+    }
+    function applySearch() {
+      searchApplied.value = search.value.trim();
+      loadContacts();
+    }
+    function clearSearch() {
+      search.value = '';
+      searchApplied.value = '';
+      loadContacts();
+    }
+    const contactsHasMore = computed(() => contacts.value.length < contactsTotal.value);
 
     // displayName：有备注时显示「备注（昵称）」
     function displayName(c) {
@@ -795,6 +850,46 @@ createApp({
       }
     }
 
+    // ---------- 服务器状态 ----------
+    const sysStatus = ref(null);
+    const statusLoading = ref(false);
+    let statusTimer = null;
+    function stopStatusTimer() {
+      if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+    }
+    async function loadStatus() {
+      statusLoading.value = true;
+      try {
+        sysStatus.value = await api('/api/status');
+      } catch (e) {
+        if (route.view === 'status') toast(e.message, 'error');
+      } finally {
+        statusLoading.value = false;
+      }
+    }
+    // 秒数转「x天 x小时 x分」
+    function fmtUptime(sec) {
+      if (sec == null || sec < 0) return '—';
+      const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+      return (d ? d + ' 天 ' : '') + (d || h ? h + ' 小时 ' : '') + m + ' 分';
+    }
+    // “N 秒前”；-1 表示从未发生
+    function fmtAgo(sec) {
+      if (sec == null || sec < 0) return '—';
+      if (sec < 5) return '刚刚';
+      if (sec < 60) return sec + ' 秒前';
+      if (sec < 3600) return Math.floor(sec / 60) + ' 分钟前';
+      if (sec < 86400) return Math.floor(sec / 3600) + ' 小时前';
+      return Math.floor(sec / 86400) + ' 天前';
+    }
+    // MB 转可读容量
+    function fmtMB(mb) {
+      if (mb == null) return '—';
+      return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+    }
+    // 仪表条配色：<70 绿、<90 黄、否则红
+    function pctClass(p) { return p >= 90 ? 'lv-bad' : (p >= 70 ? 'lv-warn' : 'lv-ok'); }
+
     // ---------- 工具 ----------
     // 时间显示：兼容 RFC3339（2026-10-01T14:45:54+08:00）和纯文本日期
     function fmtTime(s) {
@@ -822,15 +917,16 @@ createApp({
         }
       })();
     });
-    onUnmounted(() => window.removeEventListener('hashchange', parseRoute));
+    onUnmounted(() => { window.removeEventListener('hashchange', parseRoute); stopStatusTimer(); });
 
     return {
-      assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges,
+      assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges, closeChanges,
       profileEditor, profileSaving, profileEditError, profileFields, startProfileEdit, saveProfileEdit,
       authed, tokenInput, loginChecking, loginError, login, logout,
       authStage, codeInput, setupSecret, setupOtpauth, setupQr,
       enable2FA, verify2FA, backToToken,
-      route, contacts, loadingContacts, search, showMerged, filteredContacts,
+      route, contacts, contactsTotal, contactsHasMore, loadingContacts, search, searchApplied, showMerged,
+      loadContacts, loadMoreContacts, applySearch, clearSearch,
       contact, loadingDetail, detailTab, messages, messagesLoading, messagesHasMore,
       history, expandedHistory, stats, busy, profileSections,
       mergeLogs, loadingMerges, mergeCandidates,
@@ -844,6 +940,7 @@ createApp({
       startRemark, doSetRemark, doSupplement, doRegenerate,
       startMerge, doMerge, doDelete, confirmDelete,
       loadMergeLogs, undoMerge, fmtTime,
+      sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
     };
   },
 }).mount('#app');

@@ -88,7 +88,7 @@ func main() {
 
 	// 启动 REST API（供 Windows 桌面版远程调用）；apiPort 填负数表示禁用
 	if cfg.APIPort > 0 {
-		apiSrv := startAPIServer(db, llmClient, cfg, cfg.APIPort)
+		apiSrv := startAPIServer(db, llmClient, client, cfg, cfg.APIPort)
 		// 用 Shutdown 而不是 Close：Close 会直接掐断在途请求，
 		// 桌面端那边表现为一次莫名其妙的连接重置。
 		// 这个 defer 注册在 db.Close() 之后，所以会先于关库执行。
@@ -136,6 +136,7 @@ func main() {
 
 			if client.SessionExpired() {
 				slog.Warn("会话已过期，请发送「重登」命令后重启程序")
+				recordPollErr(errors.New("会话已过期，需重新扫码登录"))
 				if !wait(60 * time.Second) {
 					return
 				}
@@ -152,22 +153,28 @@ func main() {
 				// 用 net.Error 接口判断，别靠错误字符串里有没有 "Timeout"
 				var netErr net.Error
 				if errors.As(err, &netErr) && netErr.Timeout() {
+					// 长轮询 hold 住到超时说明连接本身是通的，算作一次成功连接
+					recordPollOK()
 					continue
 				}
 				if strings.Contains(err.Error(), "errcode=-14") ||
 					strings.Contains(err.Error(), "会话已过期") {
 					slog.Warn("会话过期，请发送「重登」命令后重启程序")
+					recordPollErr(errors.New("会话已过期，需重新扫码登录"))
 					if !wait(60 * time.Second) {
 						return
 					}
 					continue
 				}
 				slog.Error("轮询错误", "err", err)
+				recordPollErr(err)
 				if !wait(3 * time.Second) {
 					return
 				}
 				continue
 			}
+			// 无错误返回（无论是否有新消息）说明与服务器的长轮询通道正常
+			recordPollOK()
 
 			for _, msg := range msgs {
 				select {

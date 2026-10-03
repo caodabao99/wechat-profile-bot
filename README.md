@@ -17,7 +17,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.2.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -50,6 +50,7 @@ README.md                                 本文档
   "apiPort": 17965,
   "apiToken": "",
   "apiWhitelist": [],
+  "trustedProxies": [],
   "llm": {
     "apiKey": "sk-xxx",
     "baseURL": "https://api.deepseek.com",
@@ -68,7 +69,8 @@ README.md                                 本文档
 | `myName` | 你自己的微信昵称，必须与微信里显示的完全一致 |
 | `apiPort` | REST API 端口，供 Windows 桌面版远程调用。默认 `17965`（非常用端口，降低被扫描风险）；填 `-1` 则完全禁用 API 服务 |
 | `apiToken` | API 认证令牌（Bearer Token）。**留空则首次启动自动生成一个随机令牌并写回本文件**，之后保持不变 |
-| `apiWhitelist` | IP 白名单，支持单 IP 与 CIDR，如 `["1.2.3.4", "192.168.1.0/24"]`。空数组 = 不限制 |
+| `apiWhitelist` | IP 白名单，支持单 IP 与 CIDR，如 `["1.2.3.4", "192.168.1.0/24"]`。空数组 = 不限制。**反向代理后部署时这里仍填访客的真实公网 IP**，配合下面的 `trustedProxies` 使用 |
+| `trustedProxies` | 可信反向代理的 IP/CIDR，如 `["127.0.0.1"]`、`["10.0.0.0/8"]`。仅当 TCP 直连来源命中此列表时，白名单/封禁/限流才按 `X-Forwarded-For` 里的真实访客 IP 判定；直连来源不命中时该头一律忽略（防伪造）。不经过反代请留空，切勿填写 `0.0.0.0/0` |
 | `llm.apiKey` | 大模型 API Key，默认 DeepSeek，也可换成任意 OpenAI 兼容接口 |
 | `llm.baseURL` | 接口地址，不带末尾斜杠 |
 | `llm.model` | 模型名 |
@@ -367,7 +369,7 @@ sudo systemctl enable docker
 
 1. **非常用端口**：默认 17965，降低被批量扫描的概率；不需要远程访问时把 `apiPort` 设为 `-1` 彻底关闭
 2. **IP 黑名单**：登录失败累计 10 次的 IP 会被**永久封禁**，之后所有请求直接 403（详见下方「登录失败封禁」）
-3. **IP 白名单**（`apiWhitelist`）：支持单 IP 和 CIDR，**优先于 Token 校验**，不在名单内一律 403；空数组表示不限制
+3. **IP 白名单**（`apiWhitelist`）：支持单 IP 和 CIDR，**优先于 Token 校验**，不在名单内一律 403；空数组表示不限制。反代后部署配合 `trustedProxies` 按真实访客 IP 判定（见下方「反向代理部署」）
 4. **Bearer Token**（`apiToken`）：所有接口（含 `status`）都要求 `Authorization: Bearer <token>`，缺失或不匹配返回 401
 5. **接口限流**：`/api/ingest` 每 IP 每分钟最多 120 次，防止 Token 泄露后被脚本刷爆大模型账单
 6. **安全响应头**：所有响应自动带 `X-Content-Type-Options`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Content-Security-Policy`，防点击劫持与 MIME 嗅探
@@ -396,14 +398,38 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 
 > **解封后需要重启服务才生效**：这些命令只改 `banned_ips.json`，正在运行的进程把名单读在内存里，不会自动重新加载。`docker restart wechat-profile-bot` 或重跑一次二进制即可。
 
-> 客户端 IP 取自 TCP 连接的 `RemoteAddr`，**不信任 `X-Forwarded-For`**，所以伪造请求头无法绕过封禁；反过来说，如果你在 Nginx 等反向代理后面部署，服务端看到的会是代理的 IP，此时应改用代理层的限流/封禁，或把 `apiWhitelist` 配上真实客户端网段。
+> 客户端 IP 默认只取自 TCP 连接的 `RemoteAddr`；配置了 `trustedProxies` 后才会采纳可信代理转发的 `X-Forwarded-For`，且从代理链最右端逐跳校验，伪造的左侧 IP 无法绕过封禁与白名单。
+
+### 反向代理部署（Nginx / Caddy 等）
+
+直接在反代后启用 `apiWhitelist` 会遇到两个问题：服务端看到的来源 IP 是反代服务器（导致所有人都被拦）；而把反代 IP 加进白名单又等于不设防（任何人都能访问反代）。正确做法是**白名单照填真实访客 IP，另把反代自身登记为可信代理**：
+
+1. `config.json` 配置：
+   ```json
+   "apiWhitelist": ["你的公网IP"],
+   "trustedProxies": ["127.0.0.1"]
+   ```
+   反代与本程序不在同一台机器时，`trustedProxies` 填反代的内网 IP 或网段（如 `["10.0.0.0/8"]`），不要填公网大网段。Docker 部署时容器看到的直连来源通常是网桥网关，同机反代可填 `["172.16.0.0/12", "127.0.0.1"]`；反代也在容器里则填它所在的 compose 网络网段。
+2. Nginx 站点配置必须转发访客 IP（程序按 `X-Forwarded-For` 链逐跳校验，伪造头无效）：
+   ```nginx
+   location / {
+       proxy_pass http://127.0.0.1:17965;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+   ```
+3. 验证：登录网页管理界面，打开「状态」页，「服务运行」卡片里的「识别到的你的 IP」应显示你的公网 IP（而不是反代 IP），旁边显示「白名单已启用 / 反代可信」。
+4. 安全建议：反代加 HTTPS；有条件时用防火墙让 17965 端口只允许反代服务器访问，避免访客绕过反代直连（直连时其 `X-Forwarded-For` 伪造头会被忽略，但多层防护更稳妥）。
 
 ### 接口一览
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/status` | 服务状态与联系人数（也需认证） |
-| GET | `/api/contacts?includeMerged=1` | 联系人列表 |
+| GET | `/api/contacts?includeMerged=1` | 联系人列表（全量，桌面端兼容） |
+| GET | `/api/contacts?paged=1&offset=0&limit=30&q=关键词` | 联系人分页列表（返回 `{list,total,offset,limit}`） |
 | POST | `/api/contacts` | 创建联系人，body `{"name"}` |
 | POST | `/api/contacts/resolve` | 昵称解析为 ID，body `{"name"}` |
 | GET / DELETE | `/api/contacts/{id}` | 联系人详情 / 删除联系人 |
@@ -480,15 +506,37 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 ## 更新日志
 
+### v2.3（2026-10-03）
+
+体验与部署改进，全部改动向后兼容，不影响既有数据和配置（使用反向代理需新增一项配置，见下）。
+
+**新增**
+
+- **网页「状态」页**：展示微信连接、服务运行时长、服务器资源（CPU / 内存 / 磁盘 / 系统负载）、本程序资源占用、数据量，每 5 秒自动刷新；同时显示服务端识别到的访问 IP 与白名单/可信代理状态，方便排查反代问题
+- **联系人分页与服务端搜索**：列表默认每页 30 条、底部「加载更多」，不再首屏全量加载；搜索改为「查询」按钮/回车触发，由后端匹配昵称、备注、别名，未加载的联系人也能搜到。桌面端远程模式仍用全量接口，不受影响
+- **反向代理真实 IP 支持**：新增 `trustedProxies` 配置项。只有 TCP 直连来源在可信代理列表内时才采纳 `X-Forwarded-For`，并从代理链最右侧逐跳校验，白名单 / 封禁 / 限流全部按真实访客 IP 判定；直连客户端伪造 XFF 无法绕过。反代后 `apiWhitelist` 继续填访客真实公网 IP 即可
+- **微信端建议回复方便复制**：意图分析的建议回复改为逐条单独发送，长按单条即可复制；风格标签放在消息末尾（如 `内容【稳妥得体】`），粘贴后从末尾一删即可
+
+**优化**
+
+- 网页「发送前检查 + 候选回复 + 画像变化」拆为联系人详情的独立「辅助」页签，不再混在画像页；画像变化可收起
+- 候选回复风格体系统一：意图分析自动按语境挑选 3 种风格并保证差异可感知，修复旧版模型返回字符串数组时风格错位的问题；微信 / 网页 / 桌面三端展示一致
+- 网页手机端适配（≤640px）：顶栏导航与详情子页签横向滚动、弹窗收窄限高、状态页单列、联系人摘要两行截断、表格收紧
+- 网页「命令说明」与微信端帮助文案逐字同步
+
+**测试**
+
+- 新增真实 IP 解析安全单测 14 例（直连、单级/多级反代、XFF 伪造、IPv6、CIDR 白名单）；分页与搜索经浏览器实测
+
 ### v2.2（2026-10-02）
 
 功能增强与逻辑修复，全部改动向后兼容，不影响既有数据和部署方式。
 
 **新增**
 
-- **意图分析给多条候选回复**：一次分析返回 3 条风格不同的回复建议；微信端按编号展示，网页/桌面端每条可单独复制。模型只回一条时按实际数量展示，不凑数
+- **意图分析给多条候选回复**：一次分析结合语境从「稳妥得体 / 简洁直接 / 亲切热情 / 委婉留余地」四种固定风格中挑最合适的 3 种，每条带风格标签；网页/桌面端每条可单独复制。模型只回一条时按实际数量展示，不凑数
 - **编辑画像**：网页/桌面端联系人详情新增画像编辑，可修改内容、删除列表条目、清空字段，直接保存不经过 AI 改写，改动记入画像历史；画像已被其他操作更新时会拒绝覆盖，避免丢失新内容
-- **一键换个说法**：候选回复旁可改写为「更简短 / 更自然 / 更委婉 / 更直接」，只改写该条、保留原意、不捏造事实。微信命令：`改写 昵称 | 风格 | 内容`
+- **一键换个说法**：候选回复旁点选目标风格（稳妥得体 / 简洁直接 / 亲切热情 / 委婉留余地）即可改写该条，只改写该条、保留原意、不捏造事实。微信命令：`改写 昵称 | 风格 | 内容`
 - **回复前帮我看看**：输入准备发送的草稿，结合画像和近期聊天指出可能的歧义并给出修改建议，不自动发送。微信命令：`草稿检查 昵称 | 内容`
 - **画像变化高亮**：对比最近两次画像，展示新增 / 修改 / 删除及前后内容，不调用模型。微信命令：`画像变化 昵称`
 
@@ -529,7 +577,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 **说明**
 
-- 客户端 IP 一律取自 TCP `RemoteAddr`，**不信任 `X-Forwarded-For`**，伪造请求头无法绕过封禁；反向代理部署请改用代理层封禁或配好 `apiWhitelist`
+- 客户端 IP 默认取自 TCP `RemoteAddr`；配置 `trustedProxies` 后仅采纳可信代理链上的 `X-Forwarded-For`（配置方法见「反向代理部署」），伪造头无法绕过封禁与白名单
 - 桌面端用 `apiToken` 直连，token 配错只记审计日志、**不计入封禁计数**，不会把自己锁死
 - 备份口令程序不保存在任何地方，忘了就解不开 `.enc`（聊天记录不受影响）
 
