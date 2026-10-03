@@ -12,12 +12,13 @@
 - **意图分析**：分析对方最新消息的潜在意图、情绪、建议回复
 - **联系人管理**：备注、合并（换昵称后关联）、撤销合并、删除
 - **REST API**：内置 HTTP 接口（默认端口 17965），Windows 桌面版可远程复用同一份数据与模型分析
+- **关系助手**（网页端，默认关闭）：重要日子提醒、久未联系提醒、亲密度评分、AI 情绪预警，每日提醒 / 每周报告通过 SMTP 邮件发送
 
 ## 快速开始
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.3.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.4.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -34,7 +35,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.3.3.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -103,7 +104,7 @@ README.md                                 本文档
 浏览器打开 `http://服务器IP:17965/`，输入 `config.json` 里的 `apiToken` 登录。
 首次登录需绑定 TOTP 验证器（Google/Microsoft Authenticator、微信、支付宝均可），以后每次登录输入动态码。
 
-功能包括：联系人列表、画像查看/编辑、消息记录、历史版本、统计、合并/撤销、**备份导出/导入**。
+功能包括：联系人列表、画像查看/编辑、消息记录、历史版本、统计、合并/撤销、**备份导出/导入**、**关系助手**（重要日子 / 久未联系 / 亲密度 / 情绪预警看板与邮件提醒配置，默认关闭）。
 
 ## 常驻运行与开机自启
 
@@ -252,7 +253,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.3.3.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.3.3.tar.gz`，得到 `wechat-profile-bot:v2.3.3` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.4.0.tar.gz`，得到 `wechat-profile-bot:v2.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -511,6 +512,20 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v2.4.0（2026-10-03）
+
+**新增：关系助手（网页端增值功能，默认关闭，对现有功能零侵入）**
+
+- **重要日子提醒**：自动扫描联系人画像里的重要日子（生日、纪念日），支持「5月1日」「1995-05-01」「12/25」等常见写法，提前 N 天（可配）进入提醒；无法识别的原文（如农历）单独列在「未识别」区，不会误报
+- **久未联系提醒**：超过 N 天（默认 7 天）无任何互动的联系人进入冷却名单，附带最后一条消息方便找话题；从没聊过的不参与
+- **亲密度评分**：纯本地统计近 30 天互动（活跃度 40 分 + 双方均衡度 30 分 + 对方投入 30 分），Top10 看板展示，不调用模型、零成本
+- **AI 情绪预警**：对近 3 天有消息的联系人做情绪分析（复用已配置的 LLM），情绪低落等给出摘要与建议；每日分析数量可配（默认上限 10 个）控制花费
+- **每日提醒邮件**：每天固定时间（默认 08:00）把以上三类聚合成一封 HTML 邮件发到你的邮箱；无提醒事项时不发；同一事项窗口期内不重复提醒，发送失败下次自动补发
+- **每周报告邮件**：每周固定时间（默认周日 20:00）发送本周消息量、互动最多、亲密度 Top5、最久没联系、下周重要日子、情绪速览
+- **SMTP 配置**：网页端「关系助手」页填写邮箱 SMTP（465/SSL 或 587/STARTTLS 均支持），可发测试邮件验证；密码保存后打码显示；任务运行记录与邮件发送日志可查
+- **手动运行**：网页端可立即触发每日提醒 / 每周报告，不用等定时
+- 实现上全部逻辑在新文件（`assistant.go` / `assistant_api.go` / `mailer.go`），配置存 SQLite 新表，不改 `config.json` 格式；不开启时定时任务只读一行配置即返回，无任何副作用
 
 ### v2.3.3（2026-10-03）
 

@@ -164,6 +164,96 @@ createApp({
     const impPassword = ref(''); // 导入加密备份时的口令
     const showEncPwd = ref(false); // 明文显示口令，方便核对
 
+    // ---------- 关系助手 ----------
+    const asst = ref(null);        // 看板聚合数据
+    const asstLoading = ref(false);
+    const asstBusy = ref('');      // 'save' | 'test' | 'daily' | 'weekly'
+    const asstForm = ref({
+      enabled: false, remindBirthday: true, remindCooling: true,
+      birthdayAdvanceDays: 3, coolingDays: 7, dailyCheckTime: '08:00',
+      weeklyReport: true, weeklyDay: 0, weeklyTime: '20:00',
+      emotionAlert: true, emotionDailyMax: 10,
+      smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
+    });
+
+    async function loadAssistant() {
+      if (asstLoading.value) return;
+      asstLoading.value = true;
+      try {
+        const data = await api('/api/assistant/dashboard');
+        asst.value = data;
+        const st = data.settings || {};
+        const f = asstForm.value;
+        f.enabled = !!st.enabled;
+        f.remindBirthday = st.remindBirthday !== false;
+        f.remindCooling = st.remindCooling !== false;
+        f.birthdayAdvanceDays = st.birthdayAdvanceDays || 3;
+        f.coolingDays = st.coolingDays || 7;
+        f.dailyCheckTime = st.dailyCheckTime || '08:00';
+        f.weeklyReport = st.weeklyReport !== false;
+        f.weeklyDay = st.weeklyDay || 0;
+        f.weeklyTime = st.weeklyTime || '20:00';
+        f.emotionAlert = st.emotionAlert !== false;
+        f.emotionDailyMax = st.emotionDailyMax || 10;
+        const sm = st.smtp || {};
+        f.smtp = {
+          host: sm.host || '', port: sm.port || 465, ssl: sm.ssl !== false,
+          user: sm.user || '', pass: sm.pass || '', from: sm.from || '',
+          toText: (sm.to || []).join(', '),
+        };
+      } catch (e) { toast(e.message, 'error'); }
+      finally { asstLoading.value = false; }
+    }
+
+    async function saveAssistantSettings() {
+      if (asstBusy.value) return;
+      asstBusy.value = 'save';
+      try {
+        const f = asstForm.value;
+        const smtp = {
+          host: f.smtp.host, port: f.smtp.port, ssl: f.smtp.ssl,
+          user: f.smtp.user, pass: f.smtp.pass, from: f.smtp.from,
+          to: f.smtp.toText.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean),
+        };
+        await api('/api/assistant/settings', {
+          method: 'PUT',
+          body: {
+            enabled: f.enabled, remindBirthday: f.remindBirthday, remindCooling: f.remindCooling,
+            birthdayAdvanceDays: f.birthdayAdvanceDays, coolingDays: f.coolingDays,
+            dailyCheckTime: f.dailyCheckTime, weeklyReport: f.weeklyReport,
+            weeklyDay: f.weeklyDay, weeklyTime: f.weeklyTime,
+            emotionAlert: f.emotionAlert, emotionDailyMax: f.emotionDailyMax,
+            smtp,
+          },
+        });
+        toast('设置已保存');
+        await loadAssistant(); // 刷新 smtpReady 状态（密码已被后端打码回显）
+      } catch (e) { toast(e.message, 'error'); }
+      finally { asstBusy.value = ''; }
+    }
+
+    async function testAssistantEmail() {
+      if (asstBusy.value) return;
+      asstBusy.value = 'test';
+      try {
+        await api('/api/assistant/test-email', { method: 'POST' });
+        toast('测试邮件已发送，请检查收件箱（含垃圾邮件）');
+      } catch (e) { toast(e.message, 'error'); }
+      finally { asstBusy.value = ''; loadAssistant(); }
+    }
+
+    async function runAssistantNow(kind) {
+      if (asstBusy.value) return;
+      asstBusy.value = kind;
+      try {
+        const out = await api('/api/assistant/run-now', { method: 'POST', body: { kind } });
+        toast(out.msg || '任务已启动');
+        // 后台任务需要点时间（情绪分析走 LLM），稍后自动刷新一次看板
+        setTimeout(() => { if (route.view === 'assistant') loadAssistant(); }, 5000);
+      } catch (e) { toast(e.message, 'error'); }
+      finally { asstBusy.value = ''; }
+    }
+
     // ---------- 弹层 ----------
     const showRemark = ref(false);
     const remarkInput = ref('');
@@ -407,6 +497,9 @@ createApp({
       } else if (h.startsWith('#/backup')) {
         route.view = 'backup';
         route.id = 0;
+      } else if (h.startsWith('#/assistant')) {
+        route.view = 'assistant';
+        route.id = 0;
       } else if (h.startsWith('#/help')) {
         route.view = 'help';
         route.id = 0;
@@ -427,6 +520,7 @@ createApp({
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') loadBackupLogs();
+      if (route.view === 'assistant') loadAssistant();
       if (route.view === 'status') {
         loadStatus();
         statusTimer = setInterval(loadStatus, 5000);
@@ -956,6 +1050,8 @@ createApp({
       mergeLogs, loadingMerges, mergeCandidates,
       backupBusy, backupResult, backupFile, backupLogs, exportBackup, pickImport, importBackup,
       encPassword, impPassword, showEncPwd,
+      asst, asstLoading, asstBusy, asstForm,
+      loadAssistant, saveAssistantSettings, testAssistantEmail, runAssistantNow,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,

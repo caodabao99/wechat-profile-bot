@@ -58,6 +58,7 @@
         <a href="#/" :class="{active: route.view==='contacts' || route.view==='detail'}">联系人</a>
         <a href="#/merges" :class="{active: route.view==='merges'}">合并记录</a>
         <a href="#/backup" :class="{active: route.view==='backup'}">备份</a>
+        <a href="#/assistant" :class="{active: route.view==='assistant'}">关系助手</a>
         <a href="#/status" :class="{active: route.view==='status'}">状态</a>
         <a href="#/help" :class="{active: route.view==='help'}">命令说明</a>
       </nav>
@@ -323,6 +324,179 @@
           </table>
         </div>
       </div>
+    </section>
+
+    <!-- ============ 关系助手 ============ -->
+    <section v-if="route.view==='assistant'">
+      <div class="card status-head-card">
+        <div>
+          <h2 style="margin:0">关系助手</h2>
+          <p class="hint" style="margin:4px 0 0">重要日子 / 久未联系提醒、亲密度评分、情绪预警，全部通过邮件发送，不影响微信机器人现有功能</p>
+        </div>
+        <button class="btn sm" @click="loadAssistant" :disabled="asstLoading">{{ asstLoading ? '加载中…' : '刷新' }}</button>
+      </div>
+
+      <div v-if="!asst && asstLoading" class="card">正在读取关系助手数据…</div>
+      <div v-if="!asst && !asstLoading" class="card">读取失败，点右上角「刷新」重试。</div>
+
+      <template v-if="asst">
+        <!-- 设置 -->
+        <div class="card">
+          <h3>提醒设置</h3>
+          <label class="check-row"><input type="checkbox" v-model="asstForm.enabled">
+            <strong>启用关系助手</strong>（关闭时不发任何邮件、不做任何分析，零开销）</label>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.remindBirthday"> 重要日子提醒</label>
+            <span class="hint">提前</span>
+            <input class="text-input num-input" type="number" min="1" max="30" v-model.number="asstForm.birthdayAdvanceDays">
+            <span class="hint">天 · 数据来源：联系人画像里的生日 / 纪念日</span>
+          </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.remindCooling"> 久未联系提醒</label>
+            <span class="hint">超过</span>
+            <input class="text-input num-input" type="number" min="1" max="365" v-model.number="asstForm.coolingDays">
+            <span class="hint">天无任何互动即提醒（同一人 7 天内只提醒一次）</span>
+          </div>
+          <div class="asst-row">
+            <span class="st-label">每日提醒时间</span>
+            <input class="text-input num-input" type="time" v-model="asstForm.dailyCheckTime">
+            <span class="hint">到点聚合当天所有提醒发一封邮件，没有内容则不发</span>
+          </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.weeklyReport"> 每周报告</label>
+            <select class="text-input num-input" v-model.number="asstForm.weeklyDay">
+              <option :value="0">周日</option><option :value="1">周一</option><option :value="2">周二</option>
+              <option :value="3">周三</option><option :value="4">周四</option><option :value="5">周五</option>
+              <option :value="6">周六</option>
+            </select>
+            <input class="text-input num-input" type="time" v-model="asstForm.weeklyTime">
+            <span class="hint">互动统计 + 亲密度 + 情绪速览</span>
+          </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.emotionAlert"> 情绪预警</label>
+            <span class="hint">用 LLM 分析近 7 天聊天，每日最多分析</span>
+            <input class="text-input num-input" type="number" min="1" max="50" v-model.number="asstForm.emotionDailyMax">
+            <span class="hint">个联系人（控制模型花费）</span>
+          </div>
+
+          <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
+          <div class="asst-row">
+            <input class="text-input grow" v-model.trim="asstForm.smtp.host" placeholder="SMTP 服务器，如 smtp.qq.com">
+            <input class="text-input num-input" type="number" min="1" v-model.number="asstForm.smtp.port" placeholder="端口">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.smtp.ssl"> SSL（465 端口勾选）</label>
+          </div>
+          <div class="asst-row">
+            <input class="text-input grow" v-model.trim="asstForm.smtp.user" placeholder="登录账号（QQ/163 邮箱填完整地址；留空则免认证）" autocomplete="off">
+            <input class="text-input grow" type="password" v-model="asstForm.smtp.pass" placeholder="密码 / SMTP 授权码" autocomplete="new-password">
+          </div>
+          <div class="asst-row">
+            <input class="text-input grow" v-model.trim="asstForm.smtp.from" placeholder="发件人地址（一般同登录账号）">
+            <input class="text-input grow" v-model.trim="asstForm.smtp.toText" placeholder="收件人，多个用逗号分隔">
+          </div>
+          <div class="asst-row" style="margin-top:10px">
+            <button class="btn primary sm" @click="saveAssistantSettings" :disabled="!!asstBusy">{{ asstBusy==='save' ? '保存中…' : '保存设置' }}</button>
+            <button class="btn sm" @click="testAssistantEmail" :disabled="!!asstBusy">{{ asstBusy==='test' ? '发送中…' : '发测试邮件' }}</button>
+            <span class="chip" :class="asst.smtpReady ? 'st-ok' : 'st-gray'">{{ asst.smtpReady ? 'SMTP 配置完整' : 'SMTP 未配置完整' }}</span>
+          </div>
+          <p class="hint block">提示：QQ 邮箱需在「设置 → 账户」开启 SMTP 并生成授权码；163 邮箱同理。密码只保存在服务器数据库中。</p>
+        </div>
+
+        <!-- 看板 -->
+        <div class="status-grid" style="margin-top:14px">
+          <div class="card">
+            <h3>📅 近期重要日子（14 天内）</h3>
+            <p class="hint" v-if="!asst.upcoming.length">暂无——在联系人画像的「重要日子」里写上生日/纪念日（如 5月1日、1995-05-01）即可识别</p>
+            <div class="stat-row" v-for="(d, i) in asst.upcoming" :key="i">
+              <span class="st-label"><a :href="'#/contact/' + d.contactId">{{ d.name }}</a> · {{ d.kind }}<span class="hint">（{{ d.raw }}）</span></span>
+              <span class="st-val">{{ d.dateStr }} ·
+                <strong :class="d.daysUntil <= 1 ? 'asst-urgent' : ''">{{ d.daysUntil === 0 ? '今天' : (d.daysUntil === 1 ? '明天' : d.daysUntil + ' 天后') }}</strong>
+              </span>
+            </div>
+            <p class="hint" v-if="asst.unparsedDates && asst.unparsedDates.length">
+              另有 {{ asst.unparsedDates.length }} 条日期未能识别（如农历），可改成「5月1日」或「1995-05-01」格式
+            </p>
+          </div>
+
+          <div class="card">
+            <h3>🕐 久未联系（超过 {{ asstForm.coolingDays }} 天）</h3>
+            <p class="hint" v-if="!asst.cooling.length">没有冷却中的联系人，保持得不错</p>
+            <div class="asst-cool" v-for="c in asst.cooling" :key="c.contactId">
+              <div class="stat-row">
+                <span class="st-label"><a :href="'#/contact/' + c.contactId">{{ c.name }}</a></span>
+                <span class="st-val">{{ c.days }} 天没互动</span>
+              </div>
+              <p class="hint" v-if="c.lastContent" style="margin:0 0 6px">最后一句：{{ c.lastContent }}</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>💞 亲密度 Top10（近 30 天）</h3>
+            <p class="hint" v-if="!asst.intimacy.length">近 30 天还没有互动数据</p>
+            <div class="meter-block" v-for="it in asst.intimacy" :key="it.contactId">
+              <div class="meter-head">
+                <span><a :href="'#/contact/' + it.contactId">{{ it.name }}</a>
+                  <span class="hint">我 {{ it.mine }} / TA {{ it.other }} · 互动 {{ it.days }} 天</span></span>
+                <span class="meter-val">{{ it.score }} 分</span>
+              </div>
+              <div class="meter"><div class="meter-bar lv-ok" :style="{width: it.score + '%'}"></div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>💬 情绪关注（近 7 天）</h3>
+            <p class="hint" v-if="!asst.emotions.length">暂无分析记录——启用情绪预警后每日自动分析，也可在每日提醒邮件里看到</p>
+            <div class="asst-cool" v-for="e in asst.emotions" :key="e.contactId">
+              <div class="stat-row">
+                <span class="st-label"><a :href="'#/contact/' + e.contactId">{{ e.name }}</a>
+                  <span class="tag" :class="e.alert ? 'tag-red' : 'tag-green'" style="margin-left:6px">{{ e.emotion || '—' }}</span>
+                </span>
+                <span class="st-val">{{ e.score }} 分</span>
+              </div>
+              <p class="hint" style="margin:0" v-if="e.summary">{{ e.summary }}</p>
+              <p class="hint" style="margin:2px 0 6px" v-if="e.advice">建议：{{ e.advice }}</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 手动运行 + 日志 -->
+        <div class="card" style="margin-top:14px">
+          <h3>手动运行</h3>
+          <div class="asst-row">
+            <button class="btn sm" @click="runAssistantNow('daily')" :disabled="!!asstBusy">{{ asstBusy==='daily' ? '启动中…' : '立即执行每日提醒' }}</button>
+            <button class="btn sm" @click="runAssistantNow('weekly')" :disabled="!!asstBusy">{{ asstBusy==='weekly' ? '启动中…' : '立即生成每周报告' }}</button>
+            <span class="hint">需已启用助手并保存 SMTP；任务在后台执行，完成后刷新本页查看</span>
+          </div>
+          <div class="backup-log-section" v-if="asst.runs.length">
+            <h3>最近任务记录</h3>
+            <table class="backup-log-table">
+              <thead><tr><th>时间</th><th>任务</th><th>详情</th></tr></thead>
+              <tbody>
+                <tr v-for="(r, i) in asst.runs" :key="i">
+                  <td>{{ fmtTime(r.createdAt).slice(0,16) }}</td>
+                  <td>{{ {daily:'每日提醒', weekly:'每周报告', manual:'每日提醒(手动)', 'weekly-manual':'每周报告(手动)'}[r.kind] || r.kind }}</td>
+                  <td class="log-detail" :title="r.detail">{{ r.detail || '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="backup-log-section">
+            <h3>邮件发送记录</h3>
+            <table class="backup-log-table" v-if="asst.emailLog.length">
+              <thead><tr><th>时间</th><th>类型</th><th>主题</th><th>状态</th><th>错误</th></tr></thead>
+              <tbody>
+                <tr v-for="(l, i) in asst.emailLog" :key="i" :class="{err: l.status !== 'ok'}">
+                  <td>{{ fmtTime(l.createdAt).slice(0,16) }}</td>
+                  <td>{{ {daily:'每日提醒', weekly:'每周报告', test:'测试'}[l.kind] || l.kind }}</td>
+                  <td :title="l.subject">{{ l.subject || '-' }}</td>
+                  <td><span class="tag" :class="l.status==='ok' ? 'tag-green' : 'tag-red'">{{ l.status==='ok' ? '成功' : '失败' }}</span></td>
+                  <td class="log-detail" :title="l.error">{{ l.error || '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="hint" v-else>还没有发送过邮件</p>
+          </div>
+        </div>
+      </template>
     </section>
 
     <!-- ============ 服务器状态 ============ -->

@@ -305,6 +305,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.hBackupImport(w, r)
 	case parts[0] == "backup" && len(parts) == 2 && parts[1] == "logs" && r.Method == http.MethodGet:
 		s.hBackupLogs(w, r)
+	case parts[0] == "assistant":
+		s.routeAssistant(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

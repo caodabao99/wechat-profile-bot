@@ -86,6 +86,13 @@ func main() {
 	// 创建命令处理器
 	bot := NewBot(db, llmClient, client, cfg)
 
+	// 关系助手（网页端增值功能）：建表 + 定时任务；未启用时调度器只读一行配置即返回，无副作用
+	if err := ensureAssistantTables(db); err != nil {
+		slog.Warn("关系助手数据表初始化失败", "err", err)
+	} else {
+		startAssistantScheduler(db, llmClient)
+	}
+
 	// 启动 REST API（供 Windows 桌面版远程调用）；apiPort 填负数表示禁用
 	if cfg.APIPort > 0 {
 		apiSrv := startAPIServer(db, llmClient, client, cfg, cfg.APIPort)

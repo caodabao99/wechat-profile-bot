@@ -313,6 +313,14 @@ textarea.text-input { resize: vertical; }
 .more-row .btn { width: 100%; }
 .end-hint { padding: 12px 0 24px; font-size: 13px; }
 
+/* ---------- 关系助手 ---------- */
+.asst-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.asst-row .text-input.grow { flex: 1 1 220px; min-width: 0; }
+.num-input { width: 110px !important; flex: 0 0 auto !important; }
+.asst-urgent { color: var(--bad); }
+.asst-cool { border-bottom: 1px dashed #e5e7eb; padding: 4px 0; }
+.asst-cool:last-child { border-bottom: none; }
+
 /* ---------- 响应式 ---------- */
 @media (max-width: 640px) {
   body { font-size: 14px; }
