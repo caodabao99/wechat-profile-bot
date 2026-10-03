@@ -17,7 +17,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.2.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.3.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -34,7 +34,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.3.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.3.3.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -252,7 +252,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.3.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.3.2.tar.gz`，得到 `wechat-profile-bot:v2.3.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.3.3.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.3.3.tar.gz`，得到 `wechat-profile-bot:v2.3.3` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -511,6 +511,12 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v2.3.3（2026-10-03）
+
+**修复**
+
+- **手机端网页顶栏菜单显示不全**：小屏顶栏改为两行布局——第一行「品牌 + 退出」，第二行导航独占整行、放不下时可横向滑动，联系人 / 合并记录 / 备份 / 状态 / 命令说明五个入口全部可达；此前单行布局里导航被品牌和退出按钮挤成一条缝，只能看到前一两个入口且不易发现可以滑动
 
 ### v2.3.2（2026-10-03）
 

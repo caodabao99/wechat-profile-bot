@@ -318,12 +318,15 @@ textarea.text-input { resize: vertical; }
   body { font-size: 14px; }
   .container { padding: 14px 12px 50px; }
   .card { padding: 14px; border-radius: 12px; }
-  /* 顶栏：导航允许横向滚动，不换行挤压布局 */
-  .topbar-inner { gap: 8px; }
-  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; scrollbar-width: none; }
+  /* 顶栏改两行：第一行品牌+退出，第二行导航占满整行横向滚动。
+     单行布局时导航被品牌和退出挤成一条缝，只能看到前一两个入口，
+     用户不知道可以滑动，看起来就是「菜单显示不全」 */
+  .topbar-inner { flex-wrap: wrap; gap: 4px 8px; padding: 8px 12px 6px; }
+  .brand { order: 1; font-size: 15px; }
+  .btn.logout { order: 2; padding: 5px 10px; font-size: 12px; flex-shrink: 0; }
+  .tabs { order: 3; flex-basis: 100%; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; justify-content: flex-start; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }
-  .tabs a { padding: 6px 12px; font-size: 13.5px; white-space: nowrap; }
-  .btn.logout { padding: 5px 10px; font-size: 12px; flex-shrink: 0; }
+  .tabs a { padding: 6px 12px; font-size: 13.5px; white-space: nowrap; flex-shrink: 0; }
   /* 联系人卡片：小屏允许侧标换行（摘要默认已限两行） */
   .contact-card { flex-wrap: wrap; }
   /* 详情头部操作：按钮小一点，不强制 flex 比例 */
