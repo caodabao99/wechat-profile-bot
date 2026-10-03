@@ -153,16 +153,14 @@ func (s *apiServer) hAuthEnable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "缺少绑定密钥，请返回上一步重新获取二维码")
 		return
 	}
-	step, ok := totpValidate(req.Secret, req.Code, 0)
-	if !ok {
+	if !totpValidate(req.Secret, req.Code) {
 		s.guard.RecordAuthFailure(s.realIP(r), "绑定验证码错误")
 		writeErr(w, http.StatusBadRequest, "验证码无效或已过期，请确认验证器时间准确后重试")
 		return
 	}
 	if err := totpSaveSecret(&totpSecretFile{
-		Secret:       strings.ToUpper(strings.TrimSpace(req.Secret)),
-		CreatedAt:    time.Now().Format(time.RFC3339),
-		LastUsedStep: step,
+		Secret:    strings.ToUpper(strings.TrimSpace(req.Secret)),
+		CreatedAt: time.Now().Format(time.RFC3339),
 	}); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存 2FA 密钥失败: "+err.Error())
 		return
@@ -190,16 +188,10 @@ func (s *apiServer) hAuthVerify(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "2FA 未正确配置，请在服务器删除 totp_secret.json 后重新绑定")
 		return
 	}
-	step, ok := totpValidate(f.Secret, req.Code, f.LastUsedStep)
-	if !ok {
+	if !totpValidate(f.Secret, req.Code) {
 		s.guard.RecordAuthFailure(s.realIP(r), "动态码错误")
-		writeErr(w, http.StatusBadRequest, "动态码无效或已过期（同一验证码不能重复使用）")
+		writeErr(w, http.StatusBadRequest, "动态码无效或已过期，请确认输入的是验证器当前显示的 6 位码且手机时间准确")
 		return
-	}
-	// 记录已用时间步，防重放
-	f.LastUsedStep = step
-	if err := totpSaveSecret(f); err != nil {
-		slog.Warn("2FA 防重放状态落盘失败", "err", err)
 	}
 	s.issueSession(w, r)
 }
@@ -235,7 +227,7 @@ func (s *apiServer) hAuthDisable(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "2FA 未启用")
 		return
 	}
-	if _, ok := totpValidate(f.Secret, req.Code, f.LastUsedStep); !ok {
+	if !totpValidate(f.Secret, req.Code) {
 		// 已持有有效会话才能走到这里，不计入封禁（避免用户手滑输错码把自己封死），
 		// 但要在安全日志留痕：会话令牌若被盗，攻击者会在这里试动态码
 		s.guard.RecordDenied(s.realIP(r), "/api/auth/2fa/disable", "关闭2FA动态码错误")

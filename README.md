@@ -17,7 +17,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.1.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v2.3.2.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -26,12 +26,15 @@ wechat-profile-bot.service                Linux systemd 服务模板
 start.bat                                 Windows 前台运行
 install-service.bat                       Windows 安装为服务（需 nssm.exe）
 uninstall-service.bat                     Windows 卸载服务
+Dockerfile                                Docker 镜像构建文件
+docker-compose.yml                        Docker compose 配置
+docker-entrypoint.sh                      Docker 容器入口脚本（降权启动）
 config.json                               配置模板
 README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」，需要源码（`git clone` 本仓库）
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v2.3.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -247,7 +250,10 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 ## Docker 部署
 
-镜像未发布到 Docker Hub，需要先本地构建。
+镜像未发布到 Docker Hub，两种方式任选：
+
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v2.3.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v2.3.2.tar.gz`，得到 `wechat-profile-bot:v2.3.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
 
@@ -505,6 +511,20 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v2.3.2（2026-10-03）
+
+**新增**
+
+- **Docker 镜像随 Release 发布**：Release 附带 `wechat-profile-bot-docker-v2.3.2.tar.gz`，`docker load` 即可导入 `wechat-profile-bot:v2.3.2` 镜像，不再必须 git clone 源码构建；发布包内也新增 `Dockerfile` / `docker-compose.yml` / `docker-entrypoint.sh`，可自行构建
+
+**变更**
+
+- **完全移除 2FA 防重放限制**：不再记录已使用的时间步（`totp_secret.json` 的 `LastUsedStep` 字段废弃），同一验证码在其 30 秒有效窗口（含前后各 1 步容差）内可重复使用；此前多设备同时登录或重复提交会被误拒为「验证码已被使用」，现已不会。登录仍需密码 + 2FA 验证码两要素，安全性不受影响
+
+**测试**
+
+- 新增 TOTP 验证单测（正常步、窗口边界、错误码）；删除联系人回归测试同步更新
 
 ### v2.3.1（2026-10-03）
 

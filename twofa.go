@@ -56,9 +56,8 @@ func dataDir() string {
 // ---------------- TOTP 密钥文件 ----------------
 
 type totpSecretFile struct {
-	Secret       string `json:"secret"`       // base32（无填充）的共享密钥
-	CreatedAt    string `json:"createdAt"`    // RFC3339
-	LastUsedStep int64  `json:"lastUsedStep"` // 最近一次成功验证的时间步，用于防重放
+	Secret    string `json:"secret"`    // base32（无填充）的共享密钥
+	CreatedAt string `json:"createdAt"` // RFC3339
 }
 
 // totpMu 串行化密钥检查、验证和修改；恢复旁路密钥时也必须持有。
@@ -138,28 +137,26 @@ func totpCodeAt(secretB32 string, step int64) (string, error) {
 }
 
 // totpValidate 校验用户输入的 6 位码。
-// lastStep 为该密钥上次成功使用的时间步（防重放），返回本次命中的时间步供调用方落盘。
-// 允许 ±totpWindow 个时间步以容忍手机时钟偏差；成功命中步必须大于 lastStep。
-func totpValidate(secretB32, code string, lastStep int64) (int64, bool) {
+// 允许 ±totpWindow 个时间步以容忍手机时钟偏差。
+// 注：不做时间步防重放——同一验证码在 30 秒有效期内可以重复使用，
+// 避免「退出登录后立刻重登」被误判为重放。
+func totpValidate(secretB32, code string) bool {
 	code = strings.TrimSpace(code)
 	if len(code) != totpDigits {
-		return 0, false
+		return false
 	}
 	nowStep := time.Now().Unix() / totpPeriod
 	for d := int64(-totpWindow); d <= totpWindow; d++ {
 		step := nowStep + d
-		if step <= lastStep {
-			continue // 该时间步（或更早）的码已被成功使用过，拒绝重放
-		}
 		want, err := totpCodeAt(secretB32, step)
 		if err != nil {
-			return 0, false
+			return false
 		}
 		if subtle.ConstantTimeCompare([]byte(want), []byte(code)) == 1 {
-			return step, true
+			return true
 		}
 	}
-	return 0, false
+	return false
 }
 
 // ---------------- 网页会话 ----------------

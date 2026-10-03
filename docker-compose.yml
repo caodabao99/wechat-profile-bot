@@ -1,11 +1,12 @@
-version: "3.8"
-
 services:
   wechat-profile-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    image: wechat-profile-bot:latest
+    # 本地构建产出的镜像版本号，与 go 源码 sysinfo.go 的 appVersion 保持一致。
+    # 若是 docker load 导入了 Release 附带的镜像 tar，删掉上面的 build: 段即可，
+    # image 名与 tar 内一致（wechat-profile-bot:v2.3.2）。
+    image: wechat-profile-bot:v2.3.2
     container_name: wechat-profile-bot
     restart: unless-stopped
     volumes:
@@ -20,5 +21,21 @@ services:
       # 设 PUID=0 可退回旧行为（以 root 运行）。
       - PUID=1000
       - PGID=1000
-    # host 网络模式，避免 bridge 网络访问外部 API 的问题
+    # host 网络模式，避免 bridge 网络访问外部 API 的问题。
+    # 服务端口由 config.json 的 port 决定（默认 17965），
+    # host 模式下不需要 ports: 映射，直接访问 http://<宿主机IP>:17965
     network_mode: host
+    healthcheck:
+      # 业务接口有白名单/鉴权，HTTP 探测会误报，这里只探端口是否在监听。
+      # 若修改了 config.json 里的 port，需同步修改下面的探测端口。
+      test: ["CMD-SHELL", "nc -w 3 127.0.0.1 17965 </dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      # 限制容器日志体积，防止长期运行撑爆磁盘（业务日志在 ./config/bot.log）
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

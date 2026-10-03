@@ -61,7 +61,7 @@ func TestAuthEnableCannotReplaceBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Secret != secrets[winner%2] || f.LastUsedStep == 0 {
+	if f.Secret != secrets[winner%2] {
 		t.Fatalf("winning binding was not persisted: %+v", f)
 	}
 	before, err := os.ReadFile(totpSecretPath())

@@ -5,6 +5,10 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
+# 国内网络直连 Go 模块镜像源（容器内一般没有宿主机的代理可用）；
+# 海外构建环境可删掉这行或改回 proxy.golang.org
+ENV GOPROXY=https://goproxy.cn,direct
+
 # 安装依赖（如果需要 CGO 则加 gcc/musl-dev，但 glebarez/sqlite 是纯 Go 的，不需要）
 COPY go.mod go.sum ./
 RUN go mod download
