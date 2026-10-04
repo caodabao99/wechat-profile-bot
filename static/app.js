@@ -222,13 +222,39 @@ createApp({
       finally { asstLoading.value = false; }
     }
 
+    // numField 校验 type=number + v-model.number 的输入框。
+    // 用户把框里的数字删空时 Vue 交上来的是空串 ''，直接 PUT 会让后端
+    // json 反序列化 int 失败，返回一句笼统的「请求体解析失败」，
+    // 完全看不出是哪个框出了问题。这里在发请求前拦下并指名道姓。
+    // 上下界与后端 assistant.go / archive.go 的校验保持一致。
+    function numField(label, v, min, max) {
+      const n = (v === '' || v === null || v === undefined) ? NaN : Number(v);
+      if (!Number.isInteger(n)) return { ok: false, msg: label + '必须是整数' };
+      if (n < min || n > max) return { ok: false, msg: label + '必须在 ' + min + '~' + max + ' 之间' };
+      return { ok: true, v: n };
+    }
+
     async function saveAssistantSettings() {
       if (asstBusy.value) return;
       asstBusy.value = 'save';
       try {
         const f = asstForm.value;
+        const nums = {};
+        const spec = [
+          ['birthdayAdvanceDays', '生日提前天数', f.birthdayAdvanceDays, 1, 30],
+          ['coolingDays', '久未联系天数', f.coolingDays, 1, 365],
+          ['emotionDailyMax', '情绪预警每日人数', f.emotionDailyMax, 1, 50],
+          ['followupWindowDays', '待跟进回溯天数', f.followupWindowDays, 1, 180],
+          ['followupDailyMax', '待跟进每日人数', f.followupDailyMax, 1, 30],
+          ['smtpPort', 'SMTP 端口', f.smtp.port, 1, 65535],
+        ];
+        for (const [key, label, val, min, max] of spec) {
+          const r = numField(label, val, min, max);
+          if (!r.ok) { toast(r.msg, 'error'); return; }
+          nums[key] = r.v;
+        }
         const smtp = {
-          host: f.smtp.host, port: f.smtp.port, ssl: f.smtp.ssl,
+          host: f.smtp.host, port: nums.smtpPort, ssl: f.smtp.ssl,
           user: f.smtp.user, pass: f.smtp.pass, from: f.smtp.from,
           to: f.smtp.toText.split(/[,，;；\s]+/).map(s => s.trim()).filter(Boolean),
         };
@@ -236,12 +262,12 @@ createApp({
           method: 'PUT',
           body: {
             enabled: f.enabled, remindBirthday: f.remindBirthday, remindCooling: f.remindCooling,
-            birthdayAdvanceDays: f.birthdayAdvanceDays, coolingDays: f.coolingDays,
+            birthdayAdvanceDays: nums.birthdayAdvanceDays, coolingDays: nums.coolingDays,
             dailyCheckTime: f.dailyCheckTime, weeklyReport: f.weeklyReport,
             weeklyDay: f.weeklyDay, weeklyTime: f.weeklyTime,
-            emotionAlert: f.emotionAlert, emotionDailyMax: f.emotionDailyMax,
+            emotionAlert: f.emotionAlert, emotionDailyMax: nums.emotionDailyMax,
             remindFollowup: f.remindFollowup, followupEnabled: f.followupEnabled,
-            followupDailyMax: f.followupDailyMax, followupWindowDays: f.followupWindowDays,
+            followupDailyMax: nums.followupDailyMax, followupWindowDays: nums.followupWindowDays,
             blessingDraft: f.blessingDraft, calendarKey: f.calendarKey,
             smtp,
           },
@@ -252,6 +278,15 @@ createApp({
       finally { asstBusy.value = ''; }
     }
 
+    // refreshDashboard 只刷新看板聚合数据（含 smtpReady），不回填 asstForm。
+    // 发测试邮件后需要看到 smtpReady 的变化，但绝不能顺手把用户正在编辑的
+    // 十几个字段冲回服务器上的旧值——那等于「点一下测试，刚才改的全没了」。
+    async function refreshDashboard() {
+      try {
+        asst.value = await api('/api/assistant/dashboard');
+      } catch (e) { /* 静默：看板刷新失败不该打断用户正在做的编辑 */ }
+    }
+
     async function testAssistantEmail() {
       if (asstBusy.value) return;
       asstBusy.value = 'test';
@@ -259,7 +294,7 @@ createApp({
         await api('/api/assistant/test-email', { method: 'POST' });
         toast('测试邮件已发送，请检查收件箱（含垃圾邮件）');
       } catch (e) { toast(e.message, 'error'); }
-      finally { asstBusy.value = ''; loadAssistant(); }
+      finally { asstBusy.value = ''; refreshDashboard(); }
     }
 
     async function runAssistantNow(kind) {
@@ -269,7 +304,8 @@ createApp({
         const out = await api('/api/assistant/run-now', { method: 'POST', body: { kind } });
         toast(out.msg || '任务已启动');
         // 后台任务需要点时间（情绪分析走 LLM），稍后自动刷新一次看板
-        setTimeout(() => { if (route.view === 'assistant') loadAssistant(); }, 5000);
+        // 只刷数据不回填表单，免得把用户正在改的设置冲掉
+        setTimeout(() => { if (route.view === 'assistant') { refreshDashboard(); loadFollowups(); } }, 5000);
       } catch (e) { toast(e.message, 'error'); }
       finally { asstBusy.value = ''; }
     }
@@ -289,6 +325,15 @@ createApp({
     const profileEditError = ref('');
     // 编辑器按 PROFILE_SCHEMA 的分节铺开，与画像查看页同一套字段定义。
     const profileSchema = PROFILE_SCHEMA;
+    // 意图行的稳定 key。用数组下标做 :key 时，删掉中间一行会让后面所有行
+    // 的 key 集体前移，Vue 复用错节点，输入框里的内容和它绑定的数据对不上。
+    let intentUid = 0;
+    function nextIntentUid() { return ++intentUid; }
+    function addIntentRow() {
+      if (!profileEditor.value) return;
+      profileEditor.value.intents.push({ _uid: nextIntentUid(), name: '', description: '' });
+    }
+
     function startProfileEdit() {
       try {
         const base = contact.value.profileJson || '';
@@ -314,7 +359,7 @@ createApp({
         }
         const intentObj = p.intent_patterns;
         const intents = (intentObj && typeof intentObj === 'object' && !Array.isArray(intentObj))
-          ? Object.keys(intentObj).sort().map(name => ({ name, description: String(intentObj[name] ?? '') }))
+          ? Object.keys(intentObj).sort().map(name => ({ _uid: nextIntentUid(), name, description: String(intentObj[name] ?? '') }))
           : [];
         profileEditor.value = { id: contact.value.id, base, values, intents };
         profileEditError.value = '';
@@ -340,19 +385,26 @@ createApp({
       for (const row of draft.intents) {
         const name = row.name.trim(), description = row.description.trim();
         if (!name && !description) continue;
-        if (!name || Object.hasOwn(p.intent_patterns, name)) { profileEditError.value = '意图名称不能为空或重复'; return; }
+        // 不用 Object.hasOwn：它要 Chrome 93+/Safari 15.4+/Firefox 92+，
+        // 旧浏览器上这里会抛 TypeError，而这行在 try 之外，
+        // 表现就是点「保存画像」完全没反应、也没有任何报错。
+        // intent_patterns 是 Object.create(null)，自身没有 hasOwnProperty，必须走原型上的。
+        if (!name || Object.prototype.hasOwnProperty.call(p.intent_patterns, name)) { profileEditError.value = '意图名称不能为空或重复'; return; }
         p.intent_patterns[name] = description;
       }
       profileSaving.value = true;
       profileEditError.value = '';
       try {
         await api('/api/contacts/' + draft.id + '/profile', { method: 'PUT', body: { profile: p, baseProfileJson: draft.base } });
-        profileEditor.value = null;
-        toast('画像已保存');
-        if (route.view === 'detail' && route.id === draft.id) await loadDetail();
-        loadContacts();
-      } catch (e) { profileEditError.value = e.message; }
+      } catch (e) { profileEditError.value = e.message; return; }
       finally { profileSaving.value = false; }
+      // 走到这里说明保存已经成功，后面的刷新只是收尾。
+      // 刷新失败不该再往 profileEditError 里写东西——弹窗这时已经关了，
+      // 错误既看不见，又会残留到用户下次打开弹窗时。
+      profileEditor.value = null;
+      toast('画像已保存');
+      if (route.view === 'detail' && route.id === draft.id) loadDetail();
+      loadContacts();
     }
 
     const toasts = ref([]);
@@ -384,14 +436,27 @@ createApp({
       if (res.status === 401) {
         localStorage.removeItem(TOKEN_KEY);
         authed.value = false;
-        throw new Error('登录已过期，请重新输入 Token');
+        throw httpErr('登录已过期，请重新输入 Token', 401);
       }
       let body = {};
       try { body = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
       if (!res.ok) {
-        throw new Error(body.error || ('请求失败 (' + res.status + ')'));
+        throw httpErr(body.error || ('请求失败 (' + res.status + ')'), res.status);
       }
       return body;
+    }
+
+    // httpErr 造一个带 HTTP 状态码的错误对象。
+    // 调用方需要区分「令牌确实失效(401/403)」和「服务器挂了/断网(5xx、TypeError)」，
+    // 只有前者才该清掉本地凭据，否则一次网络抖动就把用户踢下线。
+    function httpErr(msg, status) {
+      const e = new Error(msg);
+      e.status = status;
+      return e;
+    }
+    // isAuthRejected 判断错误是不是明确的认证/授权失败
+    function isAuthRejected(e) {
+      return !!e && (e.status === 401 || e.status === 403);
     }
 
     // authPost 登录专用：不带任何 Authorization 头（避免残留会话干扰），
@@ -404,7 +469,7 @@ createApp({
       });
       let data = {};
       try { data = await res.json(); } catch (e) { /* 非 JSON */ }
-      if (!res.ok) throw new Error(data.error || ('请求失败 (' + res.status + ')'));
+      if (!res.ok) throw httpErr(data.error || ('请求失败 (' + res.status + ')'), res.status);
       return data;
     }
 
@@ -525,7 +590,10 @@ createApp({
         const r = await authPost('/api/auth/trusted/login', { trustedToken: tt });
         if (r.stage === 'ok') { enterApp(r.session); return true; }
       } catch (e) {
-        localStorage.removeItem(TRUSTED_KEY);
+        // 只有服务端明确说「令牌无效」才清除本地可信令牌。
+        // 5xx / 断网 / 服务重启中一律保留，否则一次网络抖动就把免登录设备踢掉，
+        // 用户下次还得重新输 Token + 动态码。
+        if (isAuthRejected(e)) localStorage.removeItem(TRUSTED_KEY);
       }
       return false;
     }
@@ -540,6 +608,11 @@ createApp({
       authed.value = false;
       authStage.value = 'token';
       loginError.value = '';
+      // 必须整页刷新：内存里还留着上一个账号的联系人、画像、聊天记录、看板数据。
+      // 只把 authed 置 false 的话，换个人登录（或多标签页里另一个人登录）会看到
+      // 别人的通讯录残留在列表和详情页里，属于数据串号。
+      location.hash = '#/';
+      location.reload();
     }
 
     // ---------- 路由解析 ----------
@@ -593,7 +666,15 @@ createApp({
       }
     }
 
+    // 请求序号：每发起一次加载就自增，回包时比对，过期的直接丢弃。
+    // 没有它的话快速点 A→B，A 的慢响应会把 B 的画像/聊天记录覆盖掉，
+    // 而保存类操作（备注、标签、事件、合并、删除）用的都是「当前」route.id，
+    // 用户看着 A 的资料操作，实际写进了 B —— 属于会静默损坏数据的竞态。
+    let detailSeq = 0;
+    let contactsSeq = 0;
+
     function resetDetail() {
+      detailSeq++;   // 作废所有在途的详情页请求
       contact.value = null;
       detailTab.value = 'profile';
       messages.value = [];
@@ -607,6 +688,17 @@ createApp({
       showDelete.value = false;
       timeline.value = [];
       tagEditOpen.value = false;
+      // 弹窗与忙碌态也要一起收掉。addEvent/delEvent/saveTagEdit 用的都是「当前」route.id，
+      // 弹窗开着时切换联系人，事件会被写到新联系人名下还提示保存成功；
+      // busy 卡在 true 会让整个详情页的按钮永久禁用。
+      showEventModal.value = false;
+      eventForm.title = '';
+      eventForm.detail = '';
+      eventForm.eventTime = '';
+      showFollowupModal.value = false;
+      profileEditor.value = null;
+      busy.value = false;
+      timelineBusy.value = false;
     }
 
     function gotoDetail(id) {
@@ -628,6 +720,7 @@ createApp({
       return '?' + p.toString();
     }
     async function loadContacts(reset) {
+      const my = ++contactsSeq;
       if (reset !== false) {
         contactsOffset.value = 0;
       }
@@ -636,6 +729,7 @@ createApp({
         // 兜底成 []：后端空列表若返回 null，ref 变成 null，
         // 模板里 .length 会抛 TypeError 导致整页白屏
         const out = await api('/api/contacts' + buildContactsQuery(contactsOffset.value));
+        if (my !== contactsSeq) return;   // 已被更新的搜索/筛选取代，丢弃
         const list = (out && out.list) || [];
         if (contactsOffset.value === 0) {
           contacts.value = list;
@@ -645,9 +739,10 @@ createApp({
         }
         contactsTotal.value = (out && out.total) || 0;
       } catch (e) {
+        if (my !== contactsSeq) return;
         toast(e.message, 'error');
       } finally {
-        loadingContacts.value = false;
+        if (my === contactsSeq) loadingContacts.value = false;
       }
     }
     function loadMoreContacts() {
@@ -673,18 +768,22 @@ createApp({
 
     // ---------- 联系人详情 ----------
     async function loadDetail() {
+      const my = ++detailSeq;
       loadingDetail.value = true;
       try {
-        contact.value = await api('/api/contacts/' + route.id);
+        const c = await api('/api/contacts/' + route.id);
+        if (my !== detailSeq) return;   // 已经切到别的联系人了，这份数据作废
+        contact.value = c;
         if (detailTab.value === 'messages' && !messages.value.length) loadMessages(false);
         if (detailTab.value === 'history') loadHistory();
         if (detailTab.value === 'stats') loadStats();
         if (detailTab.value === 'timeline' && !timeline.value.length) loadTimeline();
       } catch (e) {
+        if (my !== detailSeq) return;
         toast(e.message, 'error');
         contact.value = null;
       } finally {
-        loadingDetail.value = false;
+        if (my === detailSeq) loadingDetail.value = false;
       }
     }
 
@@ -742,25 +841,32 @@ createApp({
 
     // ---------- 消息 ----------
     async function loadMessages(more) {
+      const my = detailSeq;   // 跟随当前详情页；期间切人则本次回包作废
       messagesLoading.value = true;
       try {
         const offset = more ? messages.value.length : 0;
         const list = (await api('/api/contacts/' + route.id + '/messages?offset=' + offset + '&limit=50')) || [];
+        if (my !== detailSeq) return;
         if (more) messages.value = messages.value.concat(list);
         else messages.value = list;
         messagesHasMore.value = list.length === 50;
       } catch (e) {
+        if (my !== detailSeq) return;
         toast(e.message, 'error');
       } finally {
-        messagesLoading.value = false;
+        if (my === detailSeq) messagesLoading.value = false;
       }
     }
 
     // ---------- 画像历史 ----------
     async function loadHistory() {
+      const my = detailSeq;
       try {
-        history.value = (await api('/api/contacts/' + route.id + '/history?limit=100')) || [];
+        const out = (await api('/api/contacts/' + route.id + '/history?limit=100')) || [];
+        if (my !== detailSeq) return;
+        history.value = out;
       } catch (e) {
+        if (my !== detailSeq) return;
         toast(e.message, 'error');
       }
     }
@@ -794,9 +900,13 @@ createApp({
 
     // ---------- 统计 ----------
     async function loadStats() {
+      const my = detailSeq;
       try {
-        stats.value = await api('/api/contacts/' + route.id + '/stats');
+        const out = await api('/api/contacts/' + route.id + '/stats');
+        if (my !== detailSeq) return;
+        stats.value = out;
       } catch (e) {
+        if (my !== detailSeq) return;
         toast(e.message, 'error');
       }
     }
@@ -946,6 +1056,9 @@ createApp({
         backupLogs.value = (await api('/api/backup/logs')) || [];
       } catch (e) {
         backupLogs.value = [];
+        // 必须出声：静默置空会让「读取失败」和「还没有备份记录」长得一模一样，
+        // 用户以为备份没跑过，实际是接口挂了
+        toast('备份记录读取失败：' + e.message, 'error');
       }
     }
 
@@ -953,24 +1066,32 @@ createApp({
     const archive = ref(null);   // {stats, byContact}
     const archiveBusy = ref(''); // '' / 'run' / 'restore' / 'save'
     const archiveResult = ref('');
+    const archiveError = ref(false);   // 读取失败（区别于「还在读」）
     const archiveForm = reactive({ enabled: false, retentionDays: 730 });
 
     async function loadArchive() {
       try {
         const d = await api('/api/archive/status');
         archive.value = d;
+        archiveError.value = false;
         archiveForm.enabled = !!d.stats.enabled;
         archiveForm.retentionDays = d.stats.retentionDays;
       } catch (e) {
         archive.value = null;
+        archiveError.value = true;
+        toast('归档状态读取失败：' + e.message, 'error');
       }
     }
 
     async function saveArchiveSettings() {
       archiveBusy.value = 'save';
       try {
+        // 同 saveAssistantSettings：清空输入框会送出 ''，后端解析 int 失败只会回一句
+        // 「请求体解析失败」，这里先拦下来并说清是哪个字段、合法范围是多少
+        const r = numField('保留天数', archiveForm.retentionDays, 30, 36500);
+        if (!r.ok) { toast(r.msg, 'error'); return; }
         await api('/api/archive/settings', { method: 'POST', body: {
-          enabled: archiveForm.enabled, retentionDays: archiveForm.retentionDays,
+          enabled: archiveForm.enabled, retentionDays: r.v,
         } });
         toast('归档设置已保存');
         loadArchive();
@@ -982,11 +1103,16 @@ createApp({
     }
 
     async function runArchive() {
-      if (!confirm('将把超过 ' + archiveForm.retentionDays + ' 天的消息移入归档表（可随时恢复）。继续吗？')) return;
+      // 确认框里显示的是输入框当前的值，那就必须把这个值一起发给后端。
+      // 后端 days=0 时用的是「已保存」的配置：用户改了天数但没点「保存设置」
+      // 就直接归档的话，弹框说 90 天、实际按 730 天跑，归档范围完全对不上。
+      const chk = numField('保留天数', archiveForm.retentionDays, 30, 36500);
+      if (!chk.ok) { toast(chk.msg, 'error'); return; }
+      if (!confirm('将把超过 ' + chk.v + ' 天的消息移入归档表（可随时恢复）。继续吗？')) return;
       archiveBusy.value = 'run';
       archiveResult.value = '';
       try {
-        const r = await api('/api/archive/run', { method: 'POST', body: {} });
+        const r = await api('/api/archive/run', { method: 'POST', body: { days: chk.v } });
         archiveResult.value = '本次归档 ' + r.moved + ' 条消息';
         toast(archiveResult.value);
         loadArchive();
@@ -1026,6 +1152,9 @@ createApp({
         trustedList.value = d.clients || [];
       } catch (e) {
         trustedList.value = [];
+        // 同上：不报错的话「读取失败」会被当成「暂无可信设备」，
+        // 用户以为设备都掉线了，其实是接口挂了
+        toast('可信设备列表读取失败：' + e.message, 'error');
       }
     }
 
@@ -1155,6 +1284,7 @@ createApp({
 
     // ---------- 联系人标签 ----------
     const tags = ref([]);           // [{id,name,count}]
+    const tagsError = ref('');      // 标签读取失败的原因（空串表示正常）
     const filterTagIds = ref([]);   // 列表页生效的标签筛选（多个为「且」）
     const picked = ref([]);         // 批量勾选的联系人 id
     const showTagMgr = ref(false);
@@ -1172,9 +1302,12 @@ createApp({
       try {
         const out = await api('/api/tags');
         tags.value = (out && out.list) || [];
+        tagsError.value = '';
       } catch (e) {
-        // 标签是增值功能，取不到不该打断联系人列表
+        // 标签是增值功能，取不到不该打断联系人列表，但也不能一声不吭：
+        // tags=[] 会让列表页和详情页的标签筛选条整块消失，用户以为标签功能没了
         tags.value = [];
+        tagsError.value = e.message;
       }
     }
     async function createTag() {
@@ -1263,6 +1396,9 @@ createApp({
     }
     // 详情页标签编辑：直接用 contact.tags 初始化，省一次请求
     function openTagEdit() {
+      // 再点一次要能收起：按钮文案写的就是「收起标签」，
+      // 原来却无条件重置勾选并强制展开 —— 既收不起来，又把没保存的改动丢了
+      if (tagEditOpen.value) { tagEditOpen.value = false; return; }
       const c = contact.value;
       tagEditIds.value = ((c && c.tags) || []).map(t => t.id);
       tagEditOpen.value = true;
@@ -1273,13 +1409,14 @@ createApp({
       if (i >= 0) tagEditIds.value.splice(i, 1); else tagEditIds.value.push(id);
     }
     async function saveTagEdit() {
+      const cid = route.id;   // 钉住写入目标，避免请求在途时切人导致标签打到别人身上
       tagBusy.value = true;
       try {
-        await api('/api/contacts/' + route.id + '/tags', { method: 'PUT', body: { tagIds: tagEditIds.value } });
+        await api('/api/contacts/' + cid + '/tags', { method: 'PUT', body: { tagIds: tagEditIds.value } });
         tagEditOpen.value = false;
         toast('标签已保存');
-        loadDetail();
         loadTags();
+        if (route.id === cid) loadDetail();
       } catch (e) { toast(e.message, 'error'); }
       finally { tagBusy.value = false; }
     }
@@ -1368,14 +1505,19 @@ createApp({
     const social = ref(null);
     const socialDays = ref(30);
     const socialBusy = ref(false);
+    let socialDaysOk = socialDays.value;   // 最近一次成功加载的天数，失败时退回它
     const weekdayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
     async function loadSocial() {
+      const d = socialDays.value;
       socialBusy.value = true;
       try {
-        social.value = await api('/api/insights/social?days=' + socialDays.value);
+        social.value = await api('/api/insights/social?days=' + d);
+        socialDaysOk = d;
         insightLoaded.social = true;
-      } catch (e) { toast(e.message, 'error'); }
-      finally { socialBusy.value = false; }
+      } catch (e) {
+        toast(e.message, 'error');
+        socialDays.value = socialDaysOk;   // 与年度报告同理：高亮和数据的口径要一致
+      } finally { socialBusy.value = false; }
     }
     function changeSocialDays(d) { socialDays.value = d; loadSocial(); }
     const socialHourMax = computed(() => {
@@ -1411,15 +1553,29 @@ createApp({
     const report = ref(null);
     const reportYear = ref(new Date().getFullYear());
     const reportBusy = ref(false);
+    // 后端只接受 2000~2100（insights_api.go），连点「上一年」能一路点到负数
+    const REPORT_YEAR_MIN = 2000, REPORT_YEAR_MAX = 2100;
+    let reportYearOk = reportYear.value;   // 最近一次成功加载的年份，失败时退回它
     async function loadReport() {
+      const y = reportYear.value;
       reportBusy.value = true;
       try {
-        report.value = await api('/api/insights/report?year=' + reportYear.value);
+        report.value = await api('/api/insights/report?year=' + y);
+        reportYearOk = y;
         insightLoaded.report = true;
-      } catch (e) { toast(e.message, 'error'); }
-      finally { reportBusy.value = false; }
+      } catch (e) {
+        toast(e.message, 'error');
+        // 失败就把年份退回上一次成功的值：否则按钮高亮的是新年份、
+        // 表格里还是旧年份的数据，用户会以为统计算错了
+        reportYear.value = reportYearOk;
+      } finally { reportBusy.value = false; }
     }
-    function changeReportYear(y) { reportYear.value = y; loadReport(); }
+    function changeReportYear(y) {
+      const clamped = Math.min(REPORT_YEAR_MAX, Math.max(REPORT_YEAR_MIN, y));
+      if (clamped !== y) toast('仅支持 ' + REPORT_YEAR_MIN + '~' + REPORT_YEAR_MAX + ' 年', 'error');
+      reportYear.value = clamped;
+      loadReport();
+    }
     const reportMonthMax = computed(() => {
       const r = report.value;
       if (!r || !r.months) return 1;
@@ -1462,12 +1618,14 @@ createApp({
     };
     function tlKind(k) { return timelineKinds[k] || k || ''; }
     async function loadTimeline() {
+      const my = detailSeq;
       timelineBusy.value = true;
       try {
         const out = await api('/api/contacts/' + route.id + '/timeline');
+        if (my !== detailSeq) return;
         timeline.value = (out && out.list) || [];
-      } catch (e) { toast(e.message, 'error'); }
-      finally { timelineBusy.value = false; }
+      } catch (e) { if (my === detailSeq) toast(e.message, 'error'); }
+      finally { if (my === detailSeq) timelineBusy.value = false; }
     }
     function openEventModal() {
       const d = new Date(), pad = n => String(n).padStart(2, '0');
@@ -1479,29 +1637,33 @@ createApp({
     }
     async function addEvent() {
       if (!eventForm.title.trim()) { toast('请填写事件标题', 'error'); return; }
+      // 进门先钉住联系人 id：请求发出后用户可能已经切到别人，
+      // 用「当前」route.id 会把事件写到新联系人名下还提示成功
+      const cid = route.id;
       // datetime-local 只给到分钟，后端 parseTimeLoose 不认这个格式，补上秒
       let when = eventForm.eventTime;
       if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(when)) when += ':00';
       timelineBusy.value = true;
       try {
-        await api('/api/contacts/' + route.id + '/timeline', {
+        await api('/api/contacts/' + cid + '/timeline', {
           method: 'POST',
           body: { title: eventForm.title.trim(), detail: eventForm.detail.trim(), eventTime: when },
         });
         showEventModal.value = false;
         toast('事件已记录');
-        loadTimeline();
+        if (route.id === cid) loadTimeline();
       } catch (e) { toast(e.message, 'error'); }
       finally { timelineBusy.value = false; }
     }
     async function delEvent(ev) {
       if (!ev || !ev.id) return;
       if (!confirm('删除手动记录的事件「' + ev.title + '」？')) return;
+      const cid = route.id;   // 同上：钉住删除目标，避免误删别人的事件
       timelineBusy.value = true;
       try {
-        await api('/api/contacts/' + route.id + '/timeline?eventId=' + ev.id, { method: 'DELETE' });
+        await api('/api/contacts/' + cid + '/timeline?eventId=' + ev.id, { method: 'DELETE' });
         toast('已删除');
-        loadTimeline();
+        if (route.id === cid) loadTimeline();
       } catch (e) { toast(e.message, 'error'); }
       finally { timelineBusy.value = false; }
     }
@@ -1590,17 +1752,29 @@ createApp({
 
     // ---------- 日历订阅 ----------
     const cal = ref(null);
+    const calLoaded = ref(false);   // 是否成功读到过订阅状态（null 可能是"没开启"也可能是"读失败"）
     const calBusy = ref(false);
     async function loadCalendarKey() {
-      try { cal.value = await api('/api/assistant/calendar/key'); }
-      catch (e) { cal.value = null; }
+      try {
+        cal.value = await api('/api/assistant/calendar/key');
+        calLoaded.value = true;
+      } catch (e) {
+        cal.value = null;
+        calLoaded.value = false;
+        toast('日历订阅状态读取失败：' + e.message, 'error');
+      }
     }
     async function rotateCalendarKey() {
-      if (cal.value && cal.value.enabled &&
-        !confirm('重新生成订阅密钥后，旧的订阅链接会立刻失效，需要在日历客户端里重新添加。确定继续？')) return;
+      // 读不到状态时同样要确认。原来写的是 cal.value && cal.value.enabled，
+      // 一旦 loadCalendarKey 失败（cal=null）条件短路，点「重新生成」会
+      // 不做任何提示就把正在用的订阅链接废掉。
+      if (!calLoaded.value || (cal.value && cal.value.enabled)) {
+        if (!confirm('重新生成订阅密钥后，旧的订阅链接会立刻失效，需要在日历客户端里重新添加。确定继续？')) return;
+      }
       calBusy.value = true;
       try {
         cal.value = await api('/api/assistant/calendar/key', { method: 'POST' });
+        calLoaded.value = true;
         // 表单里存的是打码值，保存设置时后端凭它保留库中真密钥；
         // 不同步的话，密钥从无到有时表单仍是空串，一保存就把新密钥冲掉
         asstForm.value.calendarKey = (cal.value && cal.value.enabled) ? '******' : '';
@@ -1613,6 +1787,7 @@ createApp({
       calBusy.value = true;
       try {
         cal.value = await api('/api/assistant/calendar/key', { method: 'DELETE' });
+        calLoaded.value = true;
         asstForm.value.calendarKey = '';
         toast('日历订阅已关闭');
       } catch (e) { toast(e.message, 'error'); }
@@ -1656,6 +1831,9 @@ createApp({
         sysStatus.value = await api('/api/status');
       } catch (e) {
         if (route.view === 'status') toast(e.message, 'error');
+        // 会话已经没了（api() 在 401 时把 authed 置 false）就停掉轮询。
+        // 不然停在 #/status 页面时会每 5 秒弹一次「登录已过期」，把屏幕刷满。
+        if (!authed.value) stopStatusTimer();
       } finally {
         statusLoading.value = false;
       }
@@ -1708,7 +1886,9 @@ createApp({
             parseRoute();
             return;
           } catch (e) {
-            localStorage.removeItem(TOKEN_KEY);
+            // 同样只在「明确被拒」时清会话令牌：服务没起来或断网时留着它，
+            // 等网络恢复后刷新页面还能直接进，不用重走一遍登录
+            if (isAuthRejected(e)) localStorage.removeItem(TOKEN_KEY);
           }
         }
         if (await tryTrustedLogin()) parseRoute();
@@ -1718,11 +1898,11 @@ createApp({
 
     return {
       assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges, closeChanges,
-      profileEditor, profileSaving, profileEditError, profileSchema, startProfileEdit, saveProfileEdit,
+      profileEditor, profileSaving, profileEditError, profileSchema, startProfileEdit, saveProfileEdit, addIntentRow,
       authed, tokenInput, loginChecking, loginError, login, logout,
       authStage, codeInput, setupSecret, setupOtpauth, setupQr,
       enable2FA, verify2FA, backToToken, trustDevice,
-      archive, archiveBusy, archiveResult, archiveForm,
+      archive, archiveBusy, archiveResult, archiveError, archiveForm,
       loadArchive, saveArchiveSettings, runArchive, restoreArchive,
       trustedList, trustedBusy, loadTrusted, revokeTrusted, revokeAllTrusted,
       route, contacts, contactsTotal, contactsHasMore, loadingContacts, search, searchApplied, showMerged,
@@ -1744,7 +1924,7 @@ createApp({
       loadMergeLogs, undoMerge, fmtTime,
       sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
       // 标签
-      tags, filterTagIds, picked, showTagMgr, showBatchTag, tagBusy, tagNewName,
+      tags, tagsError, filterTagIds, picked, showTagMgr, showBatchTag, tagBusy, tagNewName,
       tagEditId, tagEditName, batchTagIds, batchTagRemove, tagEditOpen, tagEditIds,
       loadTags, createTag, startTagRename, cancelTagRename, commitTagRename, deleteTag,
       toggleFilterTag, clearFilterTags, togglePick, togglePickAll, clearPicks,

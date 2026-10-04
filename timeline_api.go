@@ -47,7 +47,7 @@ func (s *apiServer) routeContactTimeline(w http.ResponseWriter, r *http.Request,
 			writeErr(w, http.StatusBadRequest, "无效的事件ID")
 			return
 		}
-		if err := DeleteContactEvent(s.db, eventID); err != nil {
+		if err := DeleteContactEvent(s.db, id, eventID); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

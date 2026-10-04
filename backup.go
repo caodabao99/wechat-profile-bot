@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 6 // 当前程序支持的最高 SQLite user_version
+	backupCurrentDBVer  = 7 // 当前程序支持的最高 SQLite user_version
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
@@ -568,12 +568,20 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 
 	// 先清空目标（子表→父表）
 	for i := len(backupTables) - 1; i >= 0; i-- {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM main.`+quoteIdent(backupTables[i])); err != nil {
+		t := backupTables[i]
+		// 备份库里根本没有这张表（如 v3.0.0 之前导出的备份没有 messages_archive）就整表跳过。
+		// 绝不能先 DELETE 再发现没数据可拷：那等于把主库里现有的归档消息清空且不回填，
+		// 恢复一次旧备份就永久丢一批数据，而接口还返回成功。
+		if !bakTableExists(ctx, tx, t) {
+			slog.Warn("恢复：备份库缺少该表，保留主库现有数据", "table", t)
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM main.`+quoteIdent(t)); err != nil {
 			// 目标库还没有该表（如归档表未建）就跳过，下面的拷贝会因 0 同名列同样跳过
 			if strings.Contains(err.Error(), "no such table") {
 				continue
 			}
-			return nil, fmt.Errorf("清空 %s 失败: %w", backupTables[i], err)
+			return nil, fmt.Errorf("清空 %s 失败: %w", t, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM main.sqlite_sequence`); err != nil {
@@ -799,6 +807,15 @@ func commonColumns(ctx context.Context, tx *sql.Tx, table string) ([]string, err
 		cols = append(cols, c)
 	}
 	return cols, rows.Err()
+}
+
+// bakTableExists 判断 ATTACH 的备份库里有没有这张表。
+// 老版本导出的备份可能缺表，缺表时必须整表跳过（含清空），否则会白删主库数据。
+func bakTableExists(ctx context.Context, tx *sql.Tx, table string) bool {
+	var n int
+	err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?, 'bak')`, table).Scan(&n)
+	return err == nil && n > 0
 }
 
 func copyFile(src, dst string) error {

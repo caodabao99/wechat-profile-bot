@@ -20,9 +20,34 @@ func (s *apiServer) routeSearch(w http.ResponseWriter, r *http.Request, sub []st
 
 func (s *apiServer) hSearchMessages(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	contactID, _ := strconv.ParseInt(q.Get("contactId"), 10, 64)
-	offset, _ := strconv.Atoi(q.Get("offset"))
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	// 坏参数要明确报 400：静默当成 0 的话，「只搜某个联系人」会悄悄变成全库搜索，
+	// offset 变 0 会让"加载更多"从头再来一遍（前端拿到重复数据）
+	var contactID int64
+	if v := q.Get("contactId"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "contactId 必须是非负整数")
+			return
+		}
+		contactID = n
+	}
+	var offset, limit int
+	if v := q.Get("offset"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "offset 必须是非负整数")
+			return
+		}
+		offset = n
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "limit 必须是非负整数")
+			return
+		}
+		limit = n
+	}
 	res, err := SearchMessages(s.db, SearchOptions{
 		Query:          q.Get("q"),
 		ContactID:      contactID,

@@ -118,17 +118,20 @@ func ListFollowups(db *sql.DB, status string, limit int) ([]FollowupItem, error)
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
+	// 已合并掉的联系人不再展示：否则列表和每日邮件里会冒出"张三#merged-17"这种用户没建过的名字。
+	// LEFT JOIN 下联系人已被彻底删除的孤儿行 COALESCE 成 0，仍然保留（与旧行为一致）。
 	query := `
 		SELECT f.id, f.contact_id, f.kind, f.content, COALESCE(f.amount, ''),
 		       COALESCE(f.source_msg_time, ''), f.status, f.created_at, f.updated_at,
 		       COALESCE(c.remark, ''), COALESCE(c.name, '')
-		FROM followup_items f LEFT JOIN contacts c ON c.id = f.contact_id`
+		FROM followup_items f LEFT JOIN contacts c ON c.id = f.contact_id
+		WHERE COALESCE(c.merged_into, 0) = 0`
 	args := []interface{}{}
 	switch status {
 	case "", "all":
 		query += ` ORDER BY (f.status = 'open') DESC, strftime('%s', f.created_at) DESC LIMIT ?`
 	case "open", "done", "ignored":
-		query += ` WHERE f.status = ? ORDER BY strftime('%s', f.created_at) DESC LIMIT ?`
+		query += ` AND f.status = ? ORDER BY strftime('%s', f.created_at) DESC LIMIT ?`
 		args = append(args, status)
 	default:
 		return nil, fmt.Errorf("无效的待跟进状态")
@@ -186,21 +189,22 @@ func AddFollowup(db *sql.DB, contactID int64, kind, content, amount string) (int
 	if exists == 0 {
 		return 0, fmt.Errorf("联系人不存在")
 	}
-	res, err := db.Exec(`
+	// 同内容重复添加视为"把这件事重新提上来"：状态复位成 open 并刷新内容/金额
+	if _, err := db.Exec(`
 		INSERT INTO followup_items
 			(contact_id, kind, content, amount, source_msg_time, status, dedup_key, created_at, updated_at)
 		VALUES (?, ?, ?, ?, '', 'open', ?, ?, ?)
 		ON CONFLICT(contact_id, dedup_key) DO UPDATE SET
 			status = 'open', content = excluded.content, amount = excluded.amount, updated_at = excluded.updated_at`,
-		contactID, kind, content, amount, followupDedupKey(kind, content), now, now)
-	if err != nil {
+		contactID, kind, content, amount, followupDedupKey(kind, content), now, now); err != nil {
 		return 0, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		// ON CONFLICT 走了 UPDATE 分支，把已存在那条捞回来
-		db.QueryRow(`SELECT id FROM followup_items WHERE contact_id = ? AND dedup_key = ?`,
-			contactID, followupDedupKey(kind, content)).Scan(&id)
+	// 一律按唯一键回查 id：走 ON CONFLICT 的 UPDATE 分支时 LastInsertId 不会更新，
+	// 单连接下它返回的是上一次插入的陈旧 rowid，前端拿它会去改另一条毫不相干的记录
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM followup_items WHERE contact_id = ? AND dedup_key = ?`,
+		contactID, followupDedupKey(kind, content)).Scan(&id); err != nil {
+		return 0, err
 	}
 	return id, nil
 }

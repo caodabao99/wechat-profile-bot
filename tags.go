@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,7 +17,12 @@ import (
 //   - 现有查询路径（GetAllContacts / GetContactsPage 不带标签时）行为完全不变
 //   - 标签不参与画像生成、合并匹配、提醒等任何既有逻辑，纯粹是给人看的分组
 
-const maxTagNameRunes = 20
+const (
+	maxTagNameRunes   = 20
+	maxTagsPerContact = 100  // 单个联系人最多挂多少标签
+	maxBatchTagIDs    = 50   // 批量打标一次最多带多少标签
+	maxBatchContacts  = 2000 // 批量打标一次最多带多少联系人
+)
 
 // ContactTag 标签及其关联的联系人数
 type ContactTag struct {
@@ -46,6 +52,13 @@ func ensureTagTables(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// tagTableReadyLocked 标签表是否已建好（调用方必须已持有 dbMu，本函数不再加锁）
+func tagTableReadyLocked(db *sql.DB) bool {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='contact_tag_links'`).Scan(&n)
+	return err == nil && n > 0
 }
 
 // normalizeTagName 统一标签名：去首尾空白与内部多余空格，限长
@@ -91,15 +104,14 @@ func CreateTag(db *sql.DB, name string) (*ContactTag, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	now := time.Now().Format(time.RFC3339)
-	res, err := db.Exec(`INSERT OR IGNORE INTO contact_tags (name, created_at) VALUES (?, ?)`, name, now)
-	if err != nil {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO contact_tags (name, created_at) VALUES (?, ?)`, name, now); err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		if err := db.QueryRow(`SELECT id FROM contact_tags WHERE name = ?`, name).Scan(&id); err != nil {
-			return nil, err
-		}
+	// 无条件按唯一名回查 id：INSERT 被 IGNORE 时 LastInsertId 不会更新，
+	// 在 MaxOpenConns(1) 下它会返回同连接上一次插入的陈旧 rowid，用 id == 0 判断永远不成立
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM contact_tags WHERE name = ?`, name).Scan(&id); err != nil {
+		return nil, err
 	}
 	return &ContactTag{ID: id, Name: name}, nil
 }
@@ -179,34 +191,51 @@ func TagsForContacts(db *sql.DB, ids []int64) (map[int64][]ContactTag, error) {
 	if len(ids) == 0 {
 		return out, nil
 	}
-	ph := make([]string, len(ids))
-	args := make([]interface{}, len(ids))
-	for i, id := range ids {
-		ph[i] = "?"
-		args[i] = id
-	}
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	rows, err := db.Query(`SELECT l.contact_id, t.id, t.name FROM contact_tag_links l
-		JOIN contact_tags t ON t.id = l.tag_id
-		WHERE l.contact_id IN (`+strings.Join(ph, ",")+`) ORDER BY t.name ASC, t.id ASC`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int64
-		var t ContactTag
-		if err := rows.Scan(&cid, &t.ID, &t.Name); err != nil {
+	// 分块查询：全量联系人列表可能上千条，一次拼进 IN(...) 会撞上 SQLite 的绑定参数上限
+	const chunk = 400
+	for start := 0; start < len(ids); start += chunk {
+		end := start + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[start:end]
+		ph := make([]string, len(part))
+		args := make([]interface{}, len(part))
+		for i, id := range part {
+			ph[i] = "?"
+			args[i] = id
+		}
+		rows, err := db.Query(`SELECT l.contact_id, t.id, t.name FROM contact_tag_links l
+			JOIN contact_tags t ON t.id = l.tag_id
+			WHERE l.contact_id IN (`+strings.Join(ph, ",")+`) ORDER BY t.name ASC, t.id ASC`, args...)
+		if err != nil {
 			return nil, err
 		}
-		out[cid] = append(out[cid], t)
+		for rows.Next() {
+			var cid int64
+			var t ContactTag
+			if err := rows.Scan(&cid, &t.ID, &t.Name); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[cid] = append(out[cid], t)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SetContactTags 覆盖式设置某联系人的标签（tagIDs 里不存在的 id 会被忽略）
 func SetContactTags(db *sql.DB, contactID int64, tagIDs []int64) error {
+	if len(tagIDs) > maxTagsPerContact {
+		return fmt.Errorf("一个联系人最多挂 %d 个标签", maxTagsPerContact)
+	}
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	tx, err := db.Begin()
@@ -247,6 +276,13 @@ func SetContactTags(db *sql.DB, contactID int64, tagIDs []int64) error {
 func BatchTag(db *sql.DB, contactIDs, tagIDs []int64, remove bool) (int, error) {
 	if len(contactIDs) == 0 || len(tagIDs) == 0 {
 		return 0, fmt.Errorf("请先选择联系人和标签")
+	}
+	// 双层循环是逐对执行 SQL，不设上限的话一次请求就能把整库锁死几十分钟
+	if len(contactIDs) > maxBatchContacts {
+		return 0, fmt.Errorf("一次最多处理 %d 个联系人", maxBatchContacts)
+	}
+	if len(tagIDs) > maxBatchTagIDs {
+		return 0, fmt.Errorf("一次最多操作 %d 个标签", maxBatchTagIDs)
 	}
 	dbMu.Lock()
 	defer dbMu.Unlock()
@@ -314,7 +350,12 @@ func attachContactTags(db *sql.DB, list []contactJSON) {
 		return
 	}
 	for i := range list {
-		list[i].Tags = tagMap[list[i].ID]
+		// 没标签的也要给空数组：JSON 里少了 tags 键，网页端读 c.tags.length 会直接抛异常
+		tags := tagMap[list[i].ID]
+		if tags == nil {
+			tags = []ContactTag{}
+		}
+		list[i].Tags = tags
 	}
 }
 
@@ -326,8 +367,8 @@ func parseTagIDs(raw string) []int64 {
 		if part == "" {
 			continue
 		}
-		var id int64
-		if _, err := fmt.Sscanf(part, "%d", &id); err == nil && id > 0 {
+		// 用 ParseInt 而不是 Sscanf：Sscanf("%d") 对 "12abc" 也会返回成功并吃掉 12
+		if id, err := strconv.ParseInt(part, 10, 64); err == nil && id > 0 {
 			out = append(out, id)
 		}
 	}

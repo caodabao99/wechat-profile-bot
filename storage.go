@@ -268,6 +268,25 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 7 {
+		// v7: merge_log 增加 undo_extra，存撤销合并所需的额外快照
+		// （标签集合、被搬走的手动事件与待跟进、被搬走的归档消息）。
+		// 老日志读出来是 '{}'，撤销时按「什么都没记」处理，行为与升级前一致。
+		var colCount int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('merge_log') WHERE name='undo_extra'`).
+			Scan(&colCount); err != nil {
+			return err
+		}
+		if colCount == 0 {
+			if _, err := db.Exec(`ALTER TABLE merge_log ADD COLUMN undo_extra TEXT DEFAULT '{}'`); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 7`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -522,6 +541,11 @@ func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []
 			where += ` AND ` + cond
 		}
 		args = append(args, like, like, like)
+	}
+	if len(tagIDs) > 0 && !tagTableReadyLocked(db) {
+		// 标签表还没建好（ensureTagTables 失败的老库）：没表就等于没人有标签，
+		// 返回空列表比整页 500 更符合语义
+		return []Contact{}, 0, nil
 	}
 	for _, tid := range tagIDs {
 		cond := `EXISTS (SELECT 1 FROM contact_tag_links tl WHERE tl.contact_id = c.id AND tl.tag_id = ?)`

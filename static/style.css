@@ -37,30 +37,32 @@ body {
 .login-title { font-size: 20px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
 .login-err { color: var(--bad); font-size: 13px; margin-top: 8px; }
 .qr-box { display: flex; justify-content: center; margin: 10px 0 6px; }
-.qr-box img { width: 200px; height: 200px; border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 8px; }
+.qr-box img { width: 200px; height: 200px; border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 8px; }
 .totp-secret { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; word-break: break-all;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 4px 0 8px; text-align: center; }
-.btn.ghost { width: 100%; margin-top: 8px; background: none; color: var(--muted); box-shadow: none; font-size: 13px; }
-.btn.ghost:hover { color: var(--text); background: var(--bg); }
+  background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 4px 0 8px; text-align: center; }
+/* 限定在登录卡片内：不加前缀的话这条会命中全站所有 .btn.ghost，
+   让「刷新」「取消选择」这类小按钮统统变成 width:100% 独占一行 */
+.login-card .btn.ghost { width: 100%; margin-top: 8px; background: none; color: var(--muted); box-shadow: none; font-size: 13px; }
+.login-card .btn.ghost:hover { color: var(--ink); background: var(--bg); }
 
 /* 备份页 */
 .backup-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 14px 0 6px; }
 .backup-actions .text-input { width: auto; }
 .backup-notes { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.9; }
-.backup-notes strong { color: var(--text); }
+.backup-notes strong { color: var(--ink); }
 .backup-notes code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--bg);
   border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .check-row.inline { margin-top: 0; white-space: nowrap; }
 
 /* 备份操作记录 */
 .backup-log-section { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
-.backup-log-section h3 { font-size: 14px; margin: 0 0 10px; color: var(--text); }
+.backup-log-section h3 { font-size: 14px; margin: 0 0 10px; color: var(--ink); }
 .backup-log-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .backup-log-table th, .backup-log-table td {
   padding: 7px 8px; text-align: left; border-bottom: 1px solid var(--line);
   color: var(--muted); white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
 }
-.backup-log-table th { color: var(--text); font-weight: 600; }
+.backup-log-table th { color: var(--ink); font-weight: 600; }
 .backup-log-table td.log-detail { white-space: normal; }
 .backup-log-table tr.err td { color: var(--bad); }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
@@ -115,6 +117,11 @@ h2 { font-size: 16px; margin: 0 0 10px; display: flex; align-items: center; gap:
   border-radius: 999px; padding: 1px 9px;
 }
 .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+/* 说明性小字。index.html 里 100 多处在用，但这条规则一直没写，
+   结果提示文字和正文一样大、一样黑，主次完全分不出来。
+   放在 .tl-body .hint 之前，时间轴里的那条覆盖规则仍然生效。 */
+.hint { color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+.hint.block { display: block; margin: 8px 0; }
 
 /* ---------- 输入与按钮 ---------- */
 .text-input {
@@ -271,6 +278,12 @@ textarea.text-input { resize: vertical; }
 .toast.error { background: var(--bad); }
 .toast-enter-active, .toast-leave-active { transition: all .25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateY(8px); }
+
+/* ---------- 页面标题行（标题在左、操作按钮在右） ---------- */
+/* 之前只有 .block-head 没有 .list-head，联系人页和合并记录页的标题行
+   退化成普通块级排列，「刷新」「全选本页」会掉到标题下面独占一行 */
+.list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+.list-head h2 { margin: 0; }
 
 /* ---------- 区块标题行（标题+收起按钮） ---------- */
 .block-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 8px; }

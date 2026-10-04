@@ -75,7 +75,10 @@ func (st *trustedClientStore) load() {
 		Clients []*TrustedClient `json:"clients"`
 	}
 	if err := json.Unmarshal(raw, &file); err != nil {
-		slog.Warn("可信客户端文件解析失败，已忽略", "err", err)
+		// 文件损坏要留下证据：改名成 .corrupt，否则下一次 saveLocked 会直接覆盖掉
+		// 唯一一份线索，用户只能看到"设备莫名全部掉线"
+		slog.Error("可信客户端文件解析失败，已备份为 .corrupt", "path", st.path, "err", err)
+		_ = os.Rename(st.path, st.path+".corrupt")
 		return
 	}
 	now := time.Now()
@@ -83,8 +86,11 @@ func (st *trustedClientStore) load() {
 		if c == nil || c.Token == "" {
 			continue
 		}
-		if exp, err := time.Parse(time.RFC3339, c.ExpiresAt); err == nil && now.After(exp) {
-			continue // 过期丢弃
+		// 过期时间解析不出来一律按失效处理，与 validate 的判定保持一致。
+		// 反过来（解析失败就保留）会让一条被写坏的记录变成永不过期的登录令牌。
+		exp, err := time.Parse(time.RFC3339, c.ExpiresAt)
+		if err != nil || now.After(exp) {
+			continue
 		}
 		st.clients[c.Token] = c
 	}
@@ -106,8 +112,15 @@ func (st *trustedClientStore) saveLocked() {
 		slog.Error("可信客户端序列化失败", "err", err)
 		return
 	}
-	if err := os.WriteFile(st.path, raw, 0600); err != nil {
+	// 原子写：直接覆盖原文件时若进程被杀/磁盘写满，会留下一份半截 JSON，
+	// 下次启动解析失败就等于全部设备掉线（与 security.go 的落盘方式保持一致）
+	tmp := st.path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0600); err != nil {
 		slog.Error("可信客户端写入失败", "err", err)
+		return
+	}
+	if err := os.Rename(tmp, st.path); err != nil {
+		slog.Error("可信客户端落盘失败", "err", err)
 	}
 }
 
@@ -139,7 +152,9 @@ func (st *trustedClientStore) create(name, ip string) (*TrustedClient, error) {
 			}
 			t, err := time.Parse(time.RFC3339, mark)
 			if err != nil {
-				continue
+				// 时间戳坏掉的记录按"最旧"处理：它们本来就该优先淘汰，
+				// 跳过不选的话一旦所有记录都坏了，设备数会一直涨过上限
+				t = time.Time{}
 			}
 			if first || t.Before(oldest) {
 				first, oldestTok, oldest = false, tok, t
@@ -218,10 +233,16 @@ func (st *trustedClientStore) list() []map[string]string {
 		if len(masked) > 8 {
 			masked = masked[:8] + "…"
 		}
+		// 前缀同样要先判长度：文件被手工编辑过、令牌短于 8 位时
+		// c.Token[:8] 会直接 panic 掉整个管理页请求
+		prefix := c.Token
+		if len(prefix) > 8 {
+			prefix = prefix[:8]
+		}
 		out = append(out, map[string]string{
 			"name":        c.Name,
 			"token":       masked,
-			"tokenPrefix": c.Token[:8],
+			"tokenPrefix": prefix,
 			"createdAt":   c.CreatedAt,
 			"expiresAt":   c.ExpiresAt,
 			"lastUsedAt":  c.LastUsedAt,

@@ -279,8 +279,15 @@ func ComputeSocialStats(db *sql.DB, days int) (*SocialStats, error) {
 
 	st.ActiveContacts = len(perContact)
 	st.ActiveDays = len(dayCount)
-	for day, n := range dayCount {
-		if n > st.LongestStreakCnt {
+	// 按日期升序遍历再取严格大于：map 迭代顺序随机，并列最多条数时
+	// 同样一份数据两次刷新会给出不同的「最活跃的一天」
+	sortedDays := make([]string, 0, len(dayCount))
+	for day := range dayCount {
+		sortedDays = append(sortedDays, day)
+	}
+	sort.Strings(sortedDays)
+	for _, day := range sortedDays {
+		if n := dayCount[day]; n > st.LongestStreakCnt {
 			st.LongestStreakCnt = n
 			st.LongestStreakDay = day
 		}
@@ -295,6 +302,18 @@ func ComputeSocialStats(db *sql.DB, days int) (*SocialStats, error) {
 			if gap <= 0 {
 				continue
 			}
+			// 先判回复：换了发言人且在回复窗口内（6 小时），就是一次真实回复。
+			// 必须放在会话切分之前——socialSessionGap(3h) 比 socialReplyCap(6h) 小，
+			// 顺序反了的话 3~6 小时的回复会先被当成「主动开启新会话」continue 掉，
+			// 下面这段永远执行不到：回复时长被系统性低估、主动发起占比被系统性高估。
+			if prev.sender != cur.sender && gap <= socialReplyCap {
+				if cur.sender == "me" {
+					myReplyGaps = append(myReplyGaps, gap)
+				} else {
+					theirReplyGaps = append(theirReplyGaps, gap)
+				}
+				continue
+			}
 			if gap > socialSessionGap {
 				// 新会话的第一条 = 主动发起方
 				if cur.sender == "me" {
@@ -305,18 +324,6 @@ func ComputeSocialStats(db *sql.DB, days int) (*SocialStats, error) {
 				} else {
 					st.TheirInitiateTotal++
 				}
-				continue
-			}
-			if prev.sender == cur.sender {
-				continue
-			}
-			if gap > socialReplyCap {
-				continue
-			}
-			if cur.sender == "me" {
-				myReplyGaps = append(myReplyGaps, gap)
-			} else {
-				theirReplyGaps = append(theirReplyGaps, gap)
 			}
 		}
 		// 窗口内第一条也算一次主动

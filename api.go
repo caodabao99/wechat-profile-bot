@@ -446,18 +446,20 @@ func (s *apiServer) hEditProfile(w http.ResponseWriter, r *http.Request, id int6
 
 // contactJSON 联系人 API 输出结构
 type contactJSON struct {
-	ID             int64        `json:"id"`
-	Name           string       `json:"name"`
-	Remark         string       `json:"remark"`
-	ProfileJSON    string       `json:"profileJson,omitempty"`
-	ProfileSummary string       `json:"profileSummary"`
-	OtherMsgCount  int          `json:"otherMsgCount"`
-	LastUpdated    string       `json:"lastUpdated"`
-	CreatedAt      string       `json:"createdAt"`
-	MergedInto     int64        `json:"mergedInto"`
-	MergeCount     int          `json:"mergeCount"`
-	Aliases        []string     `json:"aliases,omitempty"`
-	Tags           []ContactTag `json:"tags,omitempty"`
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	Remark         string   `json:"remark"`
+	ProfileJSON    string   `json:"profileJson,omitempty"`
+	ProfileSummary string   `json:"profileSummary"`
+	OtherMsgCount  int      `json:"otherMsgCount"`
+	LastUpdated    string   `json:"lastUpdated"`
+	CreatedAt      string   `json:"createdAt"`
+	MergedInto     int64    `json:"mergedInto"`
+	MergeCount     int      `json:"mergeCount"`
+	Aliases        []string `json:"aliases,omitempty"`
+	// tags 不带 omitempty：键必须恒存在且是数组，网页端直接读 c.tags.length，
+	// 少一个键或给 null 都会抛 TypeError 让整个页面白屏
+	Tags []ContactTag `json:"tags"`
 }
 
 func toContactJSON(c *Contact) contactJSON {
@@ -466,6 +468,7 @@ func toContactJSON(c *Contact) contactJSON {
 		ProfileSummary: c.ProfileSummary, OtherMsgCount: c.OtherMsgCount,
 		LastUpdated: c.LastUpdated, CreatedAt: c.CreatedAt,
 		MergedInto: c.MergedInto, MergeCount: c.MergeCount, Aliases: c.Aliases,
+		Tags: []ContactTag{},
 	}
 }
 
@@ -486,6 +489,8 @@ func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 		for i := range contacts {
 			out = append(out, toContactJSON(&contacts[i]))
 		}
+		// 全量分支也要带标签：网页端联系人列表、标签筛选条都依赖 tags 字段
+		attachContactTags(s.db, out)
 		writeJSON(w, 200, out)
 		return
 	}

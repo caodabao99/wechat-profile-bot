@@ -29,7 +29,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.1.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.1.1.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -46,7 +46,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.1.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -264,7 +264,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.1.0.tar.gz`，得到 `wechat-profile-bot:v3.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.1.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.1.1.tar.gz`，得到 `wechat-profile-bot:v3.1.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -544,6 +544,44 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v3.1.1（2026-10-04）
+
+维护版本，不含新功能，集中修复 v2.4 以来累积的缺陷。升级只需替换二进制并重启，数据库自动迁移（`user_version` 升到 7，兼容旧库）。
+
+**修复：数据一致性**
+
+- 撤销合并联系人时，被合并方的**标签、日历事件、待跟进事项**之前不会一起回滚，导致撤销后留下孤儿数据；现在合并前把这三类记录快照进 `merge_log.undo_extra`，撤销时原样恢复
+- 归档消息现在保留原始 `id`，恢复（`/api/archive/restore`）后与归档前完全一致，不再出现 id 漂移
+- 归档调度器支持随进程退出而停止，并加了 `recover`，单次归档 panic 不再拖垮整个后台循环
+
+**修复：时区与排序**
+
+- 周报统计里按 SQL `CURRENT_TIMESTAMP` 写入的时间没有加 `'localtime'` 换算，跨时区部署时统计区间会偏移
+- 归档判定和消息排序统一改用 `strftime('%s', msg_time)` 比较。`messages.msg_time` 是带时区偏移的 RFC3339 字符串，直接按字符串比较在混合偏移的库里会排错
+- 社交活跃度面板的日期现在按时间先后输出，不再依赖 map 遍历顺序
+
+**修复：安全**
+
+- 邮件发送加了 SMTP 超时（拨号 / 握手 / 数据阶段），发件服务器无响应时不再无限期阻塞提醒任务
+- 邮件头字段做 CRLF 过滤，主题和收件人里的换行不能再注入额外邮件头
+- 日历订阅链接的 key 改用定长比较（`subtle.ConstantTimeCompare`）
+- 可信设备令牌文件改为临时文件 + `rename` 原子写入，写入中途崩溃不再留下半截 JSON；解析失败的文件重命名为 `.corrupt` 保留现场，而不是直接丢弃全部可信设备
+- 归档接口收到非法请求体时返回 400 并说明原因，不再当成「使用默认配置」静默执行
+
+**修复：网页端**
+
+- 看板加载时若某个统计接口返回空，整页会白屏（读 `undefined.length`）；现已加守卫，单块数据缺失只影响那一块
+- 退出登录后改为整页刷新，避免上一个账号的联系人详情、草稿等状态残留到下一次登录
+- 切换联系人时补齐弹窗和忙碌态的重置，之前快速连点两个联系人会看到上一个人的弹窗内容
+- 联系人详情、聊天历史、统计、标签、归档等加载函数加了请求序号，快速切换时慢返回的旧请求不会再覆盖新数据
+- 关系助手和归档设置里的数字输入框：清空后保存会送出空串，后端只回一句笼统的「请求体解析失败」；现在发请求前就拦下，提示具体是哪个字段、合法范围是多少，且上下界与后端校验一致
+- 「立即归档」的确认框显示的是输入框里的天数，但实际发的是空请求体、后端按**已保存**的配置执行，两者可能不一致；现在把确认的天数一起提交
+- 会话过期后停止后台轮询，不再反复弹出登录失效提示；只有 401/403 才清除本地令牌，网络故障不会把用户登出
+- 之前静默失败的几处请求改为可见提示，归档和标签加载失败后页面上直接给出重试按钮
+- 保存联系人画像成功后的收尾刷新若失败，错误信息会写进已经关闭的弹窗并残留到下次打开；现在刷新失败不再污染错误位
+- 样式表补齐 `.hint`、`.hint.block`、`.list-head` 三条一直在被引用却没有定义的规则（提示文字此前和正文一样大、联系人页与合并记录页的标题行按钮会掉到下一行），并修正 6 处引用了不存在的 CSS 变量导致的边框丢失
+- 登录页的「幽灵按钮」样式此前没有作用域前缀，`width:100%` 泄漏到全站所有 `.btn.ghost`；已限定在登录卡片内
 
 ### v3.1.0（2026-10-03）
 

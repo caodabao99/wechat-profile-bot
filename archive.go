@@ -15,6 +15,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -160,10 +161,12 @@ func RunArchive(db *sql.DB, days int) (int64, error) {
 	defer tx.Rollback()
 
 	// 1. 复制入档（撞 hash 的忽略，随后 DELETE 的 EXISTS 条件保证它们也会被清掉，不丢不重）
+	// 连 id 一起搬：两张表都是 AUTOINCREMENT，rowid 不会被复用，
+	// 保留原 id 才能让 merge_log 里按 id 记录的消息搬迁/回滚在一轮归档之后依然有效
 	if _, err := tx.Exec(
 		`INSERT OR IGNORE INTO messages_archive
-		   (contact_id, sender, content, msg_hash, msg_time, captured_at, archived_at)
-		 SELECT contact_id, sender, content, msg_hash, msg_time, captured_at, ?
+		   (id, contact_id, sender, content, msg_hash, msg_time, captured_at, archived_at)
+		 SELECT id, contact_id, sender, content, msg_hash, msg_time, captured_at, ?
 		 FROM messages WHERE `+archiveEligibleCond, now, cutoff); err != nil {
 		return 0, err
 	}
@@ -189,7 +192,7 @@ func RunArchive(db *sql.DB, days int) (int64, error) {
 
 // ArchiveRestoreResult 一次恢复的结果
 type ArchiveRestoreResult struct {
-	Restored int64 `json:"restored"` // 写回 messages 的条数
+	Restored int64 `json:"restored"` // 已回到活跃表的条数（含主表本来就有同一条、直接出档的）
 	Skipped  int64 `json:"skipped"`  // 联系人已不存在、留在归档表的孤儿条数
 }
 
@@ -205,9 +208,10 @@ func RestoreArchive(db *sql.DB, contactID int64) (*ArchiveRestoreResult, error) 
 	defer tx.Rollback()
 
 	// 1. 写回：仅联系人仍存在的行；撞 UNIQUE(contact_id,msg_hash) 的忽略
+	// id 原样带回（入档时保留的就是 messages 里的原 id，AUTOINCREMENT 不会复用 rowid）
 	res, err := tx.Exec(
-		`INSERT OR IGNORE INTO messages (contact_id, sender, content, msg_hash, msg_time, captured_at)
-		 SELECT a.contact_id, a.sender, a.content, a.msg_hash, a.msg_time, a.captured_at
+		`INSERT OR IGNORE INTO messages (id, contact_id, sender, content, msg_hash, msg_time, captured_at)
+		 SELECT a.id, a.contact_id, a.sender, a.content, a.msg_hash, a.msg_time, a.captured_at
 		 FROM messages_archive a JOIN contacts c ON c.id = a.contact_id
 		 WHERE (? = 0 OR a.contact_id = ?)`, contactID, contactID)
 	if err != nil {
@@ -234,8 +238,7 @@ func RestoreArchive(db *sql.DB, contactID int64) (*ArchiveRestoreResult, error) 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	_ = inserted
-	slog.Info("归档消息已恢复", "restored", deleted, "skippedOrphan", skipped, "contactId", contactID)
+	slog.Info("归档消息已恢复", "restored", deleted, "writtenBack", inserted, "skippedOrphan", skipped, "contactId", contactID)
 	return &ArchiveRestoreResult{Restored: deleted, Skipped: skipped}, nil
 }
 
@@ -298,7 +301,12 @@ func listArchiveByContact(db *sql.DB) ([]ArchiveContactRow, error) {
 	defer dbMu.Unlock()
 	rows, err := db.Query(
 		`SELECT a.contact_id, COALESCE(c.name, ''), c.id IS NULL, COUNT(*),
-		        COALESCE(MIN(a.msg_time), ''), COALESCE(MAX(a.msg_time), '')
+		        COALESCE((SELECT a2.msg_time FROM messages_archive a2
+		                  WHERE a2.contact_id = a.contact_id AND COALESCE(a2.msg_time,'') != ''
+		                  ORDER BY strftime('%s', a2.msg_time) ASC, a2.id ASC LIMIT 1), ''),
+		        COALESCE((SELECT a3.msg_time FROM messages_archive a3
+		                  WHERE a3.contact_id = a.contact_id AND COALESCE(a3.msg_time,'') != ''
+		                  ORDER BY strftime('%s', a3.msg_time) DESC, a3.id DESC LIMIT 1), '')
 		 FROM messages_archive a LEFT JOIN contacts c ON c.id = a.contact_id
 		 GROUP BY a.contact_id ORDER BY COUNT(*) DESC LIMIT 200`)
 	if err != nil {
@@ -321,23 +329,50 @@ func listArchiveByContact(db *sql.DB) ([]ArchiveContactRow, error) {
 // startArchiveScheduler 每日自动归档（配置开启时才真正执行）。
 // 启动 1 分钟后先跑一次，之后每 24 小时一次；单次归档是一个短事务，
 // 对轮询主流程无影响。
-func startArchiveScheduler(db *sql.DB) {
+// stopCh 关闭后调度器退出，返回的 channel 在 goroutine 真正结束时关闭，
+// 供 main 在关库前等待，避免留下「库已关还在写事务」的 goroutine。
+func startArchiveScheduler(db *sql.DB, stopCh <-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
-		time.Sleep(time.Minute)
-		for {
-			if s, err := loadArchiveSettings(db); err != nil {
-				slog.Warn("自动归档：读取配置失败", "err", err)
-			} else if s.Enabled {
-				moved, err := RunArchive(db, s.RetentionDays)
-				if err != nil {
-					slog.Warn("自动归档失败", "err", err)
-				} else if moved > 0 {
-					slog.Info("自动归档完成", "moved", moved)
-				}
+		defer close(done)
+		wait := func(d time.Duration) bool {
+			select {
+			case <-stopCh:
+				return false
+			case <-time.After(d):
+				return true
 			}
-			time.Sleep(archiveAutoInterval)
+		}
+		if !wait(time.Minute) {
+			return
+		}
+		for {
+			archiveTick(db)
+			if !wait(archiveAutoInterval) {
+				return
+			}
 		}
 	}()
+	return done
+}
+
+// archiveTick 跑一轮自动归档。panic 只废掉这一轮，绝不能把整个进程带走。
+func archiveTick(db *sql.DB) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("自动归档任务异常，本轮跳过", "recover", r)
+		}
+	}()
+	if s, err := loadArchiveSettings(db); err != nil {
+		slog.Warn("自动归档：读取配置失败", "err", err)
+	} else if s.Enabled {
+		moved, err := RunArchive(db, s.RetentionDays)
+		if err != nil {
+			slog.Warn("自动归档失败", "err", err)
+		} else if moved > 0 {
+			slog.Info("自动归档完成", "moved", moved)
+		}
+	}
 }
 
 // ---------- HTTP 接口（/api/archive/*，需登录） ----------
@@ -376,7 +411,11 @@ func (s *apiServer) hArchiveRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Days int `json:"days"` // 可选覆盖；0 表示用配置值
 	}
-	json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req) // 空 body 容忍
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil && err != io.EOF {
+		// 空 body 允许（用配置值），但坏 body 不能装作没看见
+		writeErr(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
 	moved, err := RunArchive(s.db, req.Days)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "归档失败: "+err.Error())
@@ -389,7 +428,12 @@ func (s *apiServer) hArchiveRestore(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ContactID int64 `json:"contactId"` // 0 = 恢复全部
 	}
-	json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req)
+	// 解析失败必须报错：ContactID 的零值语义是「恢复全部」，
+	// 一个坏请求静默变成全量恢复是不可接受的
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
 	result, err := RestoreArchive(s.db, req.ContactID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "恢复失败: "+err.Error())

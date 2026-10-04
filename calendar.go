@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -212,18 +213,25 @@ func BuildCalendarICS(db *sql.DB, now time.Time) (string, error) {
 func (s *apiServer) routeCalendarICS(w http.ResponseWriter, r *http.Request) {
 	st, err := loadAssistantSettings(s.db)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "读取助手配置失败: "+err.Error())
+		// 这个接口不过 Bearer 认证，err.Error() 里可能带库文件路径等内部信息，
+		// 只写日志、对外统一措辞
+		slog.Error("日历订阅：读取助手配置失败", "err", err)
+		writeErr(w, http.StatusInternalServerError, "读取助手配置失败")
 		return
 	}
 	key := strings.TrimSpace(r.URL.Query().Get("key"))
-	if st.CalendarKey == "" || key == "" || !strings.EqualFold(key, st.CalendarKey) {
+	// 定长比较：这个接口在公网可无限次尝试，用 == / EqualFold 会留下时序侧信道。
+	// 密钥是 hex（本身小写），统一转小写后再比，保留"大小写不敏感"的老行为。
+	if st.CalendarKey == "" || key == "" || subtle.ConstantTimeCompare(
+		[]byte(strings.ToLower(key)), []byte(strings.ToLower(st.CalendarKey))) != 1 {
 		s.guard.RecordDenied(s.realIP(r), r.URL.Path, "calendar-key")
 		writeErr(w, http.StatusForbidden, "日历订阅未开启或密钥无效，请在网页端「关系助手 → 日历订阅」生成")
 		return
 	}
 	body, err := BuildCalendarICS(s.db, time.Now())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "生成日历失败: "+err.Error())
+		slog.Error("日历订阅：生成 ICS 失败", "err", err)
+		writeErr(w, http.StatusInternalServerError, "生成日历失败")
 		return
 	}
 	h := w.Header()

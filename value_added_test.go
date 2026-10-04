@@ -416,11 +416,14 @@ func TestTimelineDerivedAndCustomEvents(t *testing.T) {
 		}
 	}
 
-	// 删除
-	if err = DeleteContactEvent(db, id); err != nil {
+	// 删除（必须带对联系人 id）
+	if err = DeleteContactEvent(db, 9999, id); err == nil {
+		t.Fatal("用别的联系人 id 删事件应报错")
+	}
+	if err = DeleteContactEvent(db, a, id); err != nil {
 		t.Fatal(err)
 	}
-	if err = DeleteContactEvent(db, id); err == nil {
+	if err = DeleteContactEvent(db, a, id); err == nil {
 		t.Fatal("重复删除应报错")
 	}
 

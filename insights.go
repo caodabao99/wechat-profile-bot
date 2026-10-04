@@ -177,24 +177,20 @@ type dupCandidate struct {
 	keys []string
 }
 
-// FindDuplicateContacts 扫描未合并的联系人，给出疑似重复的组合。
-// 为了控制两两比较的规模，用"首字 + 字符排序签名"分桶，只在同桶内比较。
-func FindDuplicateContacts(db *sql.DB) (*DuplicateResult, error) {
-	res := &DuplicateResult{List: []DuplicatePair{}}
-
+// loadDuplicateCandidates 一次性把判重需要的数据从库里捞出来（锁只覆盖这一步）。
+// 后面的两两比较是纯内存的 O(n²)，绝不能抱着 dbMu 做——那会把整个服务的读写全冻住。
+func loadDuplicateCandidates(db *sql.DB) (int, []DuplicateContact, map[int64][]string, map[int64]int, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
 	total := 0
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM contacts WHERE COALESCE(merged_into, 0) = 0`).Scan(&total); err != nil {
-		return nil, err
+		return 0, nil, nil, nil, err
 	}
-	res.Scanned = total
 	if total < 2 {
-		return res, nil
+		return total, nil, nil, nil, nil
 	}
-	res.Truncated = total > dupMaxContacts
 
 	rows, err := db.Query(`
 		SELECT c.id, c.name, COALESCE(c.remark, ''), COALESCE(c.other_msg_count, 0), COALESCE(c.last_updated, '')
@@ -203,20 +199,20 @@ func FindDuplicateContacts(db *sql.DB) (*DuplicateResult, error) {
 		ORDER BY c.id
 		LIMIT ?`, dupMaxContacts)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, nil, err
 	}
 	var list []DuplicateContact
 	for rows.Next() {
 		var c DuplicateContact
 		if err := rows.Scan(&c.ID, &c.Name, &c.Remark, &c.MsgCount, &c.LastUpdated); err != nil {
 			rows.Close()
-			return nil, err
+			return 0, nil, nil, nil, err
 		}
 		list = append(list, c)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return 0, nil, nil, nil, err
 	}
 
 	// 别名（表可能不存在——老库未跑过 merge 相关迁移时跳过）
@@ -245,6 +241,23 @@ func FindDuplicateContacts(db *sql.DB) (*DuplicateResult, error) {
 		}
 		crows.Close()
 	}
+	return total, list, aliasMap, cntMap, nil
+}
+
+// FindDuplicateContacts 扫描未合并的联系人，给出疑似重复的组合。
+// 为了控制两两比较的规模，用"首字 + 字符排序签名"分桶，只在同桶内比较。
+func FindDuplicateContacts(db *sql.DB) (*DuplicateResult, error) {
+	res := &DuplicateResult{List: []DuplicatePair{}}
+
+	total, list, aliasMap, cntMap, err := loadDuplicateCandidates(db)
+	if err != nil {
+		return nil, err
+	}
+	res.Scanned = total
+	if total < 2 {
+		return res, nil
+	}
+	res.Truncated = total > dupMaxContacts
 
 	cands := make([]dupCandidate, 0, len(list))
 	buckets := map[string][]int{}

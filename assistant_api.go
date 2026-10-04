@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,12 +94,20 @@ func (s *apiServer) hAssistantDashboard(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// 各板块单独容错：某一块查询失败不影响整页
+	// 两个分支都保证是数组而不是 null：网页端直接读 .length，拿到 null 会让整个页面白屏
 	if dates, unparsed, err := collectUpcomingDates(s.db, now, 14); err == nil {
+		if dates == nil {
+			dates = []AssistantDateItem{}
+		}
+		if unparsed == nil {
+			unparsed = []AssistantDateItem{}
+		}
 		resp["upcoming"] = dates
 		resp["unparsedDates"] = unparsed
 	} else {
 		slog.Warn("助手看板：重要日子查询失败", "err", err)
 		resp["upcoming"] = []AssistantDateItem{}
+		resp["unparsedDates"] = []AssistantDateItem{}
 	}
 	if cooling, err := collectCoolingContacts(s.db, now, st.CoolingDays); err == nil {
 		if len(cooling) > 10 {
@@ -201,14 +210,19 @@ func (s *apiServer) hAssistantPutSettings(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// 前端回传打码密码时保留库里的原值
+	// 读不到原值必须报错：否则 "******" 会被当成真密码写进库，
+	// 既毁掉 SMTP 密码，也让 .ics 订阅密钥退化成公开可猜的固定串
 	if st.SMTP.Pass == smtpPassMask || st.CalendarKey == calendarKeyMask {
-		if old, err := loadAssistantSettings(s.db); err == nil {
-			if st.SMTP.Pass == smtpPassMask {
-				st.SMTP.Pass = old.SMTP.Pass
-			}
-			if st.CalendarKey == calendarKeyMask {
-				st.CalendarKey = old.CalendarKey
-			}
+		old, err := loadAssistantSettings(s.db)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取原配置失败，请稍后重试: "+err.Error())
+			return
+		}
+		if st.SMTP.Pass == smtpPassMask {
+			st.SMTP.Pass = old.SMTP.Pass
+		}
+		if st.CalendarKey == calendarKeyMask {
+			st.CalendarKey = old.CalendarKey
 		}
 	}
 	st.normalize()
@@ -236,12 +250,15 @@ func (s *apiServer) hAssistantTestEmail(w http.ResponseWriter, r *http.Request) 
 	body := emailHeader("测试邮件") +
 		`<p style="color:#333;font-size:14px;line-height:1.8;">收到这封邮件说明 SMTP 配置正确，每日提醒和每周报告将发送到本邮箱。</p>` +
 		emailFooter
+	// 第三参是收件人（不是发件人），status 与日报/周报统一用 ok/fail，
+	// 否则邮件日志里这一栏显示的是自己的发件地址、状态值也和别的记录对不上
+	rcpt := strings.Join(recipients(st.SMTP.To), ",")
 	if err := sendAssistantMail(st.SMTP, subject, body); err != nil {
-		logEmail(s.db, "test", subject, st.SMTP.From, "failed", err.Error())
+		logEmail(s.db, "test", subject, rcpt, "fail", err.Error())
 		writeErr(w, http.StatusBadGateway, "发送失败: "+err.Error())
 		return
 	}
-	logEmail(s.db, "test", subject, st.SMTP.From, "ok", "")
+	logEmail(s.db, "test", subject, rcpt, "ok", "")
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
 }
 

@@ -16,9 +16,10 @@ import (
 //   - LIKE 走全表扫描，因此对 limit/offset/关键词数量都设了硬上限，避免一次请求把库拖死
 
 const (
-	searchMaxKeywords   = 5   // 空格分隔的关键词个数上限（AND 关系）
-	searchMaxLimit      = 200 // 单页返回条数上限
-	searchSnippetRadius = 24  // 命中片段在关键词两侧各保留的字符数
+	searchMaxKeywords   = 5     // 空格分隔的关键词个数上限（AND 关系）
+	searchMaxLimit      = 200   // 单页返回条数上限
+	searchMaxOffset     = 10000 // 翻页深度上限，防止 OFFSET 全表扫穿
+	searchSnippetRadius = 24    // 命中片段在关键词两侧各保留的字符数
 )
 
 // SearchOptions 搜索条件
@@ -93,6 +94,36 @@ func archiveTableReady(db *sql.DB) bool {
 	return err == nil && n > 0
 }
 
+// normalizeSearchBound 把用户给的日期/时间边界补成带本地时区偏移的 RFC3339。
+// msg_time 存的就是带偏移的 RFC3339，而 strftime('%s', '2026-02-18') 会被 SQLite 当成 UTC 零点，
+// 直接拿裸日期比较会让整个时间窗平移 8 小时：当天凌晨的消息漏掉，次日凌晨的反而被算进来。
+// 解析不了就原样返回（交给 SQLite 自己判断），绝不吞掉用户的输入。
+func normalizeSearchBound(s string, isEnd bool) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) == 10 {
+		t, err := time.ParseInLocation("2006-01-02", s, time.Local)
+		if err != nil {
+			return s
+		}
+		if isEnd {
+			t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.Local)
+		}
+		return t.Format(time.RFC3339)
+	}
+	// 19 位且不带时区（"2026-02-18T09:00:00" 或 "2026-02-18 09:00:00"）
+	norm := strings.Replace(s, " ", "T", 1)
+	if len(norm) == 19 && !strings.Contains(norm, "Z") &&
+		!strings.ContainsAny(norm[10:], "+-") {
+		if t, err := time.ParseInLocation("2006-01-02T15:04:05", norm, time.Local); err == nil {
+			return t.Format(time.RFC3339)
+		}
+	}
+	return s
+}
+
 // SearchMessages 执行搜索。所有 rows 迭代都在 dbMu 锁内完成（单连接 + WAL 的硬约束）。
 func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
 	start := time.Now()
@@ -109,6 +140,9 @@ func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
 	if opt.Offset < 0 {
 		opt.Offset = 0
 	}
+	if opt.Offset > searchMaxOffset {
+		opt.Offset = searchMaxOffset
+	}
 
 	// 单表条件（messages 与 messages_archive 同构，别名不同而已）
 	buildCond := func(alias string) (string, []interface{}) {
@@ -122,16 +156,13 @@ func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
 			cond = append(cond, alias+".contact_id = ?")
 			args = append(args, opt.ContactID)
 		}
-		if from := strings.TrimSpace(opt.From); from != "" {
+		if from := normalizeSearchBound(opt.From, false); from != "" {
 			// msg_time 存的是 RFC3339 字符串，比较一律先 strftime 转 epoch，绝不能字典序比
 			cond = append(cond, fmt.Sprintf(`%s.msg_time IS NOT NULL AND %s.msg_time != '' AND strftime('%%s', %s.msg_time) >= strftime('%%s', ?)`, alias, alias, alias))
 			args = append(args, from)
 		}
-		if to := strings.TrimSpace(opt.To); to != "" {
-			// 只给日期时按"含当天"处理：上界推到次日零点
-			if len(to) == 10 {
-				to = to + "T23:59:59"
-			}
+		if to := normalizeSearchBound(opt.To, true); to != "" {
+			// 只给日期时按"含当天"处理：normalizeSearchBound 已把上界推到 23:59:59
 			cond = append(cond, fmt.Sprintf(`%s.msg_time IS NOT NULL AND %s.msg_time != '' AND strftime('%%s', %s.msg_time) <= strftime('%%s', ?)`, alias, alias, alias))
 			args = append(args, to)
 		}

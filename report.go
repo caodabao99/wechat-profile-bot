@@ -170,11 +170,14 @@ func BuildAnnualReport(db *sql.DB, year int) (*AnnualReport, error) {
 		fromStr, toStr).Scan(&rep.NewContacts)
 
 	// 情绪曲线（关系助手未启用时表可能不存在，静默跳过）
+	// assistant_emotions.created_at 走的是 DATETIME DEFAULT CURRENT_TIMESTAMP，
+	// 存的是不带偏移的 UTC；报表其它统计全按本地时间，这里必须 localtime 换算，
+	// 否则本地 0~8 点产生的情绪记录会归到前一天甚至整年被年份条件筛掉。
 	emotionByMonth := map[int][]int{}
 	if ers, eerr := db.Query(`
-			SELECT strftime('%m', created_at), score FROM assistant_emotions
+			SELECT strftime('%m', created_at, 'localtime'), score FROM assistant_emotions
 			WHERE created_at IS NOT NULL AND created_at != ''
-			  AND CAST(strftime('%Y', created_at) AS INTEGER) = ?`, year); eerr == nil {
+			  AND CAST(strftime('%Y', created_at, 'localtime') AS INTEGER) = ?`, year); eerr == nil {
 		for ers.Next() {
 			var mon string
 			var score int

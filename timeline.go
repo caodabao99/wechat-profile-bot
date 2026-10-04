@@ -112,11 +112,12 @@ func AddContactEvent(db *sql.DB, contactID int64, title, detail string, eventTim
 	return id, nil
 }
 
-// DeleteContactEvent 删除一条手动记录的事件（派生节点不可删）
-func DeleteContactEvent(db *sql.DB, id int64) error {
+// DeleteContactEvent 删除一条手动记录的事件（派生节点不可删）。
+// 必须带上 contactID：路径里已经指明了联系人，不带的话 A 页面能删掉 B 的事件。
+func DeleteContactEvent(db *sql.DB, contactID, id int64) error {
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	res, err := db.Exec(`DELETE FROM contact_events WHERE id = ?`, id)
+	res, err := db.Exec(`DELETE FROM contact_events WHERE id = ? AND contact_id = ?`, id, contactID)
 	if err != nil {
 		return err
 	}
@@ -150,9 +151,12 @@ func GetContactTimeline(db *sql.DB, contactID int64, limit int) ([]TimelineItem,
 	var createdAt string
 	var firstMsg, lastMsg sql.NullString
 	var msgCount int64
+	// msg_time 是带时区偏移的 RFC3339 字符串，MIN/MAX 字典序比出来的是错的时间，必须走 strftime('%s')
 	err := db.QueryRow(`SELECT c.created_at,
-			(SELECT MIN(m.msg_time) FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''),
-			(SELECT MAX(m.msg_time) FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''),
+			COALESCE((SELECT m.msg_time FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''
+			          ORDER BY strftime('%s', m.msg_time) ASC, m.id ASC LIMIT 1), ''),
+			COALESCE((SELECT m.msg_time FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''
+			          ORDER BY strftime('%s', m.msg_time) DESC, m.id DESC LIMIT 1), ''),
 			(SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id)
 		FROM contacts c WHERE c.id = ?`, contactID).Scan(&createdAt, &firstMsg, &lastMsg, &msgCount)
 	if err != nil {

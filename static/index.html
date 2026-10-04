@@ -92,6 +92,10 @@
           <button type="button" class="btn ghost xs" v-if="filterTagIds.length" @click="clearFilterTags">清除筛选</button>
           <button type="button" class="btn ghost xs" @click="showTagMgr = true">管理标签</button>
         </div>
+        <div class="tag-bar" v-else-if="tagsError">
+          <span class="hint">标签读取失败（{{ tagsError }}），标签筛选暂不可用</span>
+          <button type="button" class="btn ghost xs" @click="loadTags">重试</button>
+        </div>
         <div class="tag-bar" v-else>
           <span class="hint">给联系人打上标签（家人 / 客户 / 老同学…），可按标签筛选</span>
           <button type="button" class="btn ghost xs" @click="showTagMgr = true">新建标签</button>
@@ -401,7 +405,7 @@
           <div class="backup-actions">
             <label class="check-row inline"><input type="checkbox" v-model="archiveForm.enabled"> 每日自动归档</label>
             <span class="hint">保留最近</span>
-            <input class="text-input" style="width:90px" type="number" min="30" v-model.number="archiveForm.retentionDays">
+            <input class="text-input" style="width:90px" type="number" min="30" max="36500" v-model.number="archiveForm.retentionDays">
             <span class="hint">天的消息（默认 730 天 ≈ 2 年）</span>
             <button class="btn sm" @click="saveArchiveSettings" :disabled="archiveBusy">保存设置</button>
           </div>
@@ -441,6 +445,7 @@
             <p class="hint block" v-if="archive.byContact.some(a => a.deleted)">「已删除的联系人」的归档消息无法恢复到聊天中（联系人不存在），恢复全部时会原地保留。</p>
           </div>
         </div>
+        <p class="hint block" v-else-if="archiveError">归档状态读取失败，请重试 <button class="btn xs" @click="loadArchive">重新读取</button></p>
         <p class="hint block" v-else>正在读取归档状态…</p>
       </div>
 
@@ -568,8 +573,8 @@
         <div class="status-grid" style="margin-top:14px">
           <div class="card">
             <h3>📅 近期重要日子（14 天内）</h3>
-            <p class="hint" v-if="!asst.upcoming.length">暂无——在联系人画像的「重要日子」里写上生日/纪念日（如 5月1日、1995-05-01）即可识别</p>
-            <div class="asst-date" v-for="(d, i) in asst.upcoming" :key="i">
+            <p class="hint" v-if="!(asst.upcoming || []).length">暂无——在联系人画像的「重要日子」里写上生日/纪念日（如 5月1日、1995-05-01）即可识别</p>
+            <div class="asst-date" v-for="(d, i) in (asst.upcoming || [])" :key="i">
               <div class="stat-row">
                 <span class="st-label"><a :href="'#/contact/' + d.contactId">{{ d.name }}</a> · {{ d.kind }}<span class="hint">（{{ d.raw }}）</span></span>
                 <span class="st-val">{{ d.dateStr }} ·
@@ -595,8 +600,8 @@
 
           <div class="card">
             <h3>🕐 久未联系（超过 {{ asstForm.coolingDays }} 天）</h3>
-            <p class="hint" v-if="!asst.cooling.length">没有冷却中的联系人，保持得不错</p>
-            <div class="asst-cool" v-for="c in asst.cooling" :key="c.contactId">
+            <p class="hint" v-if="!(asst.cooling || []).length">没有冷却中的联系人，保持得不错</p>
+            <div class="asst-cool" v-for="c in (asst.cooling || [])" :key="c.contactId">
               <div class="stat-row">
                 <span class="st-label"><a :href="'#/contact/' + c.contactId">{{ c.name }}</a></span>
                 <span class="st-val">{{ c.days }} 天没互动</span>
@@ -607,8 +612,8 @@
 
           <div class="card">
             <h3>💞 亲密度 Top10（近 30 天）</h3>
-            <p class="hint" v-if="!asst.intimacy.length">近 30 天还没有互动数据</p>
-            <div class="meter-block" v-for="it in asst.intimacy" :key="it.contactId">
+            <p class="hint" v-if="!(asst.intimacy || []).length">近 30 天还没有互动数据</p>
+            <div class="meter-block" v-for="it in (asst.intimacy || [])" :key="it.contactId">
               <div class="meter-head">
                 <span><a :href="'#/contact/' + it.contactId">{{ it.name }}</a>
                   <span class="hint">我 {{ it.mine }} / TA {{ it.other }} · 互动 {{ it.days }} 天</span></span>
@@ -620,8 +625,8 @@
 
           <div class="card">
             <h3>💬 情绪关注（近 7 天）</h3>
-            <p class="hint" v-if="!asst.emotions.length">暂无分析记录——启用情绪预警后每日自动分析，也可在每日提醒邮件里看到</p>
-            <div class="asst-cool" v-for="e in asst.emotions" :key="e.contactId">
+            <p class="hint" v-if="!(asst.emotions || []).length">暂无分析记录——启用情绪预警后每日自动分析，也可在每日提醒邮件里看到</p>
+            <div class="asst-cool" v-for="e in (asst.emotions || [])" :key="e.contactId">
               <div class="stat-row">
                 <span class="st-label"><a :href="'#/contact/' + e.contactId">{{ e.name }}</a>
                   <span class="tag" :class="e.alert ? 'tag-red' : 'tag-green'" style="margin-left:6px">{{ e.emotion || '—' }}</span>
@@ -703,12 +708,12 @@
             <button class="btn sm" @click="runAssistantNow('weekly')" :disabled="!!asstBusy">{{ asstBusy==='weekly' ? '启动中…' : '立即生成每周报告' }}</button>
             <span class="hint">需已启用助手并保存 SMTP；任务在后台执行，完成后刷新本页查看</span>
           </div>
-          <div class="backup-log-section" v-if="asst.runs.length">
+          <div class="backup-log-section" v-if="(asst.runs || []).length">
             <h3>最近任务记录</h3>
             <table class="backup-log-table">
               <thead><tr><th>时间</th><th>任务</th><th>详情</th></tr></thead>
               <tbody>
-                <tr v-for="(r, i) in asst.runs" :key="i">
+                <tr v-for="(r, i) in (asst.runs || [])" :key="i">
                   <td>{{ fmtTime(r.createdAt).slice(0,16) }}</td>
                   <td>{{ {daily:'每日提醒', weekly:'每周报告', manual:'每日提醒(手动)', 'weekly-manual':'每周报告(手动)'}[r.kind] || r.kind }}</td>
                   <td class="log-detail" :title="r.detail">{{ r.detail || '-' }}</td>
@@ -718,10 +723,10 @@
           </div>
           <div class="backup-log-section">
             <h3>邮件发送记录</h3>
-            <table class="backup-log-table" v-if="asst.emailLog.length">
+            <table class="backup-log-table" v-if="(asst.emailLog || []).length">
               <thead><tr><th>时间</th><th>类型</th><th>主题</th><th>状态</th><th>错误</th></tr></thead>
               <tbody>
-                <tr v-for="(l, i) in asst.emailLog" :key="i" :class="{err: l.status !== 'ok'}">
+                <tr v-for="(l, i) in (asst.emailLog || [])" :key="i" :class="{err: l.status !== 'ok'}">
                   <td>{{ fmtTime(l.createdAt).slice(0,16) }}</td>
                   <td>{{ {daily:'每日提醒', weekly:'每周报告', test:'测试'}[l.kind] || l.kind }}</td>
                   <td :title="l.subject">{{ l.subject || '-' }}</td>
@@ -772,7 +777,7 @@
           <p class="hint block" v-if="srchRes.archiveSkipped">归档库当前不可用，本次只搜了活跃消息。</p>
           <p class="empty" v-if="!(srchRes.list || []).length">没有找到匹配的消息</p>
           <ul class="tl-list srch-list" v-else>
-            <li v-for="h in srchRes.list" :key="h.id">
+            <li v-for="h in srchRes.list" :key="h.archived ? 'a' + h.id : 'm' + h.id">
               <div class="tl-time">{{ h.msgTime }}</div>
               <div class="tl-body">
                 <a href="#" @click.prevent="gotoDetail(h.contactId)">{{ h.contactName }}</a>
@@ -1181,12 +1186,12 @@
           <template v-for="f in sec.fields" :key="f.path">
             <!-- 典型意图：名称 + 表现逐行编辑，与查看时「- 名称：表现」对应 -->
             <div v-if="f.kind === 'map'">
-              <div class="pe-intent-row" v-for="(row, i) in profileEditor.intents" :key="i">
+              <div class="pe-intent-row" v-for="(row, i) in profileEditor.intents" :key="row._uid">
                 <input class="text-input pe-intent-name" v-model="row.name" aria-label="意图名称" placeholder="意图名称">
                 <input class="text-input" v-model="row.description" aria-label="典型表现" placeholder="典型表现（可留空）">
                 <button type="button" class="btn sm" @click="profileEditor.intents.splice(i, 1)">删除</button>
               </div>
-              <button type="button" class="btn sm" @click="profileEditor.intents.push({name:'',description:''})">添加意图</button>
+              <button type="button" class="btn sm" @click="addIntentRow">添加意图</button>
             </div>
             <label v-else style="display:block;margin:8px 0">
               <span class="pe-label">

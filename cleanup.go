@@ -11,5 +11,8 @@ func contactCleanupStmts() []string {
 		`DELETE FROM contact_tag_links WHERE contact_id = ?`,
 		`DELETE FROM contact_events WHERE contact_id = ?`,
 		`DELETE FROM followup_items WHERE contact_id = ?`,
+		// 归档表也要清：老消息搬进 messages_archive 后主表已经没有它了，
+		// 不清就会留下一批永远挂在不存在的联系人名下的孤儿归档（恢复归档也回不来）
+		`DELETE FROM messages_archive WHERE contact_id = ?`,
 	}
 }

@@ -300,7 +300,8 @@ func collectUpcomingDates(db *sql.DB, now time.Time, withinDays int) ([]Assistan
 		return nil, nil, err
 	}
 
-	var upcoming, unparsed []AssistantDateItem
+	// 空切片而非 nil：JSON 里输出 [] 而不是 null，网页端直接读 .length 才不会崩
+	upcoming, unparsed := []AssistantDateItem{}, []AssistantDateItem{}
 	for _, c := range contacts {
 		if strings.TrimSpace(c.ProfileJSON) == "" {
 			continue
@@ -350,9 +351,13 @@ type AssistantCoolingItem struct {
 // collectCoolingContacts 找出超过 coolingDays 天无任何互动的联系人（按冷却时长倒序）。
 // msg_time 是 RFC3339 字符串，排序/换算必须走 strftime('%s')，与 GetContactStats 同一套路。
 func collectCoolingContacts(db *sql.DB, now time.Time, coolingDays int) ([]AssistantCoolingItem, error) {
+	threshold := now.AddDate(0, 0, -coolingDays)
+	out := []AssistantCoolingItem{}
+	// 锁内迭代完再解锁：rows 未关闭时会独占唯一连接，
+	// 若提前放锁，别的 goroutine 拿到 dbMu 后仍会卡在连接池上，把整库拖住。
 	dbMu.Lock()
 	rows, err := db.Query(`
-		SELECT c.id, c.name, c.remark,
+		SELECT c.id, c.name, COALESCE(c.remark, ''),
 			COALESCE((SELECT m.msg_time FROM messages m
 			          WHERE m.contact_id = c.id AND m.msg_time IS NOT NULL AND m.msg_time != ''
 			          ORDER BY strftime('%s', m.msg_time) DESC, m.id DESC LIMIT 1), ''),
@@ -360,14 +365,10 @@ func collectCoolingContacts(db *sql.DB, now time.Time, coolingDays int) ([]Assis
 			          WHERE m.contact_id = c.id AND m.msg_time IS NOT NULL AND m.msg_time != ''
 			          ORDER BY strftime('%s', m.msg_time) DESC, m.id DESC LIMIT 1), '')
 		FROM contacts c WHERE c.merged_into IS NULL`)
-	dbMu.Unlock()
 	if err != nil {
+		dbMu.Unlock()
 		return nil, err
 	}
-	defer rows.Close()
-
-	threshold := now.AddDate(0, 0, -coolingDays)
-	out := []AssistantCoolingItem{}
 	for rows.Next() {
 		var id int64
 		var name, remark, lastTime, lastContent string
@@ -394,7 +395,10 @@ func collectCoolingContacts(db *sql.DB, now time.Time, coolingDays int) ([]Assis
 			LastContent: preview(lastContent, 60),
 		})
 	}
-	if err := rows.Err(); err != nil {
+	err = rows.Err()
+	rows.Close()
+	dbMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Days > out[j].Days })
@@ -420,25 +424,24 @@ type AssistantIntimacyItem struct {
 // 只读 messages 表，一次聚合查询算完所有联系人。
 func computeIntimacy(db *sql.DB, now time.Time, windowDays int) ([]AssistantIntimacyItem, error) {
 	since := now.AddDate(0, 0, -windowDays)
+	out := []AssistantIntimacyItem{}
 	dbMu.Lock()
 	rows, err := db.Query(`
-		SELECT m.contact_id, c.name, c.remark,
+		SELECT m.contact_id, c.name, COALESCE(c.remark, ''),
 			SUM(CASE WHEN m.sender='me' THEN 1 ELSE 0 END),
 			SUM(CASE WHEN m.sender='other' THEN 1 ELSE 0 END),
-			COUNT(DISTINCT date(m.msg_time)),
+			COUNT(DISTINCT substr(m.msg_time, 1, 10)),
 			SUM(CASE WHEN m.sender='other' THEN LENGTH(m.content) ELSE 0 END)
 		FROM messages m JOIN contacts c ON c.id = m.contact_id
 		WHERE c.merged_into IS NULL
 		  AND m.msg_time IS NOT NULL AND m.msg_time != ''
 		  AND strftime('%s', m.msg_time) >= strftime('%s', ?)
 		GROUP BY m.contact_id`, since.Format(time.RFC3339))
-	dbMu.Unlock()
 	if err != nil {
+		dbMu.Unlock()
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := []AssistantIntimacyItem{}
+	// 锁内迭代完：见 collectCoolingContacts 的说明
 	for rows.Next() {
 		var it AssistantIntimacyItem
 		var name, remark string
@@ -485,7 +488,10 @@ func computeIntimacy(db *sql.DB, now time.Time, windowDays int) ([]AssistantInti
 		it.Score = int(score + 0.5)
 		out = append(out, it)
 	}
-	if err := rows.Err(); err != nil {
+	err = rows.Err()
+	rows.Close()
+	dbMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -618,20 +624,20 @@ func saveEmotionResult(db *sql.DB, contactID int64, r *EmotionResult) {
 
 // recentEmotions 每个联系人取最近一条分析结果（近 withinDays 天内）
 func recentEmotions(db *sql.DB, now time.Time, withinDays int) ([]map[string]interface{}, error) {
-	since := now.AddDate(0, 0, -withinDays).Format("2006-01-02 15:04:05")
+	// created_at 由 CURRENT_TIMESTAMP 写入，是 UTC；比较基准必须同样转 UTC，否则差 8 小时
+	since := now.AddDate(0, 0, -withinDays).UTC().Format("2006-01-02 15:04:05")
+	out := []map[string]interface{}{}
 	dbMu.Lock()
 	rows, err := db.Query(`
-		SELECT e.contact_id, c.name, c.remark, e.emotion, e.score, e.summary, e.advice, e.alert, e.created_at
+		SELECT e.contact_id, c.name, COALESCE(c.remark, ''), e.emotion, e.score, e.summary, e.advice, e.alert, e.created_at
 		FROM assistant_emotions e JOIN contacts c ON c.id = e.contact_id
 		WHERE c.merged_into IS NULL AND e.created_at >= ?
 		  AND e.id = (SELECT MAX(e2.id) FROM assistant_emotions e2 WHERE e2.contact_id = e.contact_id)
 		ORDER BY e.alert DESC, e.score ASC`, since)
-	dbMu.Unlock()
 	if err != nil {
+		dbMu.Unlock()
 		return nil, err
 	}
-	defer rows.Close()
-	out := []map[string]interface{}{}
 	for rows.Next() {
 		var id int64
 		var name, remark, emotion, summary, advice, createdAt string
@@ -648,7 +654,10 @@ func recentEmotions(db *sql.DB, now time.Time, withinDays int) ([]map[string]int
 			"summary": summary, "advice": advice, "alert": alert == 1, "createdAt": createdAt,
 		})
 	}
-	return out, rows.Err()
+	err = rows.Err()
+	rows.Close()
+	dbMu.Unlock()
+	return out, err
 }
 
 // ---------- 提醒去重 ----------

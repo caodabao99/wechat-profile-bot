@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -113,7 +114,17 @@ func (s *apiServer) hFollowupScan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ContactID int64 `json:"contactId"`
 	}
-	json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFollowupBodyBytes)).Decode(&req) // 空 body 容忍
+	// 只容忍真正的空 body（前端不指定联系人时就是空 POST）。解析失败必须报 400：
+	// 静默忽略的话，超过 32KB 的坏请求会退化成 contactId=0，也就是「全量扫描」，
+	// 一口气把每日上限次数的模型调用全打出去。
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFollowupBodyBytes)).Decode(&req); err != nil && err != io.EOF {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	if req.ContactID < 0 {
+		writeErr(w, http.StatusBadRequest, "contactId 必须是非负整数")
+		return
+	}
 
 	if s.llm == nil {
 		writeErr(w, http.StatusBadRequest, "未配置模型接口，无法抽取待跟进事项")

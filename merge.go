@@ -158,6 +158,19 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 		return result, err
 	}
 
+	// 3b. 归档消息一并搬走：老消息进了 messages_archive 之后，合并若不管它，
+	//     这批消息就永久挂在已被合并掉的源联系人名下，恢复归档也回不到目标联系人身上。
+	//     表不存在（老库 / ensureArchiveTables 失败）时跳过，绝不影响合并本身。
+	var movedArchiveIDs []int64
+	if ids, err := moveContactRows(tx, "messages_archive", sourceID, targetID); err == nil {
+		movedArchiveIDs = ids
+		// 撞 UNIQUE(contact_id, msg_hash) 没搬走的，只可能是目标联系人已有同一条消息，
+		// 留在源联系人名下会变成永远读不到的孤儿归档，直接清掉
+		if _, err := tx.Exec(`DELETE FROM messages_archive WHERE contact_id = ?`, sourceID); err != nil {
+			return result, err
+		}
+	}
+
 	// 4. 搬移画像历史
 	var historyIDs []int64
 	rows, err = tx.Query(`SELECT id FROM profile_history WHERE contact_id = ?`, sourceID)
@@ -208,10 +221,8 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 	}
 	result.ProfileCopied = profileCopied
 
-	// 6. 重算 target 的 other_msg_count（全量，不能累加）
-	if _, err := tx.Exec(`UPDATE contacts SET other_msg_count = (
-		SELECT COUNT(*) FROM messages WHERE contact_id = ? AND sender = 'other'
-	) WHERE id = ?`, targetID, targetID); err != nil {
+	// 6. 重算 target 的 other_msg_count（全量，不能累加；归档表里的老消息也要算进去）
+	if err := recomputeOtherMsgCountTx(tx, targetID); err != nil {
 		return result, err
 	}
 
@@ -248,6 +259,23 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 		return result, err
 	}
 
+	// 9a. 撤销用的快照：双方标签 + 需要搬走的手动事件 / 待跟进。
+	//     这三张表都属于增值模块，老库或建表失败时可能不存在，任何一项失败都只跳过，
+	//     不阻断合并；撤销时 undo_extra 里没记的东西就什么都不做。
+	var extra mergeUndoExtra
+	if srcTags, tgtTags, err := snapshotTagIDs(tx, sourceID, targetID); err == nil {
+		extra.TagsRecorded = true
+		extra.SourceTagIDs = srcTags
+		extra.TargetTagIDs = tgtTags
+	}
+	extra.MovedArchiveIDs = movedArchiveIDs
+	extra.MovedEventIDs, _ = moveContactRows(tx, "contact_events", sourceID, targetID)
+	extra.MovedFollowupIDs, _ = moveContactRows(tx, "followup_items", sourceID, targetID)
+	extraJSON, err := json.Marshal(extra)
+	if err != nil {
+		return result, err
+	}
+
 	// 9b. 源联系人的标签并到目标（增值功能；表不存在时跳过，不影响合并本身）
 	if err := transferTagsLocked(tx, sourceID, targetID); err != nil &&
 		!strings.Contains(err.Error(), "no such table") {
@@ -257,10 +285,10 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 	// 10. 写 merge_log
 	msgIDsJSON, _ := json.Marshal(msgIDs)
 	historyIDsJSON, _ := json.Marshal(historyIDs)
-	res, err = tx.Exec(`INSERT INTO merge_log (source_id, target_id, source_name, target_name, moved_message_ids, moved_history_ids, profile_copied, created_at, deleted_messages, target_profile)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	res, err = tx.Exec(`INSERT INTO merge_log (source_id, target_id, source_name, target_name, moved_message_ids, moved_history_ids, profile_copied, created_at, deleted_messages, target_profile, undo_extra)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sourceID, targetID, sourceName, targetName, string(msgIDsJSON), string(historyIDsJSON),
-		profileCopied, time.Now().Format(time.RFC3339), string(deletedJSON), string(beforeJSON))
+		profileCopied, time.Now().Format(time.RFC3339), string(deletedJSON), string(beforeJSON), string(extraJSON))
 	if err != nil {
 		return result, err
 	}
@@ -293,6 +321,142 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 
 	profileEpoch++
 	return result, nil
+}
+
+// mergeUndoExtra 撤销合并所需的额外快照，以 JSON 存在 merge_log.undo_extra 里。
+// 涉及的表全都属于增值模块，老库或建表失败时可能不存在，所以每个字段都允许缺省，
+// 老日志读出来是 "{}"，撤销时一律跳过——与升级前的行为完全一致。
+type mergeUndoExtra struct {
+	TagsRecorded     bool    `json:"tagsRecorded"`
+	SourceTagIDs     []int64 `json:"sourceTagIds"`
+	TargetTagIDs     []int64 `json:"targetTagIds"`
+	MovedArchiveIDs  []int64 `json:"movedArchiveIds"`
+	MovedEventIDs    []int64 `json:"movedEventIds"`
+	MovedFollowupIDs []int64 `json:"movedFollowupIds"`
+}
+
+// tableExistsTx 事务内判断表是否存在（增值表可能没建，查询前必须先探一次）
+func tableExistsTx(tx *sql.Tx, table string) bool {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// moveContactRows 把 table 里 sourceID 名下的行搬到 targetID，返回搬走前记下的 id 列表。
+// table 只允许传代码里写死的表名（不来自用户输入）。
+// 表不存在时返回错误，调用方据此跳过，绝不让增值模块的缺失阻断合并/撤销。
+func moveContactRows(tx *sql.Tx, table string, sourceID, targetID int64) ([]int64, error) {
+	if !tableExistsTx(tx, table) {
+		return nil, fmt.Errorf("表不存在: %s", table)
+	}
+	ids := []int64{}
+	rows, err := tx.Query(`SELECT id FROM `+table+` WHERE contact_id = ?`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return ids, nil
+	}
+	// OR IGNORE：有 UNIQUE 约束的表（messages_archive）撞键时留在原地，由调用方决定怎么收拾
+	if _, err := tx.Exec(`UPDATE OR IGNORE `+table+` SET contact_id = ? WHERE contact_id = ?`, targetID, sourceID); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// moveRowsBack 按 id 把行搬回 sourceID；表不存在或 id 已经没了都只当无事发生。
+func moveRowsBack(tx *sql.Tx, table string, ids []int64, contactID int64) error {
+	if len(ids) == 0 || !tableExistsTx(tx, table) {
+		return nil
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(`UPDATE OR IGNORE `+table+` SET contact_id = ? WHERE id = ?`, contactID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// snapshotTagIDs 取双方当前的标签 id 集合（撤销时据此精确还原）。
+func snapshotTagIDs(tx *sql.Tx, sourceID, targetID int64) ([]int64, []int64, error) {
+	pick := func(cid int64) ([]int64, error) {
+		out := []int64{}
+		rows, err := tx.Query(`SELECT tag_id FROM contact_tag_links WHERE contact_id = ? ORDER BY tag_id`, cid)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		return out, err
+	}
+	s, err := pick(sourceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	t, err := pick(targetID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, t, nil
+}
+
+// restoreTagLinks 按快照重建一方的标签关联（先删后插，等于精确回到合并前的状态）
+func restoreTagLinks(tx *sql.Tx, contactID int64, tagIDs []int64) error {
+	if !tableExistsTx(tx, "contact_tag_links") {
+		return nil
+	}
+	if _, err := tx.Exec(`DELETE FROM contact_tag_links WHERE contact_id = ?`, contactID); err != nil {
+		return err
+	}
+	now := time.Now().Format(time.RFC3339)
+	for _, tid := range tagIDs {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO contact_tag_links (contact_id, tag_id, created_at) VALUES (?, ?, ?)`,
+			contactID, tid, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recomputeOtherMsgCountTx 全量重算对方消息数（事务内，调用方须已持 dbMu）。
+// 归档只是把老消息挪进 messages_archive，计数必须两张表都算，
+// 否则一次合并就会把多年积累的对话条数清零；归档表不存在时退回只算活跃表。
+func recomputeOtherMsgCountTx(tx *sql.Tx, contactID int64) error {
+	if tableExistsTx(tx, "messages_archive") {
+		_, err := tx.Exec(`UPDATE contacts SET other_msg_count = (
+			SELECT COUNT(*) FROM messages WHERE contact_id = ? AND sender = 'other'
+		) + (
+			SELECT COUNT(*) FROM messages_archive WHERE contact_id = ? AND sender = 'other'
+		) WHERE id = ?`, contactID, contactID, contactID)
+		return err
+	}
+	_, err := tx.Exec(`UPDATE contacts SET other_msg_count = (
+		SELECT COUNT(*) FROM messages WHERE contact_id = ? AND sender = 'other'
+	) WHERE id = ?`, contactID, contactID)
+	return err
 }
 
 // RecomputeOtherMsgCount 全量重算联系人的对方消息数
@@ -350,12 +514,13 @@ func UndoMerge(db *sql.DB, mergeLogID int64) error {
 		UndoneAt        sql.NullString
 		DeletedMessages string
 		TargetProfile   string
+		UndoExtra       string
 	}
 	err := db.QueryRow(`SELECT source_id, target_id, source_name, target_name, moved_message_ids, moved_history_ids,
-		COALESCE(profile_copied, 0), undone_at, COALESCE(deleted_messages,'[]'), COALESCE(target_profile,'')
+		COALESCE(profile_copied, 0), undone_at, COALESCE(deleted_messages,'[]'), COALESCE(target_profile,''), COALESCE(undo_extra,'{}')
 		FROM merge_log WHERE id = ?`, mergeLogID).
 		Scan(&log.SourceID, &log.TargetID, &log.SourceName, &log.TargetName,
-			&log.MovedMessageIDs, &log.MovedHistoryIDs, &log.ProfileCopied, &log.UndoneAt, &log.DeletedMessages, &log.TargetProfile)
+			&log.MovedMessageIDs, &log.MovedHistoryIDs, &log.ProfileCopied, &log.UndoneAt, &log.DeletedMessages, &log.TargetProfile, &log.UndoExtra)
 	if err != nil {
 		return fmt.Errorf("合并日志不存在: %w", err)
 	}
@@ -377,6 +542,13 @@ func UndoMerge(db *sql.DB, mergeLogID int64) error {
 	}
 	if err := json.Unmarshal([]byte(log.MovedHistoryIDs), &historyIDs); err != nil {
 		return fmt.Errorf("解析历史ID列表失败: %w", err)
+	}
+	// 老日志没有 undo_extra（或库里是 '{}'）→ 全零值，下面所有回滚步骤自动跳过
+	var extra mergeUndoExtra
+	if s := strings.TrimSpace(log.UndoExtra); s != "" && s != "{}" {
+		if err := json.Unmarshal([]byte(s), &extra); err != nil {
+			return fmt.Errorf("解析撤销快照失败: %w", err)
+		}
 	}
 
 	tx, err := db.Begin()
@@ -410,6 +582,28 @@ func UndoMerge(db *sql.DB, mergeLogID int64) error {
 	// 3. 搬回历史
 	for _, histID := range historyIDs {
 		if _, err := tx.Exec(`UPDATE profile_history SET contact_id = ? WHERE id = ?`, log.SourceID, histID); err != nil {
+			return err
+		}
+	}
+
+	// 3b. 搬回归档消息、手动事件与待跟进，并把标签还原成合并前的样子。
+	//     表不存在或老日志没记快照都只当无事发生，不能让撤销因此失败。
+	if err := moveRowsBack(tx, "messages_archive", extra.MovedArchiveIDs, log.SourceID); err != nil {
+		return err
+	}
+	if err := moveRowsBack(tx, "contact_events", extra.MovedEventIDs, log.SourceID); err != nil {
+		return err
+	}
+	if err := moveRowsBack(tx, "followup_items", extra.MovedFollowupIDs, log.SourceID); err != nil {
+		return err
+	}
+	if extra.TagsRecorded {
+		// 必须按快照精确还原双方：合并时源的标签被删掉并转给了目标，
+		// 只把源的加回去会让目标留着一堆不属于它的标签
+		if err := restoreTagLinks(tx, log.SourceID, extra.SourceTagIDs); err != nil {
+			return err
+		}
+		if err := restoreTagLinks(tx, log.TargetID, extra.TargetTagIDs); err != nil {
 			return err
 		}
 	}
@@ -465,11 +659,9 @@ func UndoMerge(db *sql.DB, mergeLogID int64) error {
 		}
 	}
 
-	// 5. 重算双方计数
+	// 5. 重算双方计数（归档表里的老消息也要算进去，见 recomputeOtherMsgCountTx）
 	for _, cid := range []int64{log.SourceID, log.TargetID} {
-		if _, err := tx.Exec(`UPDATE contacts SET other_msg_count = (
-			SELECT COUNT(*) FROM messages WHERE contact_id = ? AND sender = 'other'
-		) WHERE id = ?`, cid, cid); err != nil {
+		if err := recomputeOtherMsgCountTx(tx, cid); err != nil {
 			return err
 		}
 	}

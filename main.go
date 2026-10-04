@@ -98,7 +98,14 @@ func main() {
 	if err := ensureArchiveTables(db); err != nil {
 		slog.Warn("消息归档数据表初始化失败", "err", err)
 	} else {
-		startArchiveScheduler(db)
+		// 归档调度器要能随进程退出：这个 defer 注册在 db.Close() 之后，
+		// 按 LIFO 会先于关库执行，不会留下「库已关还在写事务」的 goroutine
+		archiveStop := make(chan struct{})
+		archiveDone := startArchiveScheduler(db, archiveStop)
+		defer func() {
+			close(archiveStop)
+			<-archiveDone
+		}()
 	}
 
 	// 网页端增值功能数据表：标签 / 联系人时间线 / 待跟进。

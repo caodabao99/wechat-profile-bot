@@ -102,8 +102,14 @@ func (s *apiServer) hTagsBatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
-	if len(req.ContactIDs) > 2000 {
+	if len(req.ContactIDs) > maxBatchContacts {
 		writeErr(w, http.StatusBadRequest, "一次最多处理 2000 个联系人")
+		return
+	}
+	// 标签数也要卡上限：body 限长 64KB，不拦的话能塞进几万个 tagId，
+	// 而 BatchTag 是双层循环逐对执行 SQL，全在一个事务一把全局锁里，能把整个服务冻住
+	if len(req.TagIDs) > maxBatchTagIDs {
+		writeErr(w, http.StatusBadRequest, "一次最多操作 50 个标签")
 		return
 	}
 	n, err := BatchTag(s.db, req.ContactIDs, req.TagIDs, req.Remove)
