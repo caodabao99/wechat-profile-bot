@@ -699,6 +699,35 @@
           <p class="hint block">关系助手与微信机器人相互独立：不配邮箱或不启用时零开销，不影响现有功能。</p>
         </div>
 
+        <!-- 本周维护计划：系统自动排行，人只管去联系 -->
+        <div class="card weekly-plan-card">
+          <div class="tl-head">
+            <h3 style="margin:0">🗓 本周维护计划</h3>
+            <button class="btn ghost sm" @click="regenWeeklyPlan" :disabled="!!weeklyPlanBusy">{{ weeklyPlanBusy ? '生成中…' : '重新生成' }}</button>
+          </div>
+          <p class="hint block">系统根据互动趋势每周一自动排行。你只管去联系——发消息后系统会自动检测并回测效果，不需要手动标记。</p>
+          <p class="hint" v-if="weeklyPlanBusy">正在后台生成，约 10 秒后自动刷新…</p>
+          <p class="empty" v-else-if="!weeklyPlan.items.length">本周没有需要维护的联系人——保持得不错</p>
+          <ol class="wp-list" v-else>
+            <li v-for="item in weeklyPlan.items" :key="item.contactId">
+              <div class="wp-top">
+                <a :href="'#/contact/' + item.contactId">{{ item.contactName }}</a>
+                <span class="chip">{{ weeklyKindLabel(item.kind) }}</span>
+                <span class="hint" v-if="item.score">优先级 {{ item.score.toFixed(1) }}</span>
+              </div>
+              <p class="wp-reason" v-if="item.reason">{{ item.reason }}</p>
+              <p class="wp-draft" v-if="item.draft">建议开口：{{ item.draft }}
+                <button class="btn ghost xs" @click="copyText(item.draft)">复制</button>
+              </p>
+            </li>
+          </ol>
+          <p class="hint block wp-statsline" v-if="weeklyPlan.stats && weeklyPlan.stats.total">
+            最近 90 天建议 {{ weeklyPlan.stats.total }} 条，你实际联系了 {{ weeklyPlan.stats.acted }} 条；
+            已回测的里面回暖 {{ weeklyPlan.stats.improved }} · 持平 {{ weeklyPlan.stats.stable }} · 走弱 {{ weeklyPlan.stats.worsened }}
+          </p>
+          <p class="hint block" v-if="weeklyPlan.generatedAt">上次生成：{{ fmtTime(weeklyPlan.generatedAt).slice(0,16) }}</p>
+        </div>
+
         <!-- 设置 -->
         <div class="card">
           <h3>提醒设置</h3>
@@ -742,6 +771,10 @@
           <div class="asst-row">
             <label class="check-row inline"><input type="checkbox" v-model="asstForm.blessingDraft"> 重要日子附 AI 祝福草稿</label>
             <span class="hint">每日邮件里给最紧急的最多 3 条重要日子各写 3 句祝福（要调模型）</span>
+          </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.weeklyPlanEnabled"> 启用每周维护计划</label>
+            <span class="hint">每周一自动排行该联系谁并草拟开场白（要调模型），结果在本页看板展示，不发邮件</span>
           </div>
 
           <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
@@ -945,6 +978,7 @@
         <a href="#" :class="{active: insightTab==='period'}" @click.prevent="switchInsight('period')">周期报告</a>
         <a href="#" :class="{active: insightTab==='social'}" @click.prevent="switchInsight('social')">社交大盘</a>
         <a href="#" :class="{active: insightTab==='dup'}" @click.prevent="switchInsight('dup')">重复联系人</a>
+        <a href="#" :class="{active: insightTab==='graph'}" @click.prevent="switchInsight('graph')">关系图谱</a>
       </nav>
 
       <!-- ---- 聊天记录全文搜索 ---- -->
@@ -1325,6 +1359,35 @@
               <div class="dup-acts">
                 <span class="hint">建议保留：{{ p.suggestedKeep === p.a.id ? dupName(p.a) : dupName(p.b) }}</span>
                 <button class="btn sm primary" @click="mergeDuplicate(p)" :disabled="dupBusy">按建议合并</button>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </template>
+
+      <!-- ---- 跨联系人关系图谱 ---- -->
+      <template v-if="insightTab==='graph'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>关系图谱</h2>
+            <div class="lh-actions">
+              <button class="btn sm" @click="rebuildConnections" :disabled="connBusy">{{ connBusy ? '重建中…' : '重新发现关联' }}</button>
+            </div>
+          </div>
+          <p class="hint block">系统从大家的画像（城市 / 兴趣 / 职业 / 互相提到的名字）里自动找出你可能认识的人与人之间的联系，纯本地计算不花模型费用。发现新关联后这里会自动更新。</p>
+          <p class="empty" v-if="connBusy && !connections.length">正在分析…</p>
+          <p class="empty" v-else-if="!connections.length">还没有发现联系人之间的关联——先在联系人画像里补充城市、兴趣、职业等信息</p>
+          <ul class="conn-list" v-if="connections.length">
+            <li v-for="c in connections" :key="c.id">
+              <div class="conn-pair">
+                <a :href="'#/contact/' + c.contactA">{{ c.nameA || ('#' + c.contactA) }}</a>
+                <span class="conn-vs">↔</span>
+                <a :href="'#/contact/' + c.contactB">{{ c.nameB || ('#' + c.contactB) }}</a>
+              </div>
+              <div class="conn-why">
+                <span class="chip">{{ connTypeLabel(c.connectionType) }}</span>
+                <span class="hint" v-if="c.detail">{{ c.detail }}</span>
+                <span class="hint">可信度 {{ Math.round(c.confidence * 100) }}%</span>
               </div>
             </li>
           </ul>

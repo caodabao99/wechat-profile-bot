@@ -442,6 +442,60 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 14 {
+		// v14: 每周维护计划缓存 + 隐式反馈跟踪（建议被执行与回测结果）
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS weekly_plan_cache (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			generated_at TEXT NOT NULL,
+			items_json TEXT NOT NULL
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS suggestion_outcomes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			suggestion_id INTEGER NOT NULL REFERENCES relationship_action_suggestions(id) ON DELETE CASCADE,
+			contact_id INTEGER NOT NULL,
+			acted_at TEXT NOT NULL,
+			trend_before INTEGER NOT NULL DEFAULT 0,
+			outcome TEXT NOT NULL DEFAULT 'pending'
+				CHECK(outcome IN ('pending','improved','stable','worsened')),
+			trend_after INTEGER NOT NULL DEFAULT 0,
+			checked_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_suggestion_outcome_pending ON suggestion_outcomes(outcome, acted_at)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 14`); err != nil {
+			return err
+		}
+	}
+	if version < 15 {
+		// v15: 跨联系人关系图谱（从 profile_facts 派生的人际关联）
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS contact_connections (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_a INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			contact_b INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			connection_type TEXT NOT NULL,
+			detail TEXT NOT NULL DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0.5,
+			created_at TEXT NOT NULL,
+			UNIQUE(contact_a, contact_b, connection_type)
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conn_a ON contact_connections(contact_a)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_conn_b ON contact_connections(contact_b)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 15`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

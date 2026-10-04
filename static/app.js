@@ -178,6 +178,8 @@ createApp({
       // 增值功能：待跟进提醒 + AI 祝福草稿。自动抽取和祝福草稿都要调模型，默认关闭
       remindFollowup: true, followupEnabled: false,
       followupDailyMax: 8, followupWindowDays: 30, blessingDraft: false,
+      // 每周维护计划：默认开，关掉后调度器不再每周一自动生成
+      weeklyPlanEnabled: true,
       // 日历订阅密钥：后端只回传打码值，保存时原样带回，避免把库里的真密钥冲掉
       calendarKey: '',
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
@@ -204,6 +206,7 @@ createApp({
         f.followupDailyMax = st.followupDailyMax || 8;
         f.followupWindowDays = st.followupWindowDays || 30;
         f.blessingDraft = !!st.blessingDraft;
+        f.weeklyPlanEnabled = st.weeklyPlanEnabled !== false; // 默认开（opt-out）
         f.calendarKey = st.calendarKey || '';
         const sm = st.smtp || {};
         f.smtp = {
@@ -214,8 +217,39 @@ createApp({
         // 看板之外的两块增值数据：待跟进列表 + 日历订阅密钥
         loadFollowups();
         loadCalendarKey();
+        loadWeeklyPlan();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
+    }
+
+    // ---------- 本周维护计划 ----------
+    const weeklyPlan = ref({ items: [], stats: null, generatedAt: '' });
+    const weeklyPlanBusy = ref(false);
+
+    const weeklyKinds = { cooling: '互动降温', silence: '久未联系', no_reply: '对方消息待回' };
+    function weeklyKindLabel(k) { return weeklyKinds[k] || k; }
+
+    async function loadWeeklyPlan() {
+      try {
+        const data = await api('/api/assistant/weekly-plan');
+        weeklyPlan.value = {
+          items: data.items || [],
+          stats: data.stats || null,
+          generatedAt: data.generatedAt || '',
+        };
+      } catch (e) { /* 静默：周计划卡片加载失败不打断看板 */ }
+    }
+
+    async function regenWeeklyPlan() {
+      if (weeklyPlanBusy.value) return;
+      weeklyPlanBusy.value = true;
+      try {
+        const out = await api('/api/assistant/weekly-plan', { method: 'POST' });
+        toast(out.msg || '周计划已在后台重新生成');
+        // 生成要调模型，几秒后自动刷一次
+        setTimeout(loadWeeklyPlan, 8000);
+      } catch (e) { toast(e.message, 'error'); }
+      finally { setTimeout(() => { weeklyPlanBusy.value = false; }, 3000); }
     }
 
     // numField 校验 type=number + v-model.number 的输入框。
@@ -263,7 +297,8 @@ createApp({
             emotionAlert: f.emotionAlert, emotionDailyMax: nums.emotionDailyMax,
             remindFollowup: f.remindFollowup, followupEnabled: f.followupEnabled,
             followupDailyMax: nums.followupDailyMax, followupWindowDays: nums.followupWindowDays,
-            blessingDraft: f.blessingDraft, calendarKey: f.calendarKey,
+            blessingDraft: f.blessingDraft, weeklyPlanEnabled: f.weeklyPlanEnabled,
+            calendarKey: f.calendarKey,
             smtp,
           },
         });
@@ -1437,13 +1472,45 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('search');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
       if (tab === 'social' && !insightLoaded.social) loadSocial();
       if (tab === 'dup' && !insightLoaded.dup) loadDuplicates();
       if (tab === 'period' && !insightLoaded.period) loadPeriodReport();
+      if (tab === 'graph' && !insightLoaded.graph) { insightLoaded.graph = true; loadConnections(); }
+    }
+
+    // ---------- 关系图谱 ----------
+    const connections = ref([]);
+    const connBusy = ref(false);
+    const connTypes = {
+      shared_location: '同城/同地区', shared_interest: '共同兴趣',
+      shared_occupation: '同类职业', mentioned_name: '画像里提到对方',
+    };
+    function connTypeLabel(t) { return connTypes[t] || t; }
+
+    async function loadConnections() {
+      if (connBusy.value) return;
+      connBusy.value = true;
+      try {
+        const data = await api('/api/relationships/connections');
+        connections.value = data.connections || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { connBusy.value = false; }
+    }
+
+    async function rebuildConnections() {
+      if (connBusy.value) return;
+      connBusy.value = true;
+      try {
+        const out = await api('/api/relationships/connections/rebuild', { method: 'POST' });
+        toast('发现 ' + (out.count || 0) + ' 条关联');
+        const data = await api('/api/relationships/connections');
+        connections.value = data.connections || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { connBusy.value = false; }
     }
 
     // 聊天记录全文搜索
@@ -2297,6 +2364,7 @@ createApp({
       encPassword, impPassword, showEncPwd,
       asst, asstLoading, asstBusy, asstForm,
       loadAssistant, saveAssistantSettings, testAssistantEmail, runAssistantNow,
+      weeklyPlan, weeklyPlanBusy, weeklyKindLabel, loadWeeklyPlan, regenWeeklyPlan,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,
@@ -2314,6 +2382,7 @@ createApp({
       openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
       // 洞察页
       insightTab, switchInsight,
+      connections, connBusy, connTypeLabel, loadConnections, rebuildConnections,
       srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
       dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,
       social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,

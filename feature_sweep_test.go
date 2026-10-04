@@ -135,6 +135,10 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"助手待跟进列表", "GET", "/api/assistant/followups", "", true, true},
 		{"助手待跟进新增", "POST", "/api/assistant/followups", fmt.Sprintf(`{"contactId":%d,"kind":"other","content":"体检跟进"}`, id), true, true},
 		{"日历订阅密钥", "GET", "/api/assistant/calendar/key", "", true, true},
+		{"周计划看板", "GET", "/api/assistant/weekly-plan", "", true, true},
+		{"关系图谱全量", "GET", "/api/relationships/connections", "", true, true},
+		{"关系图谱单联系人", "GET", "/api/contacts/" + cid + "/connections", "", true, true},
+		{"关系图谱重建", "POST", "/api/relationships/connections/rebuild", "", true, true},
 
 		{"归档状态", "GET", "/api/archive/status", "", true, true},
 		{"系统状态", "GET", "/api/status", "", true, true},
@@ -157,6 +161,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"待跟进扫描(需LLM)", "POST", "/api/assistant/followups/scan", `{}`, false, false},
 		{"周期报告(可能需LLM)", "GET", "/api/insights/period-report?period=week", "", false, false},
 		{"摄入粘贴(需LLM)", "POST", "/api/ingest", `{"text":"没有联系人头的乱码内容"}`, false, false},
+		{"周计划重生(需LLM)", "POST", "/api/assistant/weekly-plan", "", false, false},
 	}
 
 	pass := 0

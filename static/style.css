@@ -557,6 +557,29 @@ textarea.text-input { resize: vertical; }
 .guide-card ol.guide-steps strong { color: var(--ink); }
 .btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
 
+/* ---------- 本周维护计划 ---------- */
+.weekly-plan-card .wp-list { margin: 8px 0 0; padding-left: 22px; }
+.weekly-plan-card .wp-list li { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.weekly-plan-card .wp-list li:last-child { border-bottom: none; }
+.wp-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.wp-top a { color: var(--ink); text-decoration: none; word-break: break-all; }
+.wp-top a:hover { color: var(--accent); }
+.wp-reason { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.wp-draft {
+  margin: 6px 0 0; font-size: 13px; background: #f9fafb; border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; word-break: break-word;
+}
+.wp-statsline { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+
+/* ---------- 关系图谱 ---------- */
+.conn-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.conn-list li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.conn-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.conn-pair a { color: var(--ink); text-decoration: none; word-break: break-all; }
+.conn-pair a:hover { color: var(--accent); }
+.conn-vs { font-size: 13px; color: var(--muted); font-weight: 400; }
+.conn-why { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+
 /* ===== 响应式健壮性补丁（PC / 平板 / 手机走查后修复） ===== */
 
 /* 修复①「按钮被裁切」：日志/归档/可信设备等表格里，操作列的 <td> 内放的是按钮，

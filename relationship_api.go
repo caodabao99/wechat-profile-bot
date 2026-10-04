@@ -139,6 +139,8 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 	switch sub[0] {
 	case "suggestions":
 		s.routeSuggestions(w, r, sub[1:])
+	case "connections":
+		s.routeConnections(w, r, sub[1:])
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}

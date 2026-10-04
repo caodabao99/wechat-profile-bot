@@ -48,6 +48,7 @@ type AssistantSettings struct {
 	FollowupWindowDays int    `json:"followupWindowDays"` // 只看最近 N 天的消息
 	BlessingDraft      bool   `json:"blessingDraft"`      // 重要日子提醒里是否附 AI 祝福语草稿
 	CalendarKey        string `json:"calendarKey"`        // .ics 订阅链接的独立密钥（ICS 客户端带不了 Authorization 头）
+	WeeklyPlanEnabled  bool   `json:"weeklyPlanEnabled"`  // 是否启用每周维护计划（默认开，opt-out）
 }
 
 func defaultAssistantSettings() AssistantSettings {
@@ -64,6 +65,7 @@ func defaultAssistantSettings() AssistantSettings {
 		// 待跟进与自动抽取默认开（要调模型花钱，与“主动维护关系”定位一致）；祝福语草稿仍默认关
 		RemindFollowup: true, FollowupEnabled: true, FollowupDailyMax: 8,
 		FollowupWindowDays: 30, BlessingDraft: false,
+		WeeklyPlanEnabled: true,
 	}
 }
 
@@ -947,6 +949,10 @@ func runDailyCheck(db *sql.DB, llm *LLMClient, now time.Time, force bool) (strin
 	}
 	updateRunDetail(db, runKind, today, detail)
 	summaryParts = append(summaryParts, detail)
+
+	// 隐式反馈回测：对 acted 超过 14 天的建议自动评估效果
+	checkPendingOutcomes(db, now)
+
 	return strings.Join(summaryParts, "；"), err
 }
 
@@ -989,7 +995,7 @@ func startAssistantScheduler(db *sql.DB, llm *LLMClient) {
 		defer ticker.Stop()
 		// 进程内记录当天是否已就该任务尝试过，避免触发时间之后每 30 秒空跑一次；
 		// 真正的去重仍以 DB 抢占（tryClaimRun）为准，所以重启后仍能补跑。
-		var lastDaily string
+		var lastDaily, lastWeekly string
 		for range ticker.C {
 			// 每轮单独 recover：即便某一轮 checkAssistantSchedule 意外 panic（如配置读取路径），
 			// 也不能让本 goroutine 永久退出、导致助手调度从此不再触发。
@@ -999,7 +1005,7 @@ func startAssistantScheduler(db *sql.DB, llm *LLMClient) {
 						slog.Error("关系助手调度周期异常，已恢复（下一周期继续）", "panic", r)
 					}
 				}()
-				lastDaily = checkAssistantSchedule(db, llm, time.Now(), lastDaily)
+				lastDaily, lastWeekly = checkAssistantSchedule(db, llm, time.Now(), lastDaily, lastWeekly)
 			}()
 		}
 	}()
@@ -1032,15 +1038,15 @@ func safeAssistantTask(name string, fn func()) {
 	fn()
 }
 
-// checkAssistantSchedule 每个 ticker 周期调用一次，返回更新后的 lastDaily。
-func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily string) string {
+// checkAssistantSchedule 每个 ticker 周期调用一次，返回更新后的 lastDaily、lastWeekly。
+func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily, lastWeekly string) (string, string) {
 	s, err := loadAssistantSettings(db)
 	if err != nil {
 		slog.Warn("关系助手配置读取失败", "err", err)
-		return lastDaily
+		return lastDaily, lastWeekly
 	}
 	if !s.Enabled {
-		return lastDaily
+		return lastDaily, lastWeekly
 	}
 	today := now.Format("2006-01-02")
 
@@ -1054,5 +1060,21 @@ func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily
 			}
 		})
 	}
-	return lastDaily
+
+	// 每周一到点触发周计划生成 + 图谱重建
+	if s.WeeklyPlanEnabled && int(now.Weekday()) == 1 && atOrAfter(now, s.DailyCheckTime) {
+		weekKey := now.Format("2006-W01")
+		if lastWeekly != weekKey {
+			lastWeekly = weekKey
+			go safeAssistantTask("每周计划生成", func() {
+				if err := GenerateWeeklyPlan(db, llm, now); err != nil {
+					slog.Error("每周维护计划生成失败", "err", err)
+				} else {
+					slog.Info("每周维护计划生成完成")
+				}
+			})
+		}
+	}
+
+	return lastDaily, lastWeekly
 }

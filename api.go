@@ -377,6 +377,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactRehearsal(w, r, id, sub[1:])
 	case "facts":
 		s.routeContactFacts(w, r, id, sub[1:])
+	case "connections":
+		s.routeContactConnections(w, r, id)
 	case "trend":
 		s.routeContactTrend(w, r, id)
 	case "ask":
@@ -895,6 +897,26 @@ func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*Inge
 	outcome := &IngestOutcome{
 		Contact: contact, ParsedCount: len(valid),
 		NewCount: newCount, ViaAlias: viaAlias, Messages: valid,
+	}
+
+	// 隐式反馈：若本次有 sender="me" 的新消息入库，自动标记该联系人的 open 建议为已执行
+	if newCount > 0 {
+		hasMe := false
+		for _, m := range valid {
+			if m.Sender == "me" {
+				hasMe = true
+				break
+			}
+		}
+		if hasMe {
+			// 先刷新日指标再取 trend_before：SaveMessages 不自动重算聚合（惰性自愈）。
+			// 基线必须包含「触发已联系判定的这次发消息本身」，
+			// 否则 14 天后回测时今天的数据又被算进 trend_after，凭空造出回暖。
+			if _, err := RebuildDailyMetrics(db, cid); err != nil {
+				slog.Warn("隐式反馈：刷新日指标失败", "contactId", cid, "err", err)
+			}
+			autoMarkSuggestionActed(db, cid, time.Now())
+		}
 	}
 
 	// 达到阈值则后台更新画像（去重：同一联系人已有生成任务则跳过，避免并发浪费 LLM 调用）

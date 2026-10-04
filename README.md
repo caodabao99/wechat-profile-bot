@@ -13,6 +13,9 @@
 - **联系人管理**：备注、合并（换昵称后关联）、撤销合并、删除
 - **REST API**：内置 HTTP 接口（默认端口 17965），Windows 桌面版可远程复用同一份数据与模型分析
 - **关系助手**（网页端，默认关闭）：重要日子提醒、久未联系提醒、亲密度评分、AI 情绪预警，每日提醒 / 每周报告通过 SMTP 邮件发送
+- **每周维护计划**（网页看板）：每周一自动排行“本周最该联系的 5 个人”并草拟开场白，只在看板展示不发邮件，可手动立即重算
+- **隐式反馈闭环**：粘贴记录入库时自动识别你已联系→标建议已执行，14 天后自动回测互动是否回暖，看板展示近 90 天采纳率/回暖率，全程零手动操作
+- **关系图谱**（洞察页）：从画像交叉比对共同城市/同类职业/共同兴趣/提到彼此，纯 SQL 推导谁和谁可能认识及可信度
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -30,7 +33,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.1.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.2.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -47,7 +50,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -265,7 +268,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.1.0.tar.gz`，得到 `wechat-profile-bot:v4.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.2.0.tar.gz`，得到 `wechat-profile-bot:v4.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -488,6 +491,10 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | DELETE | `/api/assistant/calendar/key` | 清除订阅密钥（关闭日历订阅） |
 | POST | `/api/assistant/blessing` | 生成 AI 祝福语草稿，body `{"contactId","kind","raw","month","day","dateStr","daysUntil"}`（除 `contactId` 外均可省略） |
 | GET | `/api/calendar.ics?key=订阅密钥` | 日历订阅地址（不走 Bearer，仍受 IP 白名单约束） |
+| GET / POST | `/api/assistant/weekly-plan` | 本周维护计划看板数据（排行+开场白+近90天反馈统计）/ 立即重算（调模型，后台执行） |
+| GET | `/api/relationships/connections` | 关系图谱全量连线（表为空时自动重建，上限 500） |
+| GET | `/api/contacts/{id}/connections` | 某联系人的关联（上限 100，按可信度降序） |
+| POST | `/api/relationships/connections/rebuild` | 手动全量重建关系连线（纯 SQL，不调模型） |
 
 验证示例：
 
@@ -549,6 +556,23 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.2.0（2026-10-04）
+
+三个“系统主动做、人只看结果”的能力落地：关系助手从“给建议”升级为“每周排行 + 自动回测效果 + 看见人脉关联”。升级只需替换二进制并重启，数据库结构向后兼容（新增表在启动时自愈创建，旧库无需迁移脚本）。
+
+新增功能
+
+- **每周维护计划**：每周一调度器自动从活跃建议里算出“本周最该联系的 5 个人”（按优先级 + 亲密度排序），可用时由大模型草拟一句自然开场白，结果缓存在看板“本周维护计划”卡片直接展示。只在看板呈现、不发邮件；也可点“立即重算”手动刷新
+- **隐式反馈闭环**：粘贴聊天记录入库时，若检测到你已经发过消息（sender=me），系统自动把对应建议标为“已执行”并记下执行前的互动趋势基线；14 天后自动回测互动是否回暖，得出改善/持平/恶化结论，看板底部展示“近 90 天建议采纳率与回暖率”。全程无需你点任何按钮
+- **关系图谱**：从各联系人画像里交叉比对共同城市、同类职业、共同兴趣、以及“画像提到过彼此”，纯 SQL 推导出人际关联边（不额外调用模型）。洞察页新增“关系图谱”子页，展示谁和谁可能认识、可信度多高；结果表首次访问时缺则自愈重建
+
+内部改进
+
+- 新增两处派生表（周计划缓存、建议回测结果、关系连线）均不纳入备份，升级/恢复后自动重建，旧库平滑过渡
+- 关系连线与周计划排行在单连接池下改为“先取尽结果再写库”，避免边读边写死锁
+
+> 提醒：每周维护计划的开场白会调用大模型、按量产生费用；如不需要可在关系助手设置里关闭“启用每周维护计划”。
 
 ### v4.1.0（2026-10-04）
 

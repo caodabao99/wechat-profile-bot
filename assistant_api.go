@@ -73,6 +73,20 @@ func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub [
 		s.hAssistantBlessing(w, r)
 	case "calendar":
 		s.routeCalendar(w, r, sub[1:])
+	case "weekly-plan":
+		// 只认 /api/assistant/weekly-plan 本身，带子路径的一律 404
+		if len(sub) > 1 {
+			writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+strings.Join(sub, "/"))
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			s.hWeeklyPlanGet(w, r)
+		case http.MethodPost:
+			s.hWeeklyPlanRegenerate(w, r)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		}
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+sub[0])
 	}
@@ -337,4 +351,55 @@ func (s *apiServer) hAssistantRunNow(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "msg": req.Kind + " 任务已在后台启动，稍后刷新看板查看结果"})
+}
+
+// ---------- 每周维护计划 API ----------
+
+func (s *apiServer) hWeeklyPlanGet(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	items, genAt, err := GetCachedWeeklyPlan(s.db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取周计划失败: "+err.Error())
+		return
+	}
+	// 若缓存过期且助手已启用，异步触发重生（不阻塞当前请求）
+	if IsWeeklyPlanStale(genAt, now) {
+		st, _ := loadAssistantSettings(s.db)
+		if st.Enabled && st.WeeklyPlanEnabled {
+			db, llm := s.db, s.llm
+			go safeAssistantTask("周计划补生成", func() {
+				_ = GenerateWeeklyPlan(db, llm, now)
+			})
+		}
+	}
+	stats := getOutcomeStats(s.db, now)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"items":       items,
+		"generatedAt": genAt.Format(time.RFC3339),
+		"stats":       stats,
+	})
+}
+
+func (s *apiServer) hWeeklyPlanRegenerate(w http.ResponseWriter, r *http.Request) {
+	st, err := loadAssistantSettings(s.db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取助手配置失败: "+err.Error())
+		return
+	}
+	if !st.Enabled {
+		writeErr(w, http.StatusBadRequest, "关系助手未启用，请先开启")
+		return
+	}
+	db, llm := s.db, s.llm
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("周计划手动生成 panic", "rec", rec)
+			}
+		}()
+		if err := GenerateWeeklyPlan(db, llm, time.Now()); err != nil {
+			slog.Warn("周计划手动生成失败", "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "msg": "周计划已在后台重新生成，稍后刷新查看"})
 }

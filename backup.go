@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 13 // 当前程序支持的最高 SQLite user_version
+	backupCurrentDBVer  = 15 // 当前程序支持的最高 SQLite user_version
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
@@ -80,6 +80,9 @@ var derivedTables = []string{
 	"profile_facts",
 	"relationship_daily_metrics",
 	"relationship_action_suggestions",
+	"weekly_plan_cache",
+	"suggestion_outcomes",
+	"contact_connections",
 }
 
 // restoreSkipTables 永不参与恢复拷贝的表：派生表（自愈）+ backup_log（恢复审计日志本身，
