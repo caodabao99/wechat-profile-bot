@@ -697,8 +697,21 @@ createApp({
       eventForm.eventTime = '';
       showFollowupModal.value = false;
       profileEditor.value = null;
+      // 预演也要一起清：它整场对话都在内存里，不清的话上一个人的演练
+      // 会原样挂在新联系人的「预演」页签下，还能继续往下发
+      rh.scene = '';
+      rh.first = 'me';
+      rh.input = '';
+      rh.turns = [];
+      rh.ctx = null;
+      rh.review = null;
+      rh.started = false;
+      rh.ctxFailed = false;
       busy.value = false;
       timelineBusy.value = false;
+      rh.busy = false;
+      rh.reviewBusy = false;
+      rh.ctxBusy = false;
     }
 
     function gotoDetail(id) {
@@ -793,6 +806,7 @@ createApp({
       if (tab === 'history' && !history.value.length) loadHistory();
       if (tab === 'stats' && !stats.value) loadStats();
       if (tab === 'timeline' && !timeline.value.length) loadTimeline();
+      if (tab === 'rehearsal' && !rh.ctx && !rh.ctxBusy) loadRehearsalContext();
     }
 
     // 画像按桌面端 profile.go 固定分节铺开
@@ -1668,6 +1682,140 @@ createApp({
       finally { timelineBusy.value = false; }
     }
 
+    // ---------- 对话预演 ----------
+    // 完全无状态：一场预演只活在这里，切联系人/刷新页面就没了（后端也不落库）。
+    // 因此 resetDetail 必须把 rh 整个清干净，否则 A 的演练会挂在 B 的详情页上。
+    const rh = reactive({
+      scene: '', first: 'me', input: '',
+      turns: [], ctx: null, review: null,
+      started: false, busy: false, reviewBusy: false, ctxBusy: false, ctxFailed: false,
+    });
+    const rhMineCount = computed(() => rh.turns.filter(t => t.role === 'me').length);
+
+    async function loadRehearsalContext() {
+      const my = detailSeq;
+      rh.ctxBusy = true;
+      rh.ctxFailed = false;
+      try {
+        const out = await api('/api/contacts/' + route.id + '/rehearsal/context');
+        if (my !== detailSeq) return;
+        out.hints = out.hints || [];
+        out.sampleLines = out.sampleLines || [];
+        rh.ctx = out;
+      } catch (e) {
+        if (my !== detailSeq) return;
+        rh.ctxFailed = true;
+        toast(e.message, 'error');
+      } finally { if (my === detailSeq) rh.ctxBusy = false; }
+    }
+
+    // askOther 让模型以对方身份回一条。turns 由调用方传副本：
+    // 请求在途时用户还能继续编辑数组，直接传引用会把半截内容发给后端。
+    async function askOther(cid, scene, turns) {
+      const out = await api('/api/contacts/' + cid + '/rehearsal/turn', {
+        method: 'POST',
+        body: { scene: scene, turns: turns },
+      });
+      const text = ((out && out.text) || '').trim();
+      if (!text) throw httpErr('模型没有返回内容，请重试', 500);
+      return { role: 'other', text: text, emotion: ((out && out.emotion) || '').trim() };
+    }
+
+    async function startRehearsal() {
+      const scene = rh.scene.trim();
+      if (!scene) { toast('请先描述预演场景', 'error'); return; }
+      const cid = route.id;   // 钉住联系人：请求在途时用户可能已经切到别人
+      rh.busy = true;
+      rh.turns = [];
+      rh.review = null;
+      rh.started = true;
+      try {
+        if (rh.first === 'other') {
+          const t = await askOther(cid, scene, []);
+          if (route.id !== cid) return;
+          rh.turns.push(t);
+        }
+      } catch (e) {
+        if (route.id === cid) { rh.started = false; toast(e.message, 'error'); }
+      } finally { if (route.id === cid) rh.busy = false; }
+    }
+
+    async function sendRehearsal() {
+      const text = rh.input.trim();
+      if (!text || rh.busy || rh.reviewBusy) return;
+      const cid = route.id;
+      const scene = rh.scene.trim();
+      rh.turns.push({ role: 'me', text: text, emotion: '' });
+      rh.input = '';
+      const turns = rh.turns.map(t => ({ role: t.role, text: t.text }));
+      rh.busy = true;
+      try {
+        const t = await askOther(cid, scene, turns);
+        if (route.id !== cid) return;
+        rh.turns.push(t);
+      } catch (e) {
+        if (route.id === cid) {
+          // 失败要回滚刚推入的那句，否则用户看着自己说的话躺在列表里，
+          // 会以为对方已读不回，其实是请求根本没成功
+          rh.turns.pop();
+          rh.input = text;
+          toast(e.message, 'error');
+        }
+      } finally { if (route.id === cid) rh.busy = false; }
+    }
+
+    async function reviewRehearsal() {
+      if (!rhMineCount.value) { toast('你还没说过话，没有可复盘的内容', 'error'); return; }
+      if (rh.busy || rh.reviewBusy) return;
+      const cid = route.id;
+      const scene = rh.scene.trim();
+      const turns = rh.turns.map(t => ({ role: t.role, text: t.text }));
+      rh.reviewBusy = true;
+      try {
+        const out = await api('/api/contacts/' + cid + '/rehearsal/review', {
+          method: 'POST', body: { scene: scene, turns: turns },
+        });
+        if (route.id !== cid) return;
+        ['good', 'bad', 'risks', 'suggestions'].forEach(k => {
+          if (!Array.isArray(out[k])) out[k] = [];
+        });
+        rh.review = out;
+      } catch (e) { if (route.id === cid) toast(e.message, 'error'); }
+      finally { if (route.id === cid) rh.reviewBusy = false; }
+    }
+
+    // restartRehearsal 重来一局：保留场景描述，清掉对话和复盘
+    function restartRehearsal() {
+      rh.turns = [];
+      rh.review = null;
+      rh.input = '';
+      rh.started = false;
+      rh.busy = false;
+      rh.reviewBusy = false;
+    }
+
+    function copyRehearsal() {
+      const name = (rh.ctx && rh.ctx.name) || '对方';
+      const lines = ['【对话预演】' + name, '场景：' + rh.scene.trim(), ''];
+      rh.turns.forEach(t => lines.push((t.role === 'me' ? '我' : name) + '：' + t.text));
+      const r = rh.review;
+      if (r) {
+        lines.push('', '【复盘】达成可能 ' + r.score + ' / 10');
+        if (r.summary) lines.push(r.summary);
+        const sec = (title, arr) => {
+          if (arr && arr.length) {
+            lines.push(title + '：');
+            arr.forEach(x => lines.push('- ' + x));
+          }
+        };
+        sec('做得好', r.good);
+        sec('有问题', r.bad);
+        sec('风险', r.risks);
+        sec('建议话术', r.suggestions);
+      }
+      copyText(lines.join('\n'));
+    }
+
     // ---------- 待跟进事项 ----------
     const followups = ref([]);
     const followupFilter = ref('open');
@@ -1939,6 +2087,9 @@ createApp({
       // 时间线
       timeline, timelineBusy, showEventModal, eventForm, tlKind,
       loadTimeline, openEventModal, addEvent, delEvent,
+      // 对话预演
+      rh, rhMineCount, startRehearsal, sendRehearsal, reviewRehearsal,
+      restartRehearsal, copyRehearsal,
       // 待跟进 / 日历订阅 / 祝福草稿
       followups, followupFilter, followupBusy, showFollowupModal, followupForm,
       pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,

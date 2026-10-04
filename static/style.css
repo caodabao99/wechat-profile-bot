@@ -385,6 +385,13 @@ textarea.text-input { resize: vertical; }
 .srch-list li::before { background: var(--accent2); }
 .srch-snip { flex-basis: 100%; margin: 3px 0 0; font-size: 13px; color: var(--ink); word-break: break-word; }
 
+/* ---------- 对话预演 ---------- */
+.rh-panel .card h3 { font-size: 15px; margin: 16px 0 6px; }
+.rh-log { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 12px; }
+/* 气泡挪进卡片后，对方那侧的默认白底会跟卡片背景连成一片「消失」，垫一层浅灰加描边 */
+.rh-panel .msg-row:not(.me) .m-body { background: #f6f7f9; box-shadow: none; border: 1px solid var(--line); }
+.rh-panel .msg-row.me .m-body { box-shadow: none; border: 1px solid #bbf7d0; }
+
 /* ---------- 重要日子 + AI 祝福 ---------- */
 .asst-date { border-bottom: 1px dashed var(--line); padding: 4px 0 8px; }
 .asst-date:last-child { border-bottom: none; }

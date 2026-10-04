@@ -17,6 +17,7 @@
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
 - **联系人时间线**：单个联系人的完整往来脉络（首次联系、画像变更、合并、手动记录的大事），可手动补记事件
+- **对话预演**：把要跟某个人开口的重要对话（谈涨薪、拒绝借钱、表白等）先练一遍——AI 按这个人的画像和真实聊天语气扮演对方跟你对练，随时能看到自己话术带来的情绪变化，结束后以沟通顾问身份复盘打分。**演练内容不落库、也不会真的发出去**
 - **重要日子日历订阅**：把联系人生日/纪念日导出成标准 `.ics` 订阅链接，手机或电脑日历客户端直接订阅，全年自动重复提醒
 - **AI 祝福语草稿**：重要日子临近时按画像和你的说话风格生成 3 条草稿，自己复制粘贴发送（不代发）
 - **疑似重复联系人推荐**：按昵称/备注相似度扫出可能是同一个人的联系人对，给出建议保留项，一键跳去合并
@@ -29,7 +30,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.1.1.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.2.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -46,7 +47,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.1.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -264,7 +265,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.1.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.1.1.tar.gz`，得到 `wechat-profile-bot:v3.1.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.2.0.tar.gz`，得到 `wechat-profile-bot:v3.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -362,6 +363,7 @@ sudo systemctl enable docker
 - TOTP 密钥保存在数据目录的 `totp_secret.json`（Docker 下为 `/config/totp_secret.json`，权限 0600）。**换手机或验证器丢失时，在服务器删除该文件**，下次网页登录会重新走绑定流程
 - 顶部导航的 **洞察** 页聚合四个子面板：聊天记录全文搜索、年度关系报告（可另存分享）、我的社交大盘、疑似重复联系人推荐
 - 联系人列表支持按标签筛选、勾选多人批量打标；联系人详情页新增 **时间线** 子页，可手动补记大事
+- 联系人详情页的 **预演** 子页可以「对话预演」：描述一个场景后 AI 照画像扮演对方跟你对练，可选择谁先开口，随时点「结束并复盘」拿到话术点评与达成可能评分；整场演练只存在浏览器内存里，刷新或切换联系人即清空
 - **关系助手** 页除每日提醒外，还包含待跟进事项（手动记 / AI 扫描）、重要日子 AI 祝福语草稿、日历订阅（`.ics`）密钥管理
 
 ## 桌面端远程对接（REST API）
@@ -473,6 +475,9 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET / PUT | `/api/contacts/{id}/tags` | 读取 / 覆盖式设置某联系人的标签，body `{"tagIds":[]}` |
 | GET / POST | `/api/contacts/{id}/timeline` | 联系人时间线 / 手动补记事件，body `{"title","detail","eventTime"}` |
 | DELETE | `/api/contacts/{id}/timeline/{eventId}` | 删除一条手动记录的事件 |
+| GET | `/api/contacts/{id}/rehearsal/context` | 对话预演的扮演依据（画像要点 + 真实聊天说话样例） |
+| POST | `/api/contacts/{id}/rehearsal/turn` | 让 AI 以对方身份回一句，body `{"scene","turns":[{"role":"me\|other","text"}]}` |
+| POST | `/api/contacts/{id}/rehearsal/review` | 结束预演并复盘，body 同上，返回 `{"summary","good","bad","risks","suggestions","score"}` |
 | GET | `/api/insights/duplicates` | 疑似重复联系人推荐 |
 | GET | `/api/insights/social?days=30` | 我的社交大盘 |
 | GET | `/api/insights/report?year=2026&format=html` | 年度关系报告（`format=html` 返回可分享长页） |
@@ -544,6 +549,17 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v3.2.0（2026-10-04）
+
+新增网页端功能：**对话预演**。升级只需替换二进制并重启，数据库结构无变化。
+
+- 联系人详情页新增 **预演** 子页。描述一个要跟对方开口的场景（谈涨薪、拒绝借钱、表白……），AI 按这个人的画像与真实聊天语气扮演他跟你对练，可选「我先说」或「对方先说」
+- 每条回应都带一个情绪标签，让你看到自己这句话把对方推到了什么状态；模型被明确要求不要为了配合你而软化立场
+- 随时点 **结束并复盘**，AI 以沟通顾问身份退出角色，给出做得好 / 有问题 / 真去谈可能踩的坑 / 可以这么说，以及 0~10 分的达成可能评分；整场对话可一键复制
+- 扮演依据来自画像（性格、沟通风格、口头禅、最近的事、雷区等 17 项）加上最近 30 条真实消息里挑出的说话样例，会在页面上原样展示出来供你核对
+- **完全无状态**：预演过程不写数据库、不发消息，刷新页面或切换联系人即清空；后端对请求体做了 512KB、单条 2000 字、最多 60 轮的上限约束
+- 新增接口 `GET /api/contacts/{id}/rehearsal/context`、`POST /api/contacts/{id}/rehearsal/turn`、`POST /api/contacts/{id}/rehearsal/review`（均要求已认证且配置了 LLM）
 
 ### v3.1.1（2026-10-04）
 

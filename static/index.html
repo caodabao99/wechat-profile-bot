@@ -184,6 +184,7 @@
         <a :class="{active: detailTab==='history'}" @click.prevent="switchTab('history')" href="#">历史</a>
         <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
         <a :class="{active: detailTab==='timeline'}" @click.prevent="switchTab('timeline')" href="#">时间线</a>
+        <a :class="{active: detailTab==='rehearsal'}" @click.prevent="switchTab('rehearsal')" href="#">预演</a>
       </nav>
 
       <div class="card section" v-if="contact && contact.id === route.id && detailTab==='assist'">
@@ -308,6 +309,86 @@
             <button class="btn ghost xs" v-if="ev.id" @click="delEvent(ev)" :disabled="timelineBusy">删除</button>
           </li>
         </ul>
+      </div>
+
+      <!-- 对话预演：AI 照画像扮演对方，陪用户把一场重要对话先过一遍 -->
+      <div v-if="contact && detailTab==='rehearsal'" class="rh-panel">
+        <div class="card" v-if="!rh.started">
+          <h2>对话预演</h2>
+          <p class="hint block">描述你想练的场景，AI 会照这个人的画像和真实聊天语气扮演他，跟你对练。演练内容不保存、也不会真的发出去。</p>
+          <textarea class="text-input" rows="3" maxlength="500" v-model="rh.scene" :disabled="rh.busy"
+            placeholder="例：我要跟他谈涨薪，一年没调了，手上那个大项目刚上线"></textarea>
+          <div class="rewrite-row">
+            <span class="rewrite-label">谁先开口:</span>
+            <label class="style-opt"><input type="radio" name="rh-first" value="me" v-model="rh.first" :disabled="rh.busy">我先说</label>
+            <label class="style-opt"><input type="radio" name="rh-first" value="other" v-model="rh.first" :disabled="rh.busy">对方先说</label>
+          </div>
+          <button class="btn" @click="startRehearsal" :disabled="rh.busy || !rh.scene.trim()">{{ rh.busy ? '准备中…' : '开始预演' }}</button>
+          <div v-if="rh.ctx">
+            <h3>扮演依据</h3>
+            <p class="empty" v-if="!rh.ctx.hints.length && !rh.ctx.sampleLines.length">这个人还没有画像，也没有历史消息，AI 只能按常理推测，预演效果会打折。</p>
+            <div class="sec-lines" v-if="rh.ctx.hints.length">
+              <p v-for="(h, i) in rh.ctx.hints" :key="i">{{ h }}</p>
+            </div>
+            <div v-if="rh.ctx.sampleLines.length">
+              <p class="hint">他真实聊天里的说话样例：</p>
+              <div class="sec-lines">
+                <p v-for="(l, i) in rh.ctx.sampleLines" :key="'s' + i">「{{ l }}」</p>
+              </div>
+            </div>
+          </div>
+          <p class="empty" v-else-if="!rh.ctxBusy && rh.ctxFailed">没能读取扮演依据，请检查 LLM 配置后刷新页面。</p>
+        </div>
+
+        <div class="card" v-if="rh.started">
+          <div class="tl-head">
+            <h2>预演中</h2>
+            <div>
+              <button class="btn sm" @click="reviewRehearsal" :disabled="rh.busy || rh.reviewBusy || !rhMineCount">结束并复盘</button>
+              <button class="btn ghost sm" @click="copyRehearsal" :disabled="!rh.turns.length">复制全文</button>
+              <button class="btn ghost sm" @click="restartRehearsal" :disabled="rh.busy || rh.reviewBusy">重来</button>
+            </div>
+          </div>
+          <p class="hint block">场景：{{ rh.scene }}</p>
+          <div class="rh-log">
+            <p class="empty" v-if="!rh.turns.length && !rh.busy">还没有对话，在下面输入你要说的第一句。</p>
+            <div class="msg-row" v-for="(t, i) in rh.turns" :key="i" :class="t.role">
+              <span class="m-sender">{{ t.role === 'me' ? '我' : (rh.ctx ? rh.ctx.name : '对方') }}</span>
+              <div class="m-body">
+                <div class="m-content">{{ t.text }}</div>
+                <div class="m-time" v-if="t.emotion">情绪：{{ t.emotion }}</div>
+              </div>
+            </div>
+            <p class="hint" v-if="rh.busy">对方正在输入…</p>
+          </div>
+          <textarea class="text-input" rows="2" maxlength="2000" v-model="rh.input" :disabled="rh.busy || rh.reviewBusy"
+            placeholder="你要说的话（Ctrl+Enter 发送）" @keydown.ctrl.enter.prevent="sendRehearsal"></textarea>
+          <button class="btn" @click="sendRehearsal" :disabled="rh.busy || rh.reviewBusy || !rh.input.trim()">{{ rh.busy ? '对方正在输入…' : '发送' }}</button>
+        </div>
+
+        <div class="card" v-if="rh.review">
+          <div class="tl-head">
+            <h2>复盘</h2>
+            <span class="chip st-purple">达成可能 {{ rh.review.score }} / 10</span>
+          </div>
+          <p v-if="rh.review.summary">{{ rh.review.summary }}</p>
+          <div v-if="rh.review.good.length">
+            <h3>做得好</h3>
+            <div class="sec-lines"><p v-for="(x, i) in rh.review.good" :key="i">· {{ x }}</p></div>
+          </div>
+          <div v-if="rh.review.bad.length">
+            <h3>有问题</h3>
+            <div class="sec-lines"><p v-for="(x, i) in rh.review.bad" :key="i">· {{ x }}</p></div>
+          </div>
+          <div v-if="rh.review.risks.length">
+            <h3>真去谈可能踩的坑</h3>
+            <div class="sec-lines"><p v-for="(x, i) in rh.review.risks" :key="i">· {{ x }}</p></div>
+          </div>
+          <div v-if="rh.review.suggestions.length">
+            <h3>可以这么说</h3>
+            <div class="sec-lines"><p v-for="(x, i) in rh.review.suggestions" :key="i">· {{ x }}</p></div>
+          </div>
+        </div>
       </div>
     </section>
 

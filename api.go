@@ -371,6 +371,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactTags(w, r, id)
 	case "timeline":
 		s.routeContactTimeline(w, r, id)
+	case "rehearsal":
+		s.routeContactRehearsal(w, r, id, sub[1:])
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
