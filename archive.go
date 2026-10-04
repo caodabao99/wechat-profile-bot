@@ -58,6 +58,7 @@ func ensureArchiveTables(db *sql.DB) error {
 			content TEXT NOT NULL,
 			msg_hash TEXT NOT NULL,
 			msg_time DATETIME,
+			msg_unix INTEGER,
 			captured_at DATETIME,
 			archived_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(contact_id, msg_hash)
@@ -75,6 +76,33 @@ func ensureArchiveTables(db *sql.DB) error {
 			return err
 		}
 	}
+	// v8 兼容：旧归档表可能没有 msg_unix。列不存在时补列并分批回填（仅本次真正
+	// 加列时回填，避免每次启动全表扫描），并补齐与 messages 对齐的复合索引。
+	var colCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('messages_archive') WHERE name='msg_unix'`).
+		Scan(&colCount); err != nil {
+		return err
+	}
+	if colCount == 0 {
+		if _, err := db.Exec(`ALTER TABLE messages_archive ADD COLUMN msg_unix INTEGER`); err != nil {
+			return err
+		}
+		if err := backfillMsgUnix(db, "messages_archive"); err != nil {
+			return err
+		}
+	}
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_messages_archive_contact_id ON messages_archive(contact_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_archive_contact_unix ON messages_archive(contact_id, msg_unix DESC, id DESC)`,
+	} {
+		if _, err := db.Exec(idx); err != nil {
+			return err
+		}
+	}
+	// v9 兼容：为归档表建立 external-content FTS5 索引（与 messages 对等）。
+	// 幂等、失败只降级不报错；建好后归档/恢复经触发器自动同步，搜索可选覆盖归档表。
+	ensureFTSFor(db, "messages_archive", &ftsArchiveEnabled)
 	return nil
 }
 
@@ -96,19 +124,24 @@ func loadArchiveSettings(db *sql.DB) (ArchiveSettings, error) {
 	return normalizeArchiveSettings(s), nil
 }
 
-func saveArchiveSettings(db *sql.DB, s ArchiveSettings) error {
+// writeArchiveSettings 只做 UPSERT 本身，不加锁、不开事务；调用方负责锁或事务。
+func writeArchiveSettings(ex sqlExec, s ArchiveSettings) error {
 	s = normalizeArchiveSettings(s)
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	dbMu.Lock()
-	defer dbMu.Unlock()
-	_, err = db.Exec(
+	_, err = ex.Exec(
 		`INSERT INTO archive_settings (id, settings_json, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = CURRENT_TIMESTAMP`,
 		string(raw))
 	return err
+}
+
+func saveArchiveSettings(db *sql.DB, s ArchiveSettings) error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	return writeArchiveSettings(db, s)
 }
 
 func archiveLastRunAt(db *sql.DB) string {
@@ -165,8 +198,8 @@ func RunArchive(db *sql.DB, days int) (int64, error) {
 	// 保留原 id 才能让 merge_log 里按 id 记录的消息搬迁/回滚在一轮归档之后依然有效
 	if _, err := tx.Exec(
 		`INSERT OR IGNORE INTO messages_archive
-		   (id, contact_id, sender, content, msg_hash, msg_time, captured_at, archived_at)
-		 SELECT id, contact_id, sender, content, msg_hash, msg_time, captured_at, ?
+		   (id, contact_id, sender, content, msg_hash, msg_time, msg_unix, captured_at, archived_at)
+		 SELECT id, contact_id, sender, content, msg_hash, msg_time, msg_unix, captured_at, ?
 		 FROM messages WHERE `+archiveEligibleCond, now, cutoff); err != nil {
 		return 0, err
 	}
@@ -210,8 +243,8 @@ func RestoreArchive(db *sql.DB, contactID int64) (*ArchiveRestoreResult, error) 
 	// 1. 写回：仅联系人仍存在的行；撞 UNIQUE(contact_id,msg_hash) 的忽略
 	// id 原样带回（入档时保留的就是 messages 里的原 id，AUTOINCREMENT 不会复用 rowid）
 	res, err := tx.Exec(
-		`INSERT OR IGNORE INTO messages (id, contact_id, sender, content, msg_hash, msg_time, captured_at)
-		 SELECT a.id, a.contact_id, a.sender, a.content, a.msg_hash, a.msg_time, a.captured_at
+		`INSERT OR IGNORE INTO messages (id, contact_id, sender, content, msg_hash, msg_time, msg_unix, captured_at)
+		 SELECT a.id, a.contact_id, a.sender, a.content, a.msg_hash, a.msg_time, a.msg_unix, a.captured_at
 		 FROM messages_archive a JOIN contacts c ON c.id = a.contact_id
 		 WHERE (? = 0 OR a.contact_id = ?)`, contactID, contactID)
 	if err != nil {

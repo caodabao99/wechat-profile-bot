@@ -342,6 +342,7 @@ textarea.text-input { resize: vertical; }
 .danger-text:hover { border-color: var(--bad); background: #fef2f2; color: var(--bad); }
 .tag-gray { background: #f3f4f6; color: #6b7280; }
 .chip.st-warn { background: #fffbeb; color: #b45309; }
+.chip.st-blue { background: #eff6ff; color: #1d4ed8; }
 /* 一行内放多个筛选输入：非 grow 的输入按内容宽度排，别被 width:100% 撑爆 */
 .search-row .text-input:not(.grow) { width: auto; flex: 0 1 150px; min-width: 0; }
 /* 卡片标题 + 右侧操作 */
@@ -442,7 +443,9 @@ textarea.text-input { resize: vertical; }
 .hb-mine { background: var(--accent); }
 .hb-theirs { background: #93c5fd; }
 .hour-col em { font-style: normal; font-size: 10px; color: var(--muted); }
-.lg { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
+/* 图例小色块：旧类名叫 .lg，与按钮尺寸修饰符 .btn.lg 撞车（同为单类名、且本条写得更靠后），
+   会把登录页三个「下一步/进入」大按钮的 height/display/border-radius 一起压塌。改名为 .swatch 彻底解冲。*/
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: middle; }
 .lg-mine { background: var(--accent); }
 .lg-theirs { background: #93c5fd; }
 .phrase-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -507,3 +510,94 @@ textarea.text-input { resize: vertical; }
 @media (min-width: 641px) and (max-width: 1024px) {
   .container { max-width: 760px; }
 }
+
+/* ===== 关系驾驶舱（Phase 8）===== */
+.cockpit-panel .card { margin-bottom: 16px; }
+.ck-metrics { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+.ck-metrics > div { flex: 1 1 120px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; text-align: center; }
+.ck-num { display: block; font-size: 22px; font-weight: 600; color: var(--ink); }
+.ck-lbl { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.ck-sug { border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.ck-sug-done, .ck-sug-dismissed { border-left-color: var(--line); opacity: .72; }
+.ck-sug-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ck-reason { font-size: 14px; }
+.ck-draft { margin: 8px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 8px; font-size: 14px; color: var(--ink); }
+.ck-sug-acts { display: flex; gap: 8px; margin-top: 8px; }
+.ck-facts { list-style: none; margin: 8px 0 0; padding: 0; }
+.ck-facts > li { border-bottom: 1px solid var(--line); }
+.ck-fact-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 2px; cursor: pointer; }
+.ck-ftype { font-size: 11px; color: var(--muted); background: var(--bg); border-radius: 6px; padding: 2px 6px; }
+.ck-fkey { color: var(--muted); }
+.ck-fval { font-weight: 500; }
+.ck-conf { position: relative; flex: 0 0 64px; height: 16px; line-height: 16px; font-size: 11px; color: var(--muted); background: var(--line); border-radius: 8px; overflow: hidden; text-align: right; padding-right: 6px; }
+.ck-conf-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); opacity: .28; }
+.ck-ev-n { font-size: 12px; color: var(--muted); margin-left: auto; }
+.ck-ev { padding: 0 2px 10px 14px; }
+.ck-ev-item { margin: 6px 0; }
+.ck-ev-time { font-size: 11px; color: var(--muted); margin-right: 8px; }
+.ck-ev-snip { font-size: 13px; color: var(--ink); background: var(--bg); border-radius: 8px; padding: 6px 8px; margin-top: 2px; }
+.ck-sim { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; }
+.ck-sim-text { font-size: 15px; margin-top: 6px; }
+.ck-sim-why { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* 问 TA 的历史 */
+.ck-ask-bar { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.ck-ask-bar .text-input { flex: 1; }
+.ck-ask-result { margin-top: 12px; }
+.ck-ask-answer { font-size: 15px; line-height: 1.7; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; }
+.ck-ask-sources { margin-top: 10px; }
+.ck-ask-src-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.ck-ask-src { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; cursor: pointer; transition: background .15s; }
+.ck-ask-src:hover { background: var(--bg); }
+.ck-ask-n { display: inline-block; font-size: 12px; font-weight: 600; color: var(--accent); margin-right: 6px; }
+.ck-ask-who { font-size: 13px; color: var(--ink); font-weight: 500; }
+.ck-ask-time { font-size: 11px; color: var(--muted); margin-left: 8px; }
+.ck-ask-snip { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.msg-row.msg-flash .m-body { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; transition: outline-color .3s; }
+/* 运行模式预设 */
+.mode-bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.mode-bar select.text-input { flex: 1; min-width: 180px; }
+.mode-save input.text-input { flex: 1; }
+.mode-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.mode-list > li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 8px 2px; font-size: 14px; }
+.btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
+
+/* ===== 响应式健壮性补丁（PC / 平板 / 手机走查后修复） ===== */
+
+/* 修复①「按钮被裁切」：日志/归档/可信设备等表格里，操作列的 <td> 内放的是按钮，
+   却跟着通用 td 规则吃了 max-width + overflow:hidden + ellipsis，窄屏下按钮被切掉、
+   点不到。凡是内含按钮/输入/复选/下拉/标签容器的单元格，一律放开不裁切、允许换行。 */
+.backup-log-table td:has(.btn),
+.backup-log-table td:has(button),
+.backup-log-table td:has(input),
+.backup-log-table td:has(select),
+.backup-log-table td:has(.tag),
+.backup-log-table td:has(.chip),
+.backup-log-table td:has(.lh-actions) { max-width: none; overflow: visible; text-overflow: clip; white-space: nowrap; }
+
+/* 修复②「宽表格撑破卡片」：6~7 列表格在 ~342px 手机内容宽下必然超出容器，
+   与其整页横向溢出/错位，不如把溢出限制在卡片内部——窄屏/平板下让含表格的卡片横向滚动。
+   项目已在 .style-opt:has() 处使用 :has()，这里沿用同一能力，无需改动 10 处表格结构。 */
+@media (max-width: 820px) {
+  .card:has(.backup-log-table),
+  .backup-log-section:has(.backup-log-table) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* 表格滚动时保留最小宽度提示，避免列被压到不可读 */
+  .backup-log-table { min-width: max-content; }
+}
+
+/* 修复③「点击区过小」：手机触控建议 ≥40px 命中区。列表/表格里的 sm/xs 小按钮在窄屏抬高，
+   复选框、标签 chip 也放大到可 comfortably 点按。 */
+@media (max-width: 640px) {
+  .btn.sm { padding: 8px 14px; }
+  .btn.xs { padding: 7px 12px; font-size: 12.5px; }
+  .backup-log-table .btn { margin: 3px 0; }
+  .tag-chip { padding: 5px 12px; }
+  .pick { width: 20px; height: 20px; }
+  .check-row { min-height: 32px; }
+}
+
+/* 修复④「刘海/圆角屏安全区」：index.html 已声明 viewport-fit=cover，需配套 env() 内边距，
+   否则顶栏品牌可能被刘海遮挡、底部 Toast/内容与 Home 指示条重叠。 */
+.topbar { padding-top: env(safe-area-inset-top); }
+.container { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+.toasts { bottom: calc(28px + env(safe-area-inset-bottom)); }
+.mask { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }

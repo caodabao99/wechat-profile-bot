@@ -304,6 +304,7 @@ func GenerateOrUpdateProfile(ctx context.Context, db *sql.DB, llmClient *LLMClie
 	if err := saveProfileAtEpoch(db, contactID, newJSON, profile.Summary, changeSummary, epoch); err != nil {
 		return fmt.Errorf("保存画像失败: %w", err)
 	}
+	refreshFactsQuietly(db, contactID)
 	return nil
 }
 
@@ -392,6 +393,7 @@ func SupplementProfile(ctx context.Context, db *sql.DB, llmClient *LLMClient, co
 	if err := saveProfileAtEpoch(db, contactID, newJSON, profile.Summary, changeSummary, epoch); err != nil {
 		return fmt.Errorf("保存画像失败: %w", err)
 	}
+	refreshFactsQuietly(db, contactID)
 	return nil
 }
 

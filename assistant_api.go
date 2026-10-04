@@ -209,22 +209,26 @@ func (s *apiServer) hAssistantPutSettings(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusBadRequest, "配置格式错误: "+err.Error())
 		return
 	}
-	// 前端回传打码密码时保留库里的原值
-	// 读不到原值必须报错：否则 "******" 会被当成真密码写进库，
-	// 既毁掉 SMTP 密码，也让 .ics 订阅密钥退化成公开可猜的固定串
-	if st.SMTP.Pass == smtpPassMask || st.CalendarKey == calendarKeyMask {
-		old, err := loadAssistantSettings(s.db)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "读取原配置失败，请稍后重试: "+err.Error())
-			return
-		}
-		if st.SMTP.Pass == smtpPassMask {
-			st.SMTP.Pass = old.SMTP.Pass
-		}
-		if st.CalendarKey == calendarKeyMask {
-			st.CalendarKey = old.CalendarKey
-		}
+	// 先读库里当前值，两处用途：
+	//  1) 密码/日历密钥回传掩码 "******" 时保留原值，否则掩码串会被当成真凭据写进库，
+	//     既毁掉 SMTP 密码，也让 .ics 订阅密钥退化成公开可猜的固定串；
+	//  2) 关系趋势阈值（沉寂天数/降温/升温前期互动数）不在本表单里编辑，属运行模式预设维度，
+	//     表单未回传时 JSON 反序列化为 0，normalize 会把 0 兜底成硬默认(30/5/3)——
+	//     等于「保存一次助手设置就抹掉预设调好的阈值」，故从库里原样保留。
+	old, err := loadAssistantSettings(s.db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取原配置失败，请稍后重试: "+err.Error())
+		return
 	}
+	if st.SMTP.Pass == smtpPassMask {
+		st.SMTP.Pass = old.SMTP.Pass
+	}
+	if st.CalendarKey == calendarKeyMask {
+		st.CalendarKey = old.CalendarKey
+	}
+	st.SilenceDays = old.SilenceDays
+	st.CoolingMinPrior = old.CoolingMinPrior
+	st.WarmingMinPrior = old.WarmingMinPrior
 	st.normalize()
 	if err := saveAssistantSettings(s.db, st); err != nil {
 		writeErr(w, http.StatusInternalServerError, "保存助手配置失败: "+err.Error())
@@ -248,7 +252,7 @@ func (s *apiServer) hAssistantTestEmail(w http.ResponseWriter, r *http.Request) 
 	}
 	subject := "【关系助手】测试邮件"
 	body := emailHeader("测试邮件") +
-		`<p style="color:#333;font-size:14px;line-height:1.8;">收到这封邮件说明 SMTP 配置正确，每日提醒和每周报告将发送到本邮箱。</p>` +
+		`<p style="color:#333;font-size:14px;line-height:1.8;">收到这封邮件说明 SMTP 配置正确，每日提醒将发送到本邮箱。</p>` +
 		emailFooter
 	// 第三参是收件人（不是发件人），status 与日报/周报统一用 ok/fail，
 	// 否则邮件日志里这一栏显示的是自己的发件地址、状态值也和别的记录对不上
@@ -300,14 +304,14 @@ func (s *apiServer) hAssistantAnalyzeEmotion(w http.ResponseWriter, r *http.Requ
 
 func (s *apiServer) hAssistantRunNow(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Kind string `json:"kind"` // daily | weekly
+		Kind string `json:"kind"` // daily
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
-	if req.Kind != "daily" && req.Kind != "weekly" {
-		writeErr(w, http.StatusBadRequest, "kind 只能是 daily 或 weekly")
+	if req.Kind != "daily" {
+		writeErr(w, http.StatusBadRequest, "kind 只能是 daily")
 		return
 	}
 	st, err := loadAssistantSettings(s.db)
@@ -327,11 +331,7 @@ func (s *apiServer) hAssistantRunNow(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		var runErr error
-		if req.Kind == "daily" {
-			_, runErr = runDailyCheck(db, llm, time.Now(), true)
-		} else {
-			_, runErr = runWeeklyReport(db, llm, time.Now(), true)
-		}
+		_, runErr = runDailyCheck(db, llm, time.Now(), true)
 		if runErr != nil {
 			slog.Warn("关系助手手动任务失败", "kind", req.Kind, "err", runErr)
 		}

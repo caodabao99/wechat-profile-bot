@@ -9,6 +9,7 @@ import (
 
 // Message 表示解析出来的一条聊天消息
 type Message struct {
+	ID              int64     // 数据库主键（分页读取时回填；解析阶段为 0）
 	Sender          string    // "me" 或 "other"
 	SenderName      string    // 发送方昵称
 	Content         string    // 消息正文（多行用 \n 连接）

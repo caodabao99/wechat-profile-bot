@@ -33,6 +33,7 @@ type Config struct {
 	APIToken       string        `json:"apiToken"`       // REST API 认证 Token，桌面端调用时需在请求头携带
 	APIWhitelist   []string      `json:"apiWhitelist"`   // API 访问 IP 白名单（如 ["1.2.3.4", "192.168.1.0/24"]），空数组=不限制
 	TrustedProxies []string      `json:"trustedProxies"` // 可信反向代理 IP/CIDR（如 ["127.0.0.1", "10.0.0.0/8"]）；仅直连 IP 命中时才采纳 X-Forwarded-For，为空=忽略该头
+	WebBaseURL     string        `json:"webBaseURL"`     // 管理面板对外可达的完整基础地址（如 https://your-domain/ 或 http://公网IP:端口/），供微信「网址」命令直开；留空则自动探测服务器公网出口 IP，探测不可用才回退局域网 IP
 	LLM            LLMConfig     `json:"llm"`
 	Profile        ProfileConfig `json:"profile"`
 }
@@ -52,6 +53,8 @@ const defaultConfigTemplate = `{
   "apiWhitelist": [],
   "_comment4b": "trustedProxies: 可信反向代理列表，仅在 nginx/Caddy 等反代后部署时填写，内容为反代服务器的来源 IP 或网段（同机反代填 [\"127.0.0.1\"]）。命中时白名单/封禁/限流按 X-Forwarded-For 里的真实访客 IP 判定；直连 IP 不在此列表时一律忽略 X-Forwarded-For（防止伪造）。注意不要把 0.0.0.0/0 之类大网段填进来，否则等于信任所有人伪造的头",
   "trustedProxies": [],
+  "_comment4c": "webBaseURL: 管理面板的对外可访问完整地址，供微信里发「网址」命令后直接点开。部署在云端时可不填，程序会自动探测服务器公网出口 IP（拼成 http://公网IP:apiPort/）；要外网可访问需你在云主机安全组/防火墙放行 apiPort，或在路由器做端口映射，跨公网建议填带 https 的域名。若公网探测不可用（如本机在 NAT 后且无回显服务），才回退自动探测局域网 IP（仅同网可开）",
+  "webBaseURL": "",
   "_comment5": "llm: 大模型配置。apiKey 填入你的密钥；baseURL 为 OpenAI 兼容接口地址；model 为模型名称；disableThinking 默认 true 关闭思考/推理模式——本程序不需要推理，开着只会拖慢响应、多耗 token。deepseek-v4-flash、qwen3.8-flash 等默认开思考的模型必须保持 true；不支持该参数的接口会自动忽略",
   "llm": {
     "apiKey": "sk-xxx",

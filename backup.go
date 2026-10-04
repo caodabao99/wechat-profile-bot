@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 7 // 当前程序支持的最高 SQLite user_version
+	backupCurrentDBVer  = 13 // 当前程序支持的最高 SQLite user_version
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
@@ -70,6 +70,93 @@ var backupTables = []string{
 	"messages_archive",
 	"profile_history",
 	"merge_log",
+}
+
+// derivedTables 是从 profile_json / messages 派生、可重建的表（可信画像事实/证据/日标指标/行动建议）。
+// 不参与整库拷贝：恢复后这些表与恢复进来的源数据会不一致（fact id 会变、外键会悬），
+// 故恢复末尾直接清空，下次访问时由服务层“缺则重建”自愈（evidence 先于 facts 删，FK 安全）。
+var derivedTables = []string{
+	"profile_fact_evidence",
+	"profile_facts",
+	"relationship_daily_metrics",
+	"relationship_action_suggestions",
+}
+
+// restoreSkipTables 永不参与恢复拷贝的表：派生表（自愈）+ backup_log（恢复审计日志本身，
+// 清掉等于抹掉这次操作的记录，保留）。FTS 虚表/影子表与 sqlite_* 由 listRestoreTables 的查询过滤。
+var restoreSkipTables = func() map[string]bool {
+	m := map[string]bool{"backup_log": true}
+	for _, t := range derivedTables {
+		m[t] = true
+	}
+	return m
+}()
+
+// restorePreserveWhenAbsent 是「全局配置/用户自建」表：它们不按 contact_id 关联，
+// 保留不会与整表替换后的 contacts 串数据。当被恢复的是不含这些表的旧备份
+// （早于该功能）时，沿用与核心表相同的「缺表则保留主库现状」语义，
+// 不静默清空用户的自动化设置与自定义预设。
+var restorePreserveWhenAbsent = map[string]bool{
+	"assistant_settings": true,
+	"archive_settings":   true,
+	"mode_presets":       true,
+}
+
+// listRestoreTables 从 main 库 sqlite_master 动态列出参与恢复的用户表，取代手写数组。
+// 这样 v2.4~v3.1 新增的标签/时间线/跟进/助手/归档/发信等表会自动纳入备份恢复，
+// 不会因“漏加进白名单”而在恢复后与新替换进来的 contacts 串数据。
+// 排除：FTS 虚表及其影子表（靠触发器+末尾 rebuild，绝不手拷）、sqlite_* 内部表、restoreSkipTables。
+// tx 同时可见 main 与 ATTACH 的 bak，这里只取 main 的表清单（恢复以目标库现有结构为准）。
+func listRestoreTables(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT name, COALESCE(sql,'') FROM main.sqlite_master WHERE type='table'`)
+	if err != nil {
+		return nil, fmt.Errorf("读取恢复表清单失败: %w", err)
+	}
+	type tdef struct{ name, sql string }
+	var defs []tdef
+	for rows.Next() {
+		var d tdef
+		if err := rows.Scan(&d.name, &d.sql); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		defs = append(defs, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// 先找出所有 FTS 虚表根（CREATE VIRTUAL TABLE），再连同其影子表 <根>_xxx 一并排除。
+	ftsRoots := map[string]bool{}
+	for _, d := range defs {
+		if strings.HasPrefix(strings.TrimSpace(d.sql), "CREATE VIRTUAL TABLE") {
+			ftsRoots[d.name] = true
+		}
+	}
+	isFTSShadow := func(name string) bool {
+		if ftsRoots[name] {
+			return true
+		}
+		for root := range ftsRoots {
+			if strings.HasPrefix(name, root+"_") {
+				return true
+			}
+		}
+		return false
+	}
+
+	out := []string{}
+	for _, d := range defs {
+		if strings.HasPrefix(d.name, "sqlite_") || isFTSShadow(d.name) || restoreSkipTables[d.name] {
+			continue
+		}
+		out = append(out, d.name)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // BackupLog 一次备份/恢复操作的记录（backup_log 表，append-only）
@@ -566,7 +653,19 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 	}
 	defer tx.Rollback()
 
-	// 先清空目标（子表→父表）
+	// 恢复的表清单以 main 现有结构为准（动态，取代手写数组），保证 v2.4~v3.1 增值表也参与。
+	extraTables, err := listRestoreTables(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	coreSet := make(map[string]bool, len(backupTables))
+	for _, t := range backupTables {
+		coreSet[t] = true
+	}
+
+	// 先清空目标。核心表沿用「备份缺表则整表跳过、不删主库」语义（保护归档消息等）；
+	// 其余增值表一律先清空——它们的父表 contacts 即将被整表替换，留着旧行必然把
+	// 标签/跟进/事件挂到错误的人身上（串数据），清空才是对“备份那一刻状态”的忠实还原。
 	for i := len(backupTables) - 1; i >= 0; i-- {
 		t := backupTables[i]
 		// 备份库里根本没有这张表（如 v3.0.0 之前导出的备份没有 messages_archive）就整表跳过。
@@ -576,12 +675,22 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 			slog.Warn("恢复：备份库缺少该表，保留主库现有数据", "table", t)
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM main.`+quoteIdent(t)); err != nil {
-			// 目标库还没有该表（如归档表未建）就跳过，下面的拷贝会因 0 同名列同样跳过
-			if strings.Contains(err.Error(), "no such table") {
-				continue
-			}
-			return nil, fmt.Errorf("清空 %s 失败: %w", t, err)
+		if err := deleteMainTable(ctx, tx, t); err != nil {
+			return nil, err
+		}
+	}
+	for _, t := range extraTables {
+		if coreSet[t] {
+			continue
+		}
+		// 全局配置/自定义预设表且备份里没有这张表（旧备份早于该功能）：保留主库现状，
+		// 不能先 DELETE 再发现无数据可回填——那等于恢复一次旧备份就把自动化设置/预设清空。
+		if restorePreserveWhenAbsent[t] && !bakTableExists(ctx, tx, t) {
+			slog.Warn("恢复：备份库缺少该配置表，保留主库现有设置", "table", t)
+			continue
+		}
+		if err := deleteMainTable(ctx, tx, t); err != nil {
+			return nil, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM main.sqlite_sequence`); err != nil {
@@ -591,30 +700,22 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 		}
 	}
 
-	// 逐表按同名列拷贝（父表→子表）
+	// 逐表按同名列拷贝（父表→子表）：核心 + 增值一律从 bak 回填（bak 缺该表则 0 同名列自然跳过、留空）。
 	counts := map[string]int{}
 	for _, t := range backupTables {
-		cols, err := commonColumns(ctx, tx, t)
+		n, err := copyTableFromBak(ctx, tx, t, true)
 		if err != nil {
 			return nil, err
 		}
-		if len(cols) == 0 {
+		counts[t] = n
+	}
+	for _, t := range extraTables {
+		if coreSet[t] {
 			continue
 		}
-		quoted := make([]string, len(cols))
-		for i, c := range cols {
-			quoted[i] = quoteIdent(c)
-		}
-		q := fmt.Sprintf(`INSERT INTO main.%s (%s) SELECT %s FROM bak.%s`,
-			quoteIdent(t), strings.Join(quoted, ","), strings.Join(quoted, ","), quoteIdent(t))
-		if _, err := tx.ExecContext(ctx, q); err != nil {
-			return nil, fmt.Errorf("写入 %s 失败: %w", t, err)
-		}
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM main.`+quoteIdent(t)).Scan(&n); err != nil {
+		if _, err := copyTableFromBak(ctx, tx, t, false); err != nil {
 			return nil, err
 		}
-		counts[t] = n
 	}
 
 	// 自增序列一起搬，保证恢复后新行的 id 不与历史 id 冲突
@@ -644,6 +745,42 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 	}
 	committed = true
 	profileEpoch++
+
+	// 恢复的旧备份（v≤7）没有 msg_unix，按同名列拷贝会跳过它，导致恢复行的 msg_unix 为空。
+	// 提交后就地补算，保证恢复库与新 schema 一致。必须走当前持有的 conn（连接池仅 1 条），
+	// 否则会等连接而自锁。归档表可能不存在，忽略其报错，绝不让恢复因补算而失败。
+	for _, t := range []string{"messages", "messages_archive"} {
+		if _, err := conn.ExecContext(ctx,
+			`UPDATE `+t+` SET msg_unix = CAST(strftime('%s', msg_time) AS INTEGER)
+			 WHERE msg_unix IS NULL AND msg_time IS NOT NULL AND msg_time != ''`); err != nil {
+			if !strings.Contains(err.Error(), "no such table") {
+				slog.Warn("恢复后补算 msg_unix 失败", "table", t, "err", err)
+			}
+		}
+	}
+
+	// 恢复对 messages / messages_archive 做的是「整表 DELETE + 批量 INSERT」。虽然 FTS 同步触发器
+	// 会自动跟随，但为绝对保证 external-content 索引与刚替换进来的数据一致（防止任何触发器与批量写
+	// 的顺序偏差导致虚表损坏），提交后对两张 FTS 表各做一次 rebuild。走当前持有的 conn，忽略
+	// 虚表不存在（旧库未建 FTS）的情况，绝不让恢复因重建索引而失败。
+	for _, fts := range []string{"messages_fts", "messages_archive_fts"} {
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO `+fts+`(`+fts+`) VALUES('rebuild')`); err != nil {
+			if !strings.Contains(err.Error(), "no such table") && !strings.Contains(err.Error(), "no such module") {
+				slog.Warn("恢复后重建全文索引失败", "fts", fts, "err", err)
+			}
+		}
+	}
+
+	// 清空派生表（可信画像/证据/日标/建议）：它们不参与恢复拷贝，旧内容会与刚恢复进来的源数据脱节，
+	// 不如直接清空，下次访问时由服务层自愈重建。表可能尚不存在（旧库未迁移）则忽略报错。
+	for _, t := range derivedTables {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM `+t); err != nil {
+			if !strings.Contains(err.Error(), "no such table") {
+				slog.Warn("恢复后清空派生表失败", "table", t, "err", err)
+			}
+		}
+	}
 
 	summary.Contacts = counts["contacts"]
 	summary.Aliases = counts["contact_aliases"]
@@ -816,6 +953,46 @@ func bakTableExists(ctx context.Context, tx *sql.Tx, table string) bool {
 	err := tx.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM pragma_table_info(?, 'bak')`, table).Scan(&n)
 	return err == nil && n > 0
+}
+
+// deleteMainTable 清空 main 库的某张表。目标库尚未建该表（旧库未迁移）时视为无需清空，不报错。
+func deleteMainTable(ctx context.Context, tx *sql.Tx, t string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM main.`+quoteIdent(t)); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return fmt.Errorf("清空 %s 失败: %w", t, err)
+	}
+	return nil
+}
+
+// copyTableFromBak 从 ATTACH 的 bak 库按两边同名列拷入 main.t。bak 缺该表时 commonColumns 返回空、
+// 自然跳过（留空即对“老备份没有这张表”的忠实还原）。wantCount=true 时统计并返回 main.t 拷贝后的行数。
+func copyTableFromBak(ctx context.Context, tx *sql.Tx, t string, wantCount bool) (int, error) {
+	cols, err := commonColumns(ctx, tx, t)
+	if err != nil {
+		return 0, err
+	}
+	if len(cols) == 0 {
+		return 0, nil
+	}
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = quoteIdent(c)
+	}
+	q := fmt.Sprintf(`INSERT INTO main.%s (%s) SELECT %s FROM bak.%s`,
+		quoteIdent(t), strings.Join(quoted, ","), strings.Join(quoted, ","), quoteIdent(t))
+	if _, err := tx.ExecContext(ctx, q); err != nil {
+		return 0, fmt.Errorf("写入 %s 失败: %w", t, err)
+	}
+	if !wantCount {
+		return 0, nil
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM main.`+quoteIdent(t)).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func copyFile(src, dst string) error {

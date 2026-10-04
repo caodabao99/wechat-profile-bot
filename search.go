@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,14 +36,15 @@ type SearchOptions struct {
 
 // SearchHit 单条命中
 type SearchHit struct {
-	ID          int64  `json:"id"`
-	ContactID   int64  `json:"contactId"`
-	ContactName string `json:"contactName"`
-	Sender      string `json:"sender"`
-	Content     string `json:"content"`
-	Snippet     string `json:"snippet"`
-	MsgTime     string `json:"msgTime"`
-	Archived    bool   `json:"archived"`
+	ID          int64   `json:"id"`
+	ContactID   int64   `json:"contactId"`
+	ContactName string  `json:"contactName"`
+	Sender      string  `json:"sender"`
+	Content     string  `json:"content"`
+	Snippet     string  `json:"snippet"`
+	MsgTime     string  `json:"msgTime"`
+	Archived    bool    `json:"archived"`
+	Relevance   float64 `json:"relevance"` // FTS 路径携带（越大越相关）；LIKE 降级路径为 0。默认排序仍按时间倒序。
 }
 
 // SearchResult 搜索结果
@@ -124,13 +126,8 @@ func normalizeSearchBound(s string, isEnd bool) string {
 	return s
 }
 
-// SearchMessages 执行搜索。所有 rows 迭代都在 dbMu 锁内完成（单连接 + WAL 的硬约束）。
-func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
-	start := time.Now()
-	keywords, err := searchKeywords(opt.Query)
-	if err != nil {
-		return nil, err
-	}
+// clampSearchOptions 归一化分页参数（默认值与硬上限），FTS 与 LIKE 两条路径共用。
+func clampSearchOptions(opt SearchOptions) SearchOptions {
 	if opt.Limit <= 0 {
 		opt.Limit = 50
 	}
@@ -143,6 +140,154 @@ func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
 	if opt.Offset > searchMaxOffset {
 		opt.Offset = searchMaxOffset
 	}
+	return opt
+}
+
+// SearchMessages 执行搜索：优先走 FTS5（含 ≥3 字的关键词），否则/失败自动降级为 LIKE 全表扫。
+// 所有 rows 迭代都在 dbMu 锁内完成（单连接 + WAL 的硬约束）。
+func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
+	keywords, err := searchKeywords(opt.Query)
+	if err != nil {
+		return nil, err
+	}
+	opt = clampSearchOptions(opt)
+
+	ftsKws, likeKws := partitionFTSKeywords(keywords)
+	// 只要有一个 ≥3 字关键词且活跃表 FTS 可用，就走 FTS 主查询；剩余的 <3 字关键词以 LIKE 追加过滤。
+	if len(ftsKws) > 0 && ftsMessagesEnabled.Load() {
+		res, fErr := searchViaFTS(db, opt, keywords, ftsKws, likeKws)
+		if fErr == nil {
+			return res, nil
+		}
+		// FTS 查询任意失败（虚表损坏、MATCH 语法边界等）都不能让搜索挂掉：降级 LIKE 重来。
+		slog.Warn("FTS 搜索失败，降级为 LIKE", "err", fErr)
+	}
+	return searchViaLike(db, opt, keywords)
+}
+
+// searchViaFTS 用 messages_fts / messages_archive_fts 做主检索，联系人/时间/短词过滤在基表上。
+// 默认按时间倒序（与 LIKE 路径、与升级前行为一致）；rank 仅作为附带的相关度信息返回。
+func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []string) (*SearchResult, error) {
+	start := time.Now()
+	match := ftsPhraseMatch(ftsKws)
+	from := normalizeSearchBound(opt.From, false)
+	to := normalizeSearchBound(opt.To, true)
+
+	// base 仅接受白名单常量（messages / messages_archive），fts 名由其派生，拼接安全。
+	buildSide := func(base string, archivedFlag int) (string, []interface{}) {
+		fts := base + "_fts"
+		where := []string{fts + " MATCH ?"}
+		args := []interface{}{match}
+		for _, kw := range likeKws {
+			where = append(where, `m.content LIKE ? ESCAPE '\'`)
+			args = append(args, "%"+escapeLike(kw)+"%")
+		}
+		if opt.ContactID > 0 {
+			where = append(where, "m.contact_id = ?")
+			args = append(args, opt.ContactID)
+		}
+		if from != "" {
+			where = append(where, `m.msg_time IS NOT NULL AND m.msg_time != '' AND strftime('%s', m.msg_time) >= strftime('%s', ?)`)
+			args = append(args, from)
+		}
+		if to != "" {
+			where = append(where, `m.msg_time IS NOT NULL AND m.msg_time != '' AND strftime('%s', m.msg_time) <= strftime('%s', ?)`)
+			args = append(args, to)
+		}
+		sel := `SELECT m.id, m.contact_id, m.sender, m.content, COALESCE(m.msg_time,'') AS msg_time, ` +
+			fmt.Sprintf("%d AS archived, ", archivedFlag) + fts + `.rank AS rk
+			FROM ` + fts + `
+			JOIN ` + base + ` m ON m.id = ` + fts + `.rowid
+			WHERE ` + strings.Join(where, " AND ")
+		return sel, args
+	}
+
+	buildUnion := func(withArchive bool) (string, []interface{}) {
+		sel, args := buildSide("messages", 0)
+		if withArchive {
+			aSel, aArgs := buildSide("messages_archive", 1)
+			sel += " UNION ALL " + aSel // 两段子查询列名/列序一致，直接并
+			args = append(args, aArgs...)
+		}
+		return sel, args
+	}
+
+	archiveSkipped := opt.IncludeArchive && !ftsArchiveEnabled.Load()
+
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	// 归档表在检查之后被删/损坏时，报错降级为只搜活跃表重试一次（同锁内不可递归，必须内联）。
+	runQuery := func(withArchive bool) (int, []SearchHit, error) {
+		union, args := buildUnion(withArchive)
+		var total int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
+			return 0, nil, err
+		}
+		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, u.msg_time, u.archived, u.rk,
+				COALESCE(c.remark,''), COALESCE(c.name,'')
+			FROM (` + union + `) u
+			LEFT JOIN contacts c ON c.id = u.contact_id
+			ORDER BY strftime('%s', u.msg_time) DESC, u.id DESC
+			LIMIT ? OFFSET ?`
+		pageArgs := append(append([]interface{}{}, args...), opt.Limit, opt.Offset)
+		rows, err := db.Query(pageSQL, pageArgs...)
+		if err != nil {
+			return 0, nil, err
+		}
+		defer rows.Close()
+		list := []SearchHit{}
+		for rows.Next() {
+			var h SearchHit
+			var remark string
+			var archived int
+			var rk float64
+			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &rk, &remark, &h.ContactName); err != nil {
+				return 0, nil, err
+			}
+			h.Archived = archived == 1
+			h.Relevance = roundRelevance(rk)
+			if strings.TrimSpace(remark) != "" {
+				h.ContactName = remark + "（" + h.ContactName + "）"
+			}
+			h.Snippet = buildSnippet(h.Content, keywords)
+			list = append(list, h)
+		}
+		return total, list, rows.Err()
+	}
+
+	wantArchive := opt.IncludeArchive && !archiveSkipped
+	total, list, err := runQuery(wantArchive)
+	if err != nil && wantArchive {
+		archiveSkipped = true
+		if total, list, err = runQuery(false); err != nil {
+			return nil, err
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &SearchResult{
+		Query:          strings.Join(keywords, " "),
+		Total:          total,
+		Offset:         opt.Offset,
+		Limit:          opt.Limit,
+		List:           list,
+		TookMs:         time.Since(start).Milliseconds(),
+		ArchiveSkipped: archiveSkipped,
+	}, nil
+}
+
+// roundRelevance 把 FTS5 rank（升序=越靠前越相关）转成「越大越相关」的相关度，保留 6 位小数。
+func roundRelevance(rank float64) float64 {
+	v := -rank
+	return float64(int64(v*1e6+0.5)) / 1e6
+}
+
+// searchViaLike 原有的 LIKE 全表扫描路径：作为 FTS 不可用（未建立/短词/降级）时的检索方式。
+// keywords 与已归一化的 opt 由调用方传入（避免重复解析、两路径行为一致）。
+func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchResult, error) {
+	start := time.Now()
 
 	// 单表条件（messages 与 messages_archive 同构，别名不同而已）
 	buildCond := func(alias string) (string, []interface{}) {

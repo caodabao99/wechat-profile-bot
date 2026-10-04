@@ -35,6 +35,12 @@ func NewLLMClient(cfg *Config) *LLMClient {
 	}
 }
 
+// configured 报告模型是否真正可用（配了 apiKey 与 baseURL）。用于区分「真实调用」与
+// 「未配置」——未配置时应向用户明确报错，而不是编造一个看似合理的返回。
+func (c *LLMClient) configured() bool {
+	return c != nil && strings.TrimSpace(c.apiKey) != "" && strings.TrimSpace(c.baseURL) != ""
+}
+
 // chatResponse 是接口返回中我们关心的字段
 type chatResponse struct {
 	Choices []struct {

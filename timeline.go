@@ -151,19 +151,40 @@ func GetContactTimeline(db *sql.DB, contactID int64, limit int) ([]TimelineItem,
 	var createdAt string
 	var firstMsg, lastMsg sql.NullString
 	var msgCount int64
-	// msg_time 是带时区偏移的 RFC3339 字符串，MIN/MAX 字典序比出来的是错的时间，必须走 strftime('%s')
-	err := db.QueryRow(`SELECT c.created_at,
-			COALESCE((SELECT m.msg_time FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''
-			          ORDER BY strftime('%s', m.msg_time) ASC, m.id ASC LIMIT 1), ''),
-			COALESCE((SELECT m.msg_time FROM messages m WHERE m.contact_id = c.id AND COALESCE(m.msg_time,'') != ''
-			          ORDER BY strftime('%s', m.msg_time) DESC, m.id DESC LIMIT 1), ''),
-			(SELECT COUNT(*) FROM messages m WHERE m.contact_id = c.id)
-		FROM contacts c WHERE c.id = ?`, contactID).Scan(&createdAt, &firstMsg, &lastMsg, &msgCount)
-	if err != nil {
+	if err := db.QueryRow(`SELECT created_at FROM contacts WHERE id = ?`, contactID).Scan(&createdAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("联系人不存在")
 		}
 		return nil, err
+	}
+
+	// msg_time 是带时区偏移的 RFC3339 字符串，MIN/MAX 字典序比出来的是错的时间，必须走 strftime('%s')。
+	// 首末条聊天 / 累计条数必须并档 messages_archive：归档把老消息移出 messages，只看 messages 会让
+	// 「第一次聊天」日期突然跳到归档之后、累计条数骤减，与已并档的关系趋势自相矛盾。
+	hasArchive := tableExistsLocked(db, "messages_archive")
+	chatUnit := `SELECT msg_time, COALESCE(msg_unix, CAST(strftime('%s', msg_time) AS INTEGER)) AS su FROM messages WHERE contact_id = ? AND COALESCE(msg_time,'') != ''`
+	chatArgs := []interface{}{contactID}
+	if hasArchive {
+		chatUnit += ` UNION ALL SELECT msg_time, COALESCE(msg_unix, CAST(strftime('%s', msg_time) AS INTEGER)) FROM messages_archive WHERE contact_id = ? AND COALESCE(msg_time,'') != ''`
+		chatArgs = append(chatArgs, contactID)
+	}
+	chatU := `(` + chatUnit + `)`
+	// chatU 在首/末两个子查询里各出现一次，参数要按出现次数重复传入。
+	qArgs := append(append([]interface{}{}, chatArgs...), chatArgs...)
+	if err := db.QueryRow(
+		`SELECT COALESCE((SELECT msg_time FROM `+chatU+` ORDER BY su ASC, msg_time ASC LIMIT 1), ''),
+		        COALESCE((SELECT msg_time FROM `+chatU+` ORDER BY su DESC, msg_time DESC LIMIT 1), '')`,
+		qArgs...).Scan(&firstMsg, &lastMsg); err != nil {
+		return nil, err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE contact_id = ?`, contactID).Scan(&msgCount); err != nil {
+		return nil, err
+	}
+	if hasArchive {
+		var archived int64
+		if err := db.QueryRow(`SELECT COUNT(*) FROM messages_archive WHERE contact_id = ?`, contactID).Scan(&archived); err == nil {
+			msgCount += archived
+		}
 	}
 	add("created", "联系人创建", "", createdAt, "derived", 0)
 	if firstMsg.Valid {

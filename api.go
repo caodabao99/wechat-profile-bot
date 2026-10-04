@@ -326,6 +326,10 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeSearch(w, r, parts[1:])
 	case parts[0] == "insights":
 		s.routeInsights(w, r, parts[1:])
+	case parts[0] == "relationships":
+		s.routeRelationships(w, r, parts[1:])
+	case parts[0] == "mode-presets":
+		s.routeModePresets(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
@@ -373,6 +377,12 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactTimeline(w, r, id)
 	case "rehearsal":
 		s.routeContactRehearsal(w, r, id, sub[1:])
+	case "facts":
+		s.routeContactFacts(w, r, id, sub[1:])
+	case "trend":
+		s.routeContactTrend(w, r, id)
+	case "ask":
+		s.routeContactAsk(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
@@ -538,7 +548,6 @@ func (s *apiServer) hGetContact(w http.ResponseWriter, r *http.Request, id int64
 
 func (s *apiServer) hGetMessages(w http.ResponseWriter, r *http.Request, id int64) {
 	q := r.URL.Query()
-	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	if limit <= 0 {
 		limit = 50
@@ -546,6 +555,36 @@ func (s *apiServer) hGetMessages(w http.ResponseWriter, r *http.Request, id int6
 	if limit > maxMessagesPageLimit {
 		limit = maxMessagesPageLimit
 	}
+
+	type msgJSON struct {
+		ID      int64  `json:"id"`
+		Sender  string `json:"sender"`
+		Content string `json:"content"`
+		MsgTime string `json:"msgTime"`
+	}
+
+	// 优先走 keyset 分页（带 beforeId）：避免深页 OFFSET 全表扫。
+	// 未带 beforeId 时保留旧的 offset 语义（向后兼容其它调用方 / 桌面远程模式）。
+	if v := q.Get("beforeId"); v != "" {
+		beforeID, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || beforeID < 0 {
+			writeErr(w, http.StatusBadRequest, "beforeId 必须是非负整数")
+			return
+		}
+		msgs, err := GetMessagesPageBefore(s.db, id, beforeID, limit)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		out := make([]msgJSON, 0, len(msgs))
+		for _, m := range msgs {
+			out = append(out, msgJSON{m.ID, m.Sender, m.Content, m.Timestamp.Format("2006-01-02 15:04:05")})
+		}
+		writeJSON(w, 200, out)
+		return
+	}
+
+	offset, _ := strconv.Atoi(q.Get("offset"))
 	if offset < 0 {
 		offset = 0
 	}
@@ -554,14 +593,9 @@ func (s *apiServer) hGetMessages(w http.ResponseWriter, r *http.Request, id int6
 		writeErr(w, 500, err.Error())
 		return
 	}
-	type msgJSON struct {
-		Sender  string `json:"sender"`
-		Content string `json:"content"`
-		MsgTime string `json:"msgTime"`
-	}
 	out := make([]msgJSON, 0, len(msgs))
 	for _, m := range msgs {
-		out = append(out, msgJSON{m.Sender, m.Content, m.Timestamp.Format("2006-01-02 15:04:05")})
+		out = append(out, msgJSON{m.ID, m.Sender, m.Content, m.Timestamp.Format("2006-01-02 15:04:05")})
 	}
 	writeJSON(w, 200, out)
 }

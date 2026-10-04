@@ -30,7 +30,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v3.2.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.0.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -47,7 +47,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v3.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -265,7 +265,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v3.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v3.2.0.tar.gz`，得到 `wechat-profile-bot:v3.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.0.0.tar.gz`，得到 `wechat-profile-bot:v4.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -549,6 +549,35 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.0.0（2026-10-04）
+
+大版本更新：新增多项网页端能力、云端部署体验与全面的响应式适配，并修复一批跨端缺陷。升级只需替换二进制并重启，数据库结构向后兼容（新增表/列在首次访问时自愈创建，旧库无需迁移脚本）。
+
+新增功能
+
+- **运行模式预设**：把当前助手表单/阈值存成「客户 / 家人 / 朋友」等命名预设，一键切换不同关系的提醒风格；预设只存阈值不存密码/日历密钥，切换不会覆盖你的 SMTP 凭据
+- **关系趋势与驾驶舱**：联系人维度的互动趋势、久未联系/冷却回暖判定与下一步行动建议集中呈现
+- **「问 TA」**：基于已生成画像与真实聊天证据回答你关于某个人的具体问题，并附来源消息可点回看
+- **周期性洞察报告**：支持按周/月/年多周期聚合生成可分享长页报告（年度/社交大盘延续增强）
+- **云端公网访问地址自动探测**：未配置 `webBaseURL` 时自动探测服务器公网出口 IP 生成可点开的网页地址（`网址` 命令）；探测并发化、失败回退局域网 IP
+
+稳定性与安全修复
+
+- 模式预设应用会保留真实 SMTP 密码与日历密钥，不再被内置空凭据覆盖
+- 网页助手设置保存时不再重置关系趋势阈值（静默天数/冷却/回暖），掩码凭据正确回填
+- 分页查询补回消息 `id`，修复按 id 去重/定位偏差
+- 网页登录响应/预设列表对密码与日历密钥一律打码，杜绝凭据外泄
+- 助手调度器每周期加异常隔离，单次任务 panic 不再中断后续提醒
+- 备份/恢复增强：缺表时不清空全局配置表
+
+网页端全面响应式适配（PC / 平板 / 手机）
+
+- 登录页大按钮修复（一处 CSS 类名撞车曾把按钮压塌）
+- 日志/归档/可信设备等宽表格在窄屏改为卡内横向滚动，操作按钮不再被裁切
+- 手机端触控目标放大、刘海/圆角屏安全区避让
+
+> 详细变更与部署步骤见上文各功能章节。旧版本说明见下方 v3.2.0 及更早条目。
 
 ### v3.2.0（2026-10-04）
 

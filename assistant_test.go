@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -73,13 +74,13 @@ func TestValidHHMM(t *testing.T) {
 func TestAssistantSettingsNormalize(t *testing.T) {
 	s := AssistantSettings{
 		BirthdayAdvanceDays: 0, CoolingDays: -5, EmotionDailyMax: 999,
-		WeeklyDay: 9, DailyCheckTime: "xx", WeeklyTime: "", SMTP: AssistantSMTP{Port: 0},
+		DailyCheckTime: "xx", SMTP: AssistantSMTP{Port: 0},
 	}
 	s.normalize()
 	def := defaultAssistantSettings()
 	if s.BirthdayAdvanceDays != def.BirthdayAdvanceDays || s.CoolingDays != def.CoolingDays ||
-		s.EmotionDailyMax != def.EmotionDailyMax || s.WeeklyDay != def.WeeklyDay ||
-		s.DailyCheckTime != def.DailyCheckTime || s.WeeklyTime != def.WeeklyTime ||
+		s.EmotionDailyMax != def.EmotionDailyMax ||
+		s.DailyCheckTime != def.DailyCheckTime ||
 		s.SMTP.Port != def.SMTP.Port {
 		t.Errorf("normalize 后非法值应回默认，得到 %+v", s)
 	}
@@ -147,6 +148,54 @@ func TestAssistantSettingsRoundTrip(t *testing.T) {
 	again, _ := loadAssistantSettings(db)
 	if again.CoolingDays != 30 {
 		t.Errorf("覆盖保存失败: %+v", again)
+	}
+}
+
+// TestAssistantPutPreservesTrendThresholds 验证 High-3 修复：网页「关系助手」表单 PUT 不回传
+// 关系趋势阈值（silenceDays/coolingMinPrior/warmingMinPrior），它们反序化为 0 会被
+// normalize 兜成硬默认(30/5/3)。保存一次助手设置不能静默抹掉预设调好的阈值；
+// 同时验证表单管理的字段（密码回传掩码时保留、dailyCheckTime）照常生效。
+func TestAssistantPutPreservesTrendThresholds(t *testing.T) {
+	db := assistantTestDB(t)
+	cur := defaultAssistantSettings()
+	cur.SilenceDays = 15
+	cur.CoolingMinPrior = 8
+	cur.WarmingMinPrior = 6
+	cur.SMTP.Pass = "real-pass"
+	cur.CalendarKey = "real-cal"
+	cur.DailyCheckTime = "08:00"
+	if err := saveAssistantSettings(db, cur); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{APIToken: "test-rel-token"}
+	s := &apiServer{db: db, cfg: cfg, sessions: &webSessionStore{sessions: map[string]time.Time{}}}
+
+	// 模拟真实表单：只发送表单里可见的字段，不回传三个阈值；密码/密钥回传掩码。
+	body := `{"enabled":true,"dailyCheckTime":"09:00",` +
+		`"smtp":{"host":"h","port":465,"ssl":true,"user":"u","pass":"******","from":"a@t","to":["b@t"]},` +
+		`"calendarKey":"******"}`
+	resp := callAPI(s, http.MethodPut, "/api/assistant/settings", body)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PUT settings: %d %s", resp.Code, resp.Body.String())
+	}
+
+	got, err := loadAssistantSettings(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 关键：未被表单管理的三个阈值必须保留预设值，不能回退到 30/5/3
+	if got.SilenceDays != 15 || got.CoolingMinPrior != 8 || got.WarmingMinPrior != 6 {
+		t.Fatalf("保存助手设置抹掉了预设趋势阈值: silence=%d cool=%d warm=%d",
+			got.SilenceDays, got.CoolingMinPrior, got.WarmingMinPrior)
+	}
+	// 回归验证：掩码回传时凭据仍被保留
+	if got.SMTP.Pass != "real-pass" || got.CalendarKey != "real-cal" {
+		t.Fatalf("掩码回传应保留原凭据: pass=%q cal=%q", got.SMTP.Pass, got.CalendarKey)
+	}
+	// 表单管理的字段确实写入了新值
+	if got.DailyCheckTime != "09:00" || !got.Enabled {
+		t.Fatalf("表单字段未生效: time=%q enabled=%v", got.DailyCheckTime, got.Enabled)
 	}
 }
 
@@ -275,10 +324,6 @@ func TestRunDailyCheckDisabled(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "未启用") {
 		t.Errorf("未启用应返回错误，得到 %v", err)
 	}
-	_, err = runWeeklyReport(db, nil, time.Now(), false)
-	if err == nil || !strings.Contains(err.Error(), "未启用") {
-		t.Errorf("周报未启用应返回错误，得到 %v", err)
-	}
 }
 
 func TestRunDailyCheckNothingToSend(t *testing.T) {
@@ -325,17 +370,6 @@ func TestBuildEmailHTML(t *testing.T) {
 	}
 	if !strings.Contains(daily, "</html>") {
 		t.Error("每日邮件 HTML 未闭合")
-	}
-
-	top := []AssistantIntimacyItem{{Name: "老王", Score: 88, Mine: 30, Other: 28, Days: 12}}
-	weekly := buildWeeklyEmailHTML(now, top, top, cooling, dates, alerts, 58)
-	for _, want := range []string{"每周关系报告", "老王", "88"} {
-		if !strings.Contains(weekly, want) {
-			t.Errorf("每周邮件缺少 %q", want)
-		}
-	}
-	if !strings.Contains(weekly, "</html>") {
-		t.Error("每周邮件 HTML 未闭合")
 	}
 }
 

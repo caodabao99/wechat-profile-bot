@@ -1,6 +1,6 @@
 /* 微信画像管理前端逻辑：Vue 3（global build），无构建步骤 */
 /* global Vue */
-const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
 // 画像分节定义：查看页（buildSections）与编辑弹窗共用同一份，
 // 保证「看到的字段/顺序/叫法」和「编辑时」完全一致，编辑器不许自造另一套字段。
@@ -170,11 +170,10 @@ createApp({
     // ---------- 关系助手 ----------
     const asst = ref(null);        // 看板聚合数据
     const asstLoading = ref(false);
-    const asstBusy = ref('');      // 'save' | 'test' | 'daily' | 'weekly'
+    const asstBusy = ref('');      // 'save' | 'test' | 'daily'
     const asstForm = ref({
       enabled: false, remindBirthday: true, remindCooling: true,
       birthdayAdvanceDays: 3, coolingDays: 7, dailyCheckTime: '08:00',
-      weeklyReport: true, weeklyDay: 0, weeklyTime: '20:00',
       emotionAlert: true, emotionDailyMax: 10,
       // 增值功能：待跟进提醒 + AI 祝福草稿。自动抽取和祝福草稿都要调模型，默认关闭
       remindFollowup: true, followupEnabled: false,
@@ -183,6 +182,12 @@ createApp({
       calendarKey: '',
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
     });
+
+    // ---------- 运行模式一键切换预设 ----------
+    const modePresets = ref([]);      // [{name, builtin, payload:{assistant,archive}}]
+    const modeSel = ref('');          // 下拉选中的预设名
+    const modeBusy = ref(false);
+    const modeSaveName = ref('');     // 另存为预设的名称
 
     async function loadAssistant() {
       if (asstLoading.value) return;
@@ -198,9 +203,6 @@ createApp({
         f.birthdayAdvanceDays = st.birthdayAdvanceDays || 3;
         f.coolingDays = st.coolingDays || 7;
         f.dailyCheckTime = st.dailyCheckTime || '08:00';
-        f.weeklyReport = st.weeklyReport !== false;
-        f.weeklyDay = st.weeklyDay || 0;
-        f.weeklyTime = st.weeklyTime || '20:00';
         f.emotionAlert = st.emotionAlert !== false;
         f.emotionDailyMax = st.emotionDailyMax || 10;
         f.remindFollowup = st.remindFollowup !== false;
@@ -218,6 +220,7 @@ createApp({
         // 看板之外的两块增值数据：待跟进列表 + 日历订阅密钥
         loadFollowups();
         loadCalendarKey();
+        loadModePresets();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -263,8 +266,7 @@ createApp({
           body: {
             enabled: f.enabled, remindBirthday: f.remindBirthday, remindCooling: f.remindCooling,
             birthdayAdvanceDays: nums.birthdayAdvanceDays, coolingDays: nums.coolingDays,
-            dailyCheckTime: f.dailyCheckTime, weeklyReport: f.weeklyReport,
-            weeklyDay: f.weeklyDay, weeklyTime: f.weeklyTime,
+            dailyCheckTime: f.dailyCheckTime,
             emotionAlert: f.emotionAlert, emotionDailyMax: nums.emotionDailyMax,
             remindFollowup: f.remindFollowup, followupEnabled: f.followupEnabled,
             followupDailyMax: nums.followupDailyMax, followupWindowDays: nums.followupWindowDays,
@@ -308,6 +310,49 @@ createApp({
         setTimeout(() => { if (route.view === 'assistant') { refreshDashboard(); loadFollowups(); } }, 5000);
       } catch (e) { toast(e.message, 'error'); }
       finally { asstBusy.value = ''; }
+    }
+
+    // ---------- 运行模式预设 ----------
+    async function loadModePresets() {
+      try {
+        const out = await api('/api/mode-presets');
+        modePresets.value = (out && out.presets) || [];
+      } catch (e) {
+        if (route.view === 'assistant') toast(e.message, 'error');
+      }
+    }
+    async function applyModePreset() {
+      if (!modeSel.value || modeBusy.value) return;
+      modeBusy.value = true;
+      try {
+        await api('/api/mode-presets/apply', { method: 'POST', body: { name: modeSel.value } });
+        toast('已切换到运行模式「' + modeSel.value + '」');
+        await loadAssistant(); // 应用后重新拉取设置回填表单
+      } catch (e) { toast(e.message, 'error'); }
+      finally { modeBusy.value = false; }
+    }
+    async function saveModePreset() {
+      const name = modeSaveName.value.trim();
+      if (!name || modeBusy.value) return;
+      modeBusy.value = true;
+      try {
+        await api('/api/mode-presets', { method: 'POST', body: { name } });
+        toast('已将当前设置存为预设「' + name + '」');
+        modeSaveName.value = '';
+        await loadModePresets();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { modeBusy.value = false; }
+    }
+    async function deleteModePreset(p) {
+      if (p.builtin || modeBusy.value) return;
+      modeBusy.value = true;
+      try {
+        await api('/api/mode-presets/' + encodeURIComponent(p.name), { method: 'DELETE' });
+        toast('已删除预设「' + p.name + '」');
+        if (modeSel.value === p.name) modeSel.value = '';
+        await loadModePresets();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { modeBusy.value = false; }
     }
 
     // ---------- 弹层 ----------
@@ -707,6 +752,8 @@ createApp({
       rh.review = null;
       rh.started = false;
       rh.ctxFailed = false;
+      // 驾驶舱同样按联系人隔离：不清就会把上一个人的事实/趋势/推演结果挂到新页面
+      resetCockpit();
       busy.value = false;
       timelineBusy.value = false;
       rh.busy = false;
@@ -807,6 +854,7 @@ createApp({
       if (tab === 'stats' && !stats.value) loadStats();
       if (tab === 'timeline' && !timeline.value.length) loadTimeline();
       if (tab === 'rehearsal' && !rh.ctx && !rh.ctxBusy) loadRehearsalContext();
+      if (tab === 'cockpit' && !ck.loaded) loadCockpit();
     }
 
     // 画像按桌面端 profile.go 固定分节铺开
@@ -858,8 +906,13 @@ createApp({
       const my = detailSeq;   // 跟随当前详情页；期间切人则本次回包作废
       messagesLoading.value = true;
       try {
-        const offset = more ? messages.value.length : 0;
-        const list = (await api('/api/contacts/' + route.id + '/messages?offset=' + offset + '&limit=50')) || [];
+        // keyset 分页：首屏不带 beforeId；“加载更多”用当前已加载最旧一条的 id 作游标，
+        // 避免 OFFSET 深翻页全表扫描（接口按 id DESC 返回，列表末尾即最旧）。
+        let url = '/api/contacts/' + route.id + '/messages?limit=50';
+        if (more && messages.value.length && messages.value[messages.value.length - 1].id) {
+          url += '&beforeId=' + messages.value[messages.value.length - 1].id;
+        }
+        const list = (await api(url)) || [];
         if (my !== detailSeq) return;
         if (more) messages.value = messages.value.concat(list);
         else messages.value = list;
@@ -1437,12 +1490,13 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('search');
-    const insightLoaded = reactive({ report: false, social: false, dup: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
       if (tab === 'social' && !insightLoaded.social) loadSocial();
       if (tab === 'dup' && !insightLoaded.dup) loadDuplicates();
+      if (tab === 'period' && !insightLoaded.period) loadPeriodReport();
     }
 
     // 聊天记录全文搜索
@@ -1618,6 +1672,95 @@ createApp({
         setTimeout(() => URL.revokeObjectURL(url), 120000);
       } catch (e) { toast(e.message, 'error'); }
       finally { reportBusy.value = false; }
+    }
+
+    // ---------- 多周期报告（日/周/月/季/半年/年） ----------
+    const PERIODS = [
+      { key: 'day', name: '日报' },
+      { key: 'week', name: '周报' },
+      { key: 'month', name: '月报' },
+      { key: 'quarter', name: '季报' },
+      { key: 'half', name: '半年报' },
+      { key: 'year', name: '年报' },
+    ];
+    const prPeriod = ref('week');
+    const prAnchor = ref('');           // 'YYYY-MM-DD'，空表示后端按今天
+    const prReport = ref(null);
+    const prBusy = ref(false);
+    let prOk = { period: 'week', anchor: '' };   // 最近一次成功加载的周期/锚点，失败时退回
+    function prToday() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    }
+    function prPeriodName(k) {
+      const it = PERIODS.find(x => x.key === k);
+      return it ? it.name : k;
+    }
+    function prQuery(extra) {
+      const p = new URLSearchParams();
+      p.set('period', prPeriod.value);
+      if (prAnchor.value) p.set('anchor', prAnchor.value);
+      if (extra) p.set('format', extra);
+      return '?' + p.toString();
+    }
+    async function loadPeriodReport() {
+      prBusy.value = true;
+      try {
+        prReport.value = await api('/api/insights/period-report' + prQuery());
+        if (!prAnchor.value) prAnchor.value = prToday();
+        prOk = { period: prPeriod.value, anchor: prAnchor.value };
+        insightLoaded.period = true;
+      } catch (e) {
+        toast(e.message, 'error');
+        prPeriod.value = prOk.period;
+        prAnchor.value = prOk.anchor;
+      } finally { prBusy.value = false; }
+    }
+    function changePeriod(k) { prPeriod.value = k; loadPeriodReport(); }
+    // 上一个/下一个自然区间：按周期把锚点日期平移固定步长
+    function prShift(dir) {
+      const base = prAnchor.value ? new Date(prAnchor.value + 'T00:00:00') : new Date();
+      const p = n => String(n).padStart(2, '0');
+      let y = base.getFullYear(), m = base.getMonth(), d = base.getDate();
+      switch (prPeriod.value) {
+        case 'day': d += dir; break;
+        case 'week': d += dir * 7; break;
+        case 'month': m += dir; break;
+        case 'quarter': m += dir * 3; break;
+        case 'half': m += dir * 6; break;
+        case 'year': y += dir; break;
+      }
+      const nd = new Date(y, m, d);
+      prAnchor.value = nd.getFullYear() + '-' + p(nd.getMonth() + 1) + '-' + p(nd.getDate());
+      loadPeriodReport();
+    }
+    const prBucketMax = computed(() => {
+      const r = prReport.value;
+      if (!r || !r.buckets) return 1;
+      let m = 1;
+      r.buckets.forEach(x => { m = Math.max(m, x.total || 0); });
+      return m;
+    });
+    async function openPeriodReportHTML() {
+      prBusy.value = true;
+      try {
+        const res = await fetch('/api/insights/period-report' + prQuery('html'), {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) },
+        });
+        if (res.status === 401) { localStorage.removeItem(TOKEN_KEY); authed.value = false; throw new Error('登录已过期，请重新输入 Token'); }
+        if (!res.ok) {
+          let msg = '生成失败 (' + res.status + ')';
+          try { msg = (await res.json()).error || msg; } catch (e) { /* 非 JSON */ }
+          throw new Error(msg);
+        }
+        const html = await res.text();
+        const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+        const w = window.open(url, '_blank');
+        if (!w) toast('浏览器拦截了新窗口，请允许本站弹窗后重试', 'error');
+        setTimeout(() => URL.revokeObjectURL(url), 120000);
+      } catch (e) { toast(e.message, 'error'); }
+      finally { prBusy.value = false; }
     }
 
     // ---------- 联系人时间线 ----------
@@ -1814,6 +1957,151 @@ createApp({
         sec('建议话术', r.suggestions);
       }
       copyText(lines.join('\n'));
+    }
+
+    // ---------- 关系驾驶舱（Phase 8：可信画像事实/证据 + 趋势 + 行动建议 + 回复前推演）----------
+    const ck = reactive({
+      loaded: false,
+      facts: [], factsBusy: false, factsFailed: false,
+      trend: null, trendBusy: false,
+      suggestions: [], sugBusy: false,
+      draft: '', simBusy: false, simResult: null, simFailed: false, simError: '',
+      askQ: '', askBusy: false, askResult: null, askFailed: false, askError: '',
+    });
+    const ckTrendMeta = {
+      warming: { label: '关系升温', cls: 'st-ok' },
+      cooling: { label: '关系降温', cls: 'st-warn' },
+      dormant: { label: '趋于沉寂', cls: 'st-gray' },
+      stable: { label: '平稳', cls: 'st-blue' },
+      new: { label: '新关系', cls: 'st-purple' },
+    };
+    const ckKindLabel = { cooling: '关系降温', silence: '长期沉默', no_reply: '对方消息未回' };
+    // 展开证据的事实 id 集合：用 reactive Set 模拟，命中/收起都触发重渲染
+    const ckExpanded = reactive({});
+    function ckToggleFact(id) { ckExpanded[id] = !ckExpanded[id]; }
+    function ckPct(c) { return Math.round(Math.max(0, Math.min(1, c)) * 100) + '%'; }
+
+    function loadCockpit() {
+      ck.loaded = true;
+      loadFacts(false);
+      loadTrend();
+      loadSuggestions();
+    }
+    async function loadFacts(force) {
+      const my = detailSeq;
+      const cid = route.id;
+      ck.factsBusy = true;
+      ck.factsFailed = false;
+      try {
+        let out;
+        if (force) {
+          out = await api('/api/contacts/' + cid + '/facts/rebuild', { method: 'POST' });
+        } else {
+          out = await api('/api/contacts/' + cid + '/facts');
+        }
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.facts = (out && out.facts) || [];
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.factsFailed = true; toast(e.message, 'error'); }
+      } finally { if (my === detailSeq && route.id === cid) ck.factsBusy = false; }
+    }
+    async function loadTrend() {
+      const my = detailSeq;
+      const cid = route.id;
+      ck.trendBusy = true;
+      try {
+        const out = await api('/api/contacts/' + cid + '/trend');
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.trend = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) ck.trend = null;
+      } finally { if (my === detailSeq && route.id === cid) ck.trendBusy = false; }
+    }
+    async function loadSuggestions() {
+      const my = detailSeq;
+      const cid = route.id;
+      ck.sugBusy = true;
+      try {
+        const out = await api('/api/relationships/suggestions?includeHandled=1');
+        if (my !== detailSeq || route.id !== cid) return;
+        const all = (out && out.suggestions) || [];
+        ck.suggestions = all.filter(s => s.contactId === cid);
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) ck.suggestions = [];
+      } finally { if (my === detailSeq && route.id === cid) ck.sugBusy = false; }
+    }
+    async function genSuggestions() {
+      const cid = route.id;
+      ck.sugBusy = true;
+      try {
+        await api('/api/relationships/suggestions/generate', { method: 'POST', body: { contactId: cid } });
+        if (route.id === cid) await loadSuggestions();
+        else { if (detailSeq === cid) loadSuggestions(); }
+      } catch (e) { toast(e.message, 'error'); }
+      finally { if (route.id === cid) ck.sugBusy = false; }
+    }
+    async function setSuggestionStatus(s, st) {
+      const cid = route.id;
+      try {
+        await api('/api/relationships/suggestions/' + s.id + '/status', { method: 'POST', body: { status: st } });
+        if (route.id === cid) { s.status = st; }
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function runSimulate() {
+      const text = ck.draft.trim();
+      if (!text || ck.simBusy) return;
+      const cid = route.id;
+      ck.simBusy = true;
+      ck.simFailed = false;
+      ck.simError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/rehearsal/simulate', { method: 'POST', body: { draft: text } });
+        if (route.id !== cid) return;
+        out.replies = out.replies || [];
+        ck.simResult = out;
+      } catch (e) {
+        if (route.id === cid) { ck.simFailed = true; ck.simError = e.message || '推演失败'; }
+      } finally { if (route.id === cid) ck.simBusy = false; }
+    }
+    // 问 TA 的历史：先检索相关原文，再由模型带 [n] 出处作答
+    async function askContact() {
+      const q = ck.askQ.trim();
+      if (!q || ck.askBusy) return;
+      const cid = route.id;
+      ck.askBusy = true;
+      ck.askFailed = false;
+      ck.askError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/ask', { method: 'POST', body: { question: q } });
+        if (route.id !== cid) return;
+        out.sources = out.sources || [];
+        ck.askResult = out;
+      } catch (e) {
+        if (route.id === cid) { ck.askFailed = true; ck.askError = e.message || '问答失败'; }
+      } finally { if (route.id === cid) ck.askBusy = false; }
+    }
+    // 点击出处：切到聊天记录 tab 并尝试高亮定位原文
+    async function jumpToAskSource(src) {
+      switchTab('messages');
+      if (!messages.value.length) loadMessages(false);
+      await nextTick();
+      const el = document.getElementById('msg-' + src.messageId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('msg-flash');
+        setTimeout(() => el.classList.remove('msg-flash'), 1600);
+      } else {
+        toast('该条原文可能在更早的记录里，可在聊天记录按时间翻查', 'info');
+      }
+    }
+    function resetCockpit() {
+      ck.loaded = false;
+      ck.facts = []; ck.factsBusy = false; ck.factsFailed = false;
+      ck.trend = null; ck.trendBusy = false;
+      ck.suggestions = []; ck.sugBusy = false;
+      ck.draft = ''; ck.simBusy = false; ck.simResult = null; ck.simFailed = false; ck.simError = '';
+      ck.askQ = ''; ck.askBusy = false; ck.askResult = null; ck.askFailed = false; ck.askError = '';
+      Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
     }
 
     // ---------- 待跟进事项 ----------
@@ -2062,6 +2350,7 @@ createApp({
       encPassword, impPassword, showEncPwd,
       asst, asstLoading, asstBusy, asstForm,
       loadAssistant, saveAssistantSettings, testAssistantEmail, runAssistantNow,
+      modePresets, modeSel, modeBusy, modeSaveName, loadModePresets, applyModePreset, saveModePreset, deleteModePreset,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,
@@ -2084,12 +2373,17 @@ createApp({
       social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,
       socialHourMax, socialWeekMax, fmtDur, barPct,
       report, reportYear, reportBusy, loadReport, changeReportYear, reportMonthMax, openReportHTML,
+      PERIODS, prPeriod, prAnchor, prReport, prBusy, loadPeriodReport, changePeriod, prShift, prBucketMax, openPeriodReportHTML, prPeriodName,
       // 时间线
       timeline, timelineBusy, showEventModal, eventForm, tlKind,
       loadTimeline, openEventModal, addEvent, delEvent,
       // 对话预演
       rh, rhMineCount, startRehearsal, sendRehearsal, reviewRehearsal,
       restartRehearsal, copyRehearsal,
+      // 关系驾驶舱
+      ck, ckTrendMeta, ckKindLabel, ckExpanded, ckToggleFact, ckPct,
+      loadCockpit, loadFacts, loadTrend, genSuggestions, setSuggestionStatus, runSimulate,
+      askContact, jumpToAskSource,
       // 待跟进 / 日历订阅 / 祝福草稿
       followups, followupFilter, followupBusy, showFollowupModal, followupForm,
       pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,

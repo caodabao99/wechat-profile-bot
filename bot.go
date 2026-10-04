@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,7 +96,8 @@ var (
 func isCommand(cmd string) bool {
 	switch cmd {
 	case "帮助", "help", "?", "列表", "画像", "历史", "备注", "补充", "合并",
-		"撤销合并", "合并记录", "删除", "统计", "备份", "重登", "状态", "确认删除", "改写", "草稿检查", "画像变化":
+		"撤销合并", "合并记录", "删除", "统计", "重登", "状态", "确认删除", "改写", "草稿检查", "画像变化",
+		"面板", "网址", "地址":
 		return true
 	}
 	return false
@@ -285,12 +284,12 @@ func (b *Bot) HandleMessage(msg *ILinkMessage) string {
 		return b.deleteContact(msg, args)
 	case "统计":
 		return b.showStats(args)
-	case "备份":
-		return b.backupData()
 	case "重登":
 		return b.relogin()
 	case "状态":
 		return b.status()
+	case "面板", "网址", "地址":
+		return b.webPanelURL()
 	default:
 		// 不是命令 → 当作聊天记录处理
 		return b.handleChatLog(msg, text)
@@ -345,14 +344,14 @@ func (b *Bot) helpText() string {
 【管理类】
 备注 昵称 备注内容   — 设置联系人备注
 补充 昵称 信息内容   — 手动补充画像信息（后台处理，完成后单独推送）
-备份            — 在服务器生成完整备份文件（下载/导入用网页管理界面）
 合并 新昵称 旧昵称   — 合并两个联系人（新昵称并入旧昵称）
 撤销合并 昵称       — 撤销最近一次的合并
 合并记录           — 查看合并历史
 删除 昵称           — 删除联系人及其所有数据（需再回复「确认删除 昵称」）
 
 【系统类】
-状态           — 查看登录、运行状态和服务器磁盘/内存（磁盘将满会提醒备份迁移）
+状态           — 查看登录与数据库状态（服务器磁盘/内存等资源监控请用网页管理端）
+网址           — 返回管理面板可点链接（优先用 webBaseURL；未配则探测服务器公网 IP，回退局域网）
 重登           — 重新扫码登录（会话过期时用）
 
 【提示】
@@ -853,38 +852,6 @@ func (b *Bot) showStats(args string) string {
 		displayTime(stats.FirstTime), displayTime(stats.LastTime))
 }
 
-// backupData 生成备份 zip 到数据目录。
-// 微信不能接收文件，所以这里只负责在服务器上落盘；下载/导入通过网页管理界面完成。
-func (b *Bot) backupData() string {
-	zipPath, cleanup, err := BuildBackupZip(b.db, dataDir(), botSidecarFiles)
-	if err != nil {
-		slog.Error("生成备份失败", "err", err)
-		LogBackupAction(b.db, "export", "wechat", "", 0, err.Error(), false)
-		return "生成备份失败: " + err.Error()
-	}
-	defer cleanup()
-
-	dest := filepath.Join(dataDir(), BackupFileName(time.Now()))
-	if err := copyFile(zipPath, dest); err != nil {
-		LogBackupAction(b.db, "export", "wechat", filepath.Base(dest), 0, err.Error(), false)
-		return "写入备份文件失败: " + err.Error()
-	}
-	fi, _ := os.Stat(dest)
-	var size int64
-	sizeKB := ""
-	if fi != nil {
-		size = fi.Size()
-		sizeKB = fmt.Sprintf("（%.1f MB）", float64(size)/1024/1024)
-	}
-	LogBackupAction(b.db, "export", "wechat", filepath.Base(dest), size, "", true)
-	return fmt.Sprintf(
-		"备份已生成%s\n%s\n\n换服务器/迁移时：\n"+
-			"1. 在网页管理界面（http://服务器IP:端口/）的「备份」页可直接下载和导入\n"+
-			"2. 或从服务器复制该文件，到新机器后用网页端导入\n"+
-			"备份含全部聊天/画像数据及配置、微信登录凭据，导入后配置类文件需重启服务生效",
-		sizeKB, dest)
-}
-
 func (b *Bot) relogin() string {
 	b.client.ResetSession()
 	return "已重置会话，请重启程序后重新扫码登录"
@@ -906,12 +873,36 @@ func (b *Bot) status() string {
 		dbStatus = "异常: " + err.Error()
 	}
 
-	// 服务器资源（重点是数据盘剩余空间），让用户能在微信里提前发现磁盘将满，
-	// 赶在写满前备份并迁移服务器。
-	sysBlock := CollectSysInfo(filepath.Dir(dbPath())).WeChatServerBlock()
+	// 只保留登录/会话/数据库概览（随身判断是否需要「重登」所用）；
+	// 服务器磁盘/内存等资源监控属运维层，已改由网页端仪表盘展示。
+	return fmt.Sprintf("运行状态\n登录状态: %s\nBot ID: %s\n用户 ID: %s\n数据库: %s",
+		status, b.client.GetBotID(), b.client.GetUserID(), dbStatus)
+}
 
-	return fmt.Sprintf("运行状态\n登录状态: %s\nBot ID: %s\n用户 ID: %s\n数据库: %s%s",
-		status, b.client.GetBotID(), b.client.GetUserID(), dbStatus, sysBlock)
+// webPanelURL 回一条含可点链接的文本，供微信里直接打开管理面板。
+// 优先 config.json 的 webBaseURL；未配置则探测服务器公网出口 IP（适配云端部署），
+// 公网探测不可用才回退局域网。只回地址、不附 Token；面板自身有 Bearer + 2FA 保护。
+func (b *Bot) webPanelURL() string {
+	url, source, err := WebPanelURL(b.cfg)
+	if err != nil {
+		return "暂时无法确定面板地址：" + err.Error()
+	}
+	port := b.cfg.APIPort
+	if port <= 0 {
+		port = 17965
+	}
+	var sb strings.Builder
+	sb.WriteString("管理面板地址：" + url + "\n")
+	switch source {
+	case panelSourceConfig:
+		sb.WriteString("（来自 config.json 的 webBaseURL。）\n")
+	case panelSourcePublic:
+		fmt.Fprintf(&sb, "（这是自动探测到的服务器公网地址。从外网打开需你在云主机安全组/防火墙放行 %d 端口，或在路由器做端口映射；跨公网建议给 webBaseURL 配 https 域名，以免微信内置浏览器告警。）\n", port)
+	default: // panelSourceLAN：公网探测不可用时的兵底
+		sb.WriteString("（未能探测到公网 IP，上面是局域网地址，仅与服务器同一 WiFi/内网时可打开。外网直开请在 config.json 配置 webBaseURL 为你的可达地址。）\n")
+	}
+	sb.WriteString("打开后需输入 API Token 登录（面板已受 Token + 2FA 保护）。")
+	return sb.String()
 }
 
 // handleChatLog 处理粘贴的聊天记录（复用 ingestAndStore 核心逻辑）

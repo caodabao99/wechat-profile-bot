@@ -185,6 +185,7 @@
         <a :class="{active: detailTab==='stats'}" @click.prevent="switchTab('stats')" href="#">统计</a>
         <a :class="{active: detailTab==='timeline'}" @click.prevent="switchTab('timeline')" href="#">时间线</a>
         <a :class="{active: detailTab==='rehearsal'}" @click.prevent="switchTab('rehearsal')" href="#">预演</a>
+        <a :class="{active: detailTab==='cockpit'}" @click.prevent="switchTab('cockpit')" href="#">驾驶舱</a>
       </nav>
 
       <div class="card section" v-if="contact && contact.id === route.id && detailTab==='assist'">
@@ -240,7 +241,7 @@
 
       <!-- 消息 -->
       <div v-if="contact && detailTab==='messages'">
-        <div class="msg-row" v-for="(m, i) in messages" :key="i" :class="m.sender">
+        <div class="msg-row" v-for="(m, i) in messages" :key="i" :id="'msg-' + m.id" :class="m.sender">
           <span class="m-sender">{{ m.sender === 'me' ? '我' : '对方' }}</span>
           <div class="m-body">
             <div class="m-content">{{ m.content }}</div>
@@ -387,6 +388,120 @@
           <div v-if="rh.review.suggestions.length">
             <h3>可以这么说</h3>
             <div class="sec-lines"><p v-for="(x, i) in rh.review.suggestions" :key="i">· {{ x }}</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 关系驾驶舱（Phase 8） ============ -->
+      <div v-if="contact && detailTab==='cockpit'" class="cockpit-panel">
+        <div class="card">
+          <div class="tl-head">
+            <h2>关系趋势</h2>
+            <div>
+              <span class="chip" :class="ck.trend ? ((ckTrendMeta[ck.trend.state]||{cls:'st-gray'}).cls) : 'st-gray'" v-if="ck.trend">{{ (ckTrendMeta[ck.trend.state]||{label:ck.trend.state}).label }}</span>
+              <button class="btn ghost sm" @click="loadTrend" :disabled="ck.trendBusy">{{ ck.trendBusy ? '计算中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="empty" v-if="ck.trendBusy && !ck.trend">正在根据互动频度计算趋势…</p>
+          <p class="empty" v-else-if="!ck.trend">暂无趋势数据</p>
+          <div v-else>
+            <p class="hint block">{{ ck.trend.summary }}</p>
+            <div class="ck-metrics">
+              <div><span class="ck-num">{{ ck.trend.recent30 }}</span><span class="ck-lbl">近 30 天互动</span></div>
+              <div><span class="ck-num">{{ ck.trend.prior30 }}</span><span class="ck-lbl">前 30 天互动</span></div>
+              <div><span class="ck-num">{{ ck.trend.daysSinceLast }}</span><span class="ck-lbl">距上次(天)</span></div>
+              <div><span class="ck-num">{{ Math.round((ck.trend.meRatioRecent||0)*100) }}%</span><span class="ck-lbl">我方占比</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="tl-head">
+            <h2>下一步行动建议</h2>
+            <button class="btn sm" @click="genSuggestions" :disabled="ck.sugBusy">{{ ck.sugBusy ? '生成中…' : '生成/刷新' }}</button>
+          </div>
+          <p class="empty" v-if="!ck.suggestions.length && !ck.sugBusy">暂无建议。点“生成/刷新”根据互动变化生成。</p>
+          <div class="ck-sug" v-for="s in ck.suggestions" :key="s.id" :class="'ck-sug-'+s.status">
+            <div class="ck-sug-main">
+              <span class="chip st-warn" v-if="s.status==='open'">{{ ckKindLabel[s.kind] || s.kind }}</span>
+              <span class="chip st-gray" v-else>{{ s.status==='done' ? '已完成' : '已忽略' }} · {{ ckKindLabel[s.kind] || s.kind }}</span>
+              <span class="ck-reason">{{ s.reason }}</span>
+            </div>
+            <p class="ck-draft" v-if="s.draft">建议这样开口：{{ s.draft }}</p>
+            <div class="ck-sug-acts" v-if="s.status==='open'">
+              <button class="btn ghost xs" @click="setSuggestionStatus(s,'done')">标记完成</button>
+              <button class="btn ghost xs" @click="setSuggestionStatus(s,'dismissed')">忽略</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="tl-head">
+            <h2>可信画像 · 事实与证据</h2>
+            <button class="btn ghost sm" @click="loadFacts(true)" :disabled="ck.factsBusy">{{ ck.factsBusy ? '重建中…' : '重建' }}</button>
+          </div>
+          <p class="hint block">从画像拆出的离散事实，自动链到支撑它的真实聊天。证据越多置信度越高，点一行可展开证据。</p>
+          <p class="empty" v-if="ck.factsBusy && !ck.facts.length">正在读取事实…</p>
+          <p class="empty" v-else-if="!ck.facts.length">还没有事实。请先生成画像。</p>
+          <ul class="ck-facts" v-else>
+            <li v-for="f in ck.facts" :key="f.id">
+              <div class="ck-fact-head" @click="ckToggleFact(f.id)">
+                <span class="ck-ftype">{{ f.type }}</span>
+                <span class="ck-fkey" v-if="f.key">{{ f.key }}：</span>
+                <span class="ck-fval">{{ f.value }}</span>
+                <span class="ck-conf" :title="'置信度 ' + ckPct(f.confidence)">
+                  <i class="ck-conf-bar" :style="{width: ckPct(f.confidence)}"></i>{{ ckPct(f.confidence) }}
+                </span>
+                <span class="ck-ev-n">{{ (f.evidence||[]).length }} 证据</span>
+              </div>
+              <div class="ck-ev" v-if="ckExpanded[f.id]">
+                <p class="empty" v-if="!(f.evidence||[]).length">暂无支撑该事实的消息</p>
+                <div class="ck-ev-item" v-for="(ev, i) in (f.evidence||[])" :key="i">
+                  <span class="ck-ev-time">{{ ev.msgTime }}</span>
+                  <span class="chip st-gray" v-if="ev.archived">已归档</span>
+                  <div class="ck-ev-snip">{{ ev.snippet }}</div>
+                </div>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <h2>回复前推演 <span class="chip st-purple">AI 模拟</span></h2>
+          <p class="hint block">写好你打算发出去的一句，先看对方大概率会怎么接。这是 AI 基于画像与历史的推测，不代表真实反应。</p>
+          <textarea class="text-input" rows="2" maxlength="500" v-model="ck.draft" :disabled="ck.simBusy" placeholder="例：这周末有空吗？想约你去新开的展览馆"></textarea>
+          <button class="btn" @click="runSimulate" :disabled="ck.simBusy || !ck.draft.trim()">{{ ck.simBusy ? '推演中…' : '推演对方反应' }}</button>
+          <p class="empty" v-if="ck.simFailed && !ck.simResult">{{ ck.simError }}</p>
+          <div v-if="ck.simResult">
+            <div class="ck-sim" v-for="(r, i) in ck.simResult.replies" :key="i">
+              <span class="chip" :class="r.mood==='积极' ? 'st-ok' : (r.mood==='消极' ? 'st-bad' : 'st-gray')">{{ r.mood || '中性' }}</span>
+              <div class="ck-sim-text">「{{ r.text }}」</div>
+              <div class="ck-sim-why" v-if="r.rationale">{{ r.rationale }}</div>
+            </div>
+            <p class="hint" v-if="ck.simResult.note">{{ ck.simResult.note }}</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>问 TA 的历史 <span class="chip st-blue">检索 + AI</span></h2>
+          <p class="hint block">用大白话问关于这个人的往事（例：他上次说想去哪玩？）。系统先检索相关历史原文，再让模型带出处作答；答案只依据检索到的真实消息。</p>
+          <div class="ck-ask-bar">
+            <input class="text-input" v-model="ck.askQ" :disabled="ck.askBusy" maxlength="200" placeholder="例：她提过想看的那部电影是什么？" @keyup.enter="askContact" />
+            <button class="btn" @click="askContact" :disabled="ck.askBusy || !ck.askQ.trim()">{{ ck.askBusy ? '查找中…' : '提问' }}</button>
+          </div>
+          <p class="empty" v-if="ck.askFailed && !ck.askResult">{{ ck.askError }}</p>
+          <div v-if="ck.askResult" class="ck-ask-result">
+            <div class="ck-ask-answer">{{ ck.askResult.answer }}</div>
+            <div class="ck-ask-sources" v-if="ck.askResult.sources && ck.askResult.sources.length">
+              <div class="ck-ask-src-title">出处（点击可跳转聊天记录定位）</div>
+              <div class="ck-ask-src" v-for="s in ck.askResult.sources" :key="s.n" @click="jumpToAskSource(s)">
+                <span class="ck-ask-n">[{{ s.n }}]</span>
+                <span class="ck-ask-who">{{ s.who }}</span>
+                <span class="ck-ask-time">{{ s.msgTime }}<template v-if="s.archived"> · 已归档</template></span>
+                <div class="ck-ask-snip">{{ s.snippet }}</div>
+              </div>
+            </div>
+            <p class="hint" v-if="ck.askResult.note">{{ ck.askResult.note }}</p>
           </div>
         </div>
       </div>
@@ -573,6 +688,39 @@
       <div v-if="!asst && !asstLoading" class="card">读取失败，点右上角「刷新」重试。</div>
 
       <template v-if="asst">
+        <!-- 运行模式一键切换 -->
+        <div class="card">
+          <h3>运行模式</h3>
+          <p class="hint block">预设 = 一组运行参数（提醒/巡检开关与频率、待跟进、关系趋势灵敏度、归档天数）。选定后一键写入下方设置，切换整套运行行为。</p>
+          <div class="mode-bar">
+            <select class="text-input" v-model="modeSel">
+              <option value="">— 选择运行模式 —</option>
+              <optgroup label="内置">
+                <option v-for="p in modePresets.filter(x=>x.builtin)" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </optgroup>
+              <optgroup label="自定义" v-if="modePresets.some(x=>!x.builtin)">
+                <option v-for="p in modePresets.filter(x=>!x.builtin)" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </optgroup>
+            </select>
+            <button class="btn" @click="applyModePreset" :disabled="modeBusy || !modeSel">应用</button>
+          </div>
+          <p class="hint" v-if="modeSel && modePresets.find(p=>p.name===modeSel)">
+            {{ (modePresets.find(p=>p.name===modeSel).payload.assistant.enabled ? '主动提醒：开' : '主动提醒：关') }}
+            · 归档{{ modePresets.find(p=>p.name===modeSel).payload.archive.enabled ? ('开（保留' + modePresets.find(p=>p.name===modeSel).payload.archive.retentionDays + '天）') : '关' }}
+            · 沉寂判定 {{ modePresets.find(p=>p.name===modeSel).payload.assistant.silenceDays || 30 }} 天
+          </p>
+          <div class="mode-bar mode-save">
+            <input class="text-input" v-model="modeSaveName" maxlength="40" placeholder="把当前设置另存为预设…" />
+            <button class="btn sm" @click="saveModePreset" :disabled="modeBusy || !modeSaveName.trim()">另存为预设</button>
+          </div>
+          <ul class="mode-list" v-if="modePresets.some(p=>!p.builtin)">
+            <li v-for="p in modePresets.filter(x=>!x.builtin)" :key="p.name">
+              <span>{{ p.name }}</span>
+              <button class="btn sm ghost" @click="deleteModePreset(p)" :disabled="modeBusy">删除</button>
+            </li>
+          </ul>
+        </div>
+
         <!-- 设置 -->
         <div class="card">
           <h3>提醒设置</h3>
@@ -594,16 +742,6 @@
             <span class="st-label">每日提醒时间</span>
             <input class="text-input num-input" type="time" v-model="asstForm.dailyCheckTime">
             <span class="hint">到点聚合当天所有提醒发一封邮件，没有内容则不发</span>
-          </div>
-          <div class="asst-row">
-            <label class="check-row inline"><input type="checkbox" v-model="asstForm.weeklyReport"> 每周报告</label>
-            <select class="text-input num-input" v-model.number="asstForm.weeklyDay">
-              <option :value="0">周日</option><option :value="1">周一</option><option :value="2">周二</option>
-              <option :value="3">周三</option><option :value="4">周四</option><option :value="5">周五</option>
-              <option :value="6">周六</option>
-            </select>
-            <input class="text-input num-input" type="time" v-model="asstForm.weeklyTime">
-            <span class="hint">互动统计 + 亲密度 + 情绪速览</span>
           </div>
           <div class="asst-row">
             <label class="check-row inline"><input type="checkbox" v-model="asstForm.emotionAlert"> 情绪预警</label>
@@ -786,7 +924,6 @@
           <h3>手动运行</h3>
           <div class="asst-row">
             <button class="btn sm" @click="runAssistantNow('daily')" :disabled="!!asstBusy">{{ asstBusy==='daily' ? '启动中…' : '立即执行每日提醒' }}</button>
-            <button class="btn sm" @click="runAssistantNow('weekly')" :disabled="!!asstBusy">{{ asstBusy==='weekly' ? '启动中…' : '立即生成每周报告' }}</button>
             <span class="hint">需已启用助手并保存 SMTP；任务在后台执行，完成后刷新本页查看</span>
           </div>
           <div class="backup-log-section" v-if="(asst.runs || []).length">
@@ -827,6 +964,7 @@
       <nav class="subtabs">
         <a href="#" :class="{active: insightTab==='search'}" @click.prevent="switchInsight('search')">聊天记录搜索</a>
         <a href="#" :class="{active: insightTab==='report'}" @click.prevent="switchInsight('report')">年度报告</a>
+        <a href="#" :class="{active: insightTab==='period'}" @click.prevent="switchInsight('period')">周期报告</a>
         <a href="#" :class="{active: insightTab==='social'}" @click.prevent="switchInsight('social')">社交大盘</a>
         <a href="#" :class="{active: insightTab==='dup'}" @click.prevent="switchInsight('dup')">重复联系人</a>
       </nav>
@@ -984,6 +1122,104 @@
         </div>
       </template>
 
+      <!-- ---- 多周期报告（日/周/月/季/半年/年） ---- -->
+      <template v-if="insightTab==='period'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>周期报告</h2>
+            <div class="lh-actions">
+              <button class="btn sm" @click="prShift(-1)" :disabled="prBusy" title="上一区间">‹</button>
+              <input class="text-input" type="date" v-model="prAnchor" :disabled="prBusy" @change="loadPeriodReport">
+              <button class="btn sm" @click="prShift(1)" :disabled="prBusy" title="下一区间">›</button>
+              <button class="btn sm" @click="loadPeriodReport" :disabled="prBusy">{{ prBusy ? '生成中…' : '刷新' }}</button>
+              <button class="btn sm primary" @click="openPeriodReportHTML" :disabled="prBusy">生成可分享长页</button>
+            </div>
+          </div>
+          <div class="lh-actions" style="flex-wrap:wrap;gap:6px;margin:6px 0 4px">
+            <button class="btn ghost xs" v-for="p in PERIODS" :key="p.key"
+                    :class="{on: p.key === prPeriod}" :disabled="prBusy" @click="changePeriod(p.key)">{{ p.name }}</button>
+          </div>
+          <p class="hint block">选择周期，再用 ‹ / › 或日期选择器切换到任意区间；「生成可分享长页」会在新标签页打开排版好的完整报告。</p>
+
+          <template v-if="prReport">
+            <p class="hint block" v-if="prReport.truncated">数据量较大，统计做了截断，数字仅供参考。</p>
+            <div class="insight-grid">
+              <div class="ins-cell"><b>{{ prReport.totalMessages }}</b><span>区间消息</span></div>
+              <div class="ins-cell"><b>{{ prReport.myMessages }}</b><span>我发出</span></div>
+              <div class="ins-cell"><b>{{ prReport.theirMessages }}</b><span>对方发出</span></div>
+              <div class="ins-cell"><b>{{ prReport.activeContacts }}</b><span>聊过的人数</span></div>
+              <div class="ins-cell"><b>{{ prReport.activeDays }}</b><span>有聊天的天数</span></div>
+              <div class="ins-cell"><b>{{ prReport.newContacts }}</b><span>新增联系人</span></div>
+            </div>
+
+            <div class="insight-block">
+              <h4>{{ prReport.title }} · {{ prPeriodName(prReport.period) }}</h4>
+              <div class="stat-row" v-if="prReport.busiestBucketLabel"><span class="st-label">最忙碌的时段</span><span class="st-val">{{ prReport.busiestBucketLabel }}（{{ prReport.busiestBucketCount }} 条）</span></div>
+              <p class="empty" v-if="!prReport.totalMessages">这个区间还没有聊天数据，换个周期或日期试试</p>
+            </div>
+
+            <div class="insight-block" v-if="(prReport.buckets || []).length">
+              <h4>时间分布</h4>
+              <div class="bar-list">
+                <div class="bar-row" v-for="(b, i) in prReport.buckets" :key="i">
+                  <span class="bar-name">{{ b.label }}</span>
+                  <span class="bar"><i class="bar-fill" :style="{width: barPct(b.total, prBucketMax)}"></i></span>
+                  <span class="bar-num">{{ b.total }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(prReport.topContacts || []).length">
+              <h4>聊得最多的人</h4>
+              <table class="backup-log-table">
+                <thead><tr><th>联系人</th><th>合计</th><th>我</th><th>对方</th><th>最后聊天</th></tr></thead>
+                <tbody>
+                  <tr v-for="t in prReport.topContacts" :key="t.contactId">
+                    <td><a href="#" @click.prevent="gotoDetail(t.contactId)">{{ t.name }}</a></td>
+                    <td>{{ t.total }}</td><td>{{ t.mine }}</td><td>{{ t.theirs }}</td>
+                    <td>{{ t.lastMsgTime || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="insight-block" v-if="prReport.emotionAvailable && (prReport.emotions || []).length">
+              <h4>情绪走势（均值分，5 分为中性）</h4>
+              <div class="bar-list">
+                <div class="bar-row" v-for="(em, i) in prReport.emotions" :key="i">
+                  <span class="bar-name">{{ em.label }}</span>
+                  <span class="bar"><i class="bar-fill" :class="em.score >= 5 ? 'fill-ok' : 'fill-warn'"
+                        :style="{width: barPct(em.score, 10)}"></i></span>
+                  <span class="bar-num">{{ (em.score || 0).toFixed(1) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(prReport.keywords || []).length">
+              <h4>高频词</h4>
+              <div class="tag-bar">
+                <span class="tag-chip" v-for="k in prReport.keywords" :key="k.phrase">{{ k.phrase }}<em>{{ k.count }}</em></span>
+              </div>
+            </div>
+
+            <div class="insight-block" v-if="(prReport.events || []).length">
+              <h4>大事记</h4>
+              <ul class="tl-list">
+                <li v-for="(e, i) in prReport.events" :key="i" class="tl-record">
+                  <div class="tl-time">{{ e.date }}</div>
+                  <div class="tl-body">
+                    <span class="tag tag-gray">{{ tlKind(e.kind) || e.kind }}</span>
+                    <strong>{{ e.title }}</strong>
+                    <p class="hint" v-if="e.detail">{{ e.detail }}</p>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </template>
+          <p class="empty" v-else>{{ prBusy ? '正在生成…' : '选择周期与日期，生成报告' }}</p>
+        </div>
+      </template>
+
       <!-- ---- 社交大盘 ---- -->
       <template v-if="insightTab==='social'">
         <div class="card">
@@ -1024,7 +1260,7 @@
                   <em>{{ h.hour }}</em>
                 </div>
               </div>
-              <p class="hint block"><i class="lg lg-mine"></i>我发出　<i class="lg lg-theirs"></i>对方发出</p>
+              <p class="hint block"><i class="swatch lg-mine"></i>我发出　<i class="swatch lg-theirs"></i>对方发出</p>
             </div>
 
             <div class="insight-block" v-if="(social.weekday || []).length">

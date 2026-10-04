@@ -1,7 +1,7 @@
 package main
 
 // 关系助手（网页端增值功能）：重要日子提醒、冷却联系人、亲密度评分、
-// 情绪预警（LLM）、每日提醒邮件、每周报告邮件。
+// 情绪预警（LLM）、每日提醒邮件。
 //
 // 设计原则——对现有功能零侵入：
 //   - 全部逻辑在本文件 + assistant_api.go + mailer.go，现有文件只加路由分发和启动调用
@@ -31,13 +31,15 @@ type AssistantSettings struct {
 	DailyCheckTime      string        `json:"dailyCheckTime"`      // "08:00"
 	BirthdayAdvanceDays int           `json:"birthdayAdvanceDays"` // 重要日子提前几天提醒
 	CoolingDays         int           `json:"coolingDays"`         // 超过 N 天无互动算冷却
-	WeeklyReport        bool          `json:"weeklyReport"`
-	WeeklyDay           int           `json:"weeklyDay"`  // 0=周日 … 6=周六
-	WeeklyTime          string        `json:"weeklyTime"` // "20:00"
 	EmotionAlert        bool          `json:"emotionAlert"`
 	EmotionDailyMax     int           `json:"emotionDailyMax"` // 每日最多分析几个联系人（控制 LLM 花费）
 	RemindBirthday      bool          `json:"remindBirthday"`
 	RemindCooling       bool          `json:"remindCooling"`
+
+	// ---- 关系趋势阈值（运行模式预设可切换；读不到时保持旧的硬编码行为） ----
+	SilenceDays     int `json:"silenceDays"`     // 距上次互动 >= 该天数判定「沉寂」（旧硬编码 30）
+	CoolingMinPrior int `json:"coolingMinPrior"` // 降温判定要求前期至少这么多互动（旧硬编码 5）
+	WarmingMinPrior int `json:"warmingMinPrior"` // 升温判定要求前期至少这么多互动（旧硬编码 3）
 
 	// ---- 增值功能（默认关闭，老配置读不到这些字段时保持零值/默认值，行为不变） ----
 	RemindFollowup     bool   `json:"remindFollowup"`     // 每日邮件是否附「待跟进」板块
@@ -52,9 +54,10 @@ func defaultAssistantSettings() AssistantSettings {
 	return AssistantSettings{
 		Enabled: false, SMTP: AssistantSMTP{Port: 465, SSL: true},
 		DailyCheckTime: "08:00", BirthdayAdvanceDays: 3, CoolingDays: 7,
-		WeeklyReport: true, WeeklyDay: 0, WeeklyTime: "20:00",
 		EmotionAlert: true, EmotionDailyMax: 10,
 		RemindBirthday: true, RemindCooling: true,
+		// 关系趋势阈值：与旧硬编码一致（沉寂 30 天、降温前期≥5、升温前期≥3）
+		SilenceDays: 30, CoolingMinPrior: 5, WarmingMinPrior: 3,
 		// 待跟进/祝福语都要花模型钱，默认关闭，由用户主动打开
 		RemindFollowup: true, FollowupEnabled: false, FollowupDailyMax: 8,
 		FollowupWindowDays: 30, BlessingDraft: false,
@@ -69,17 +72,20 @@ func (s *AssistantSettings) normalize() {
 	if s.CoolingDays <= 0 || s.CoolingDays > 365 {
 		s.CoolingDays = 7
 	}
+	if s.SilenceDays <= 0 || s.SilenceDays > 365 {
+		s.SilenceDays = 30
+	}
+	if s.CoolingMinPrior <= 0 || s.CoolingMinPrior > 1000 {
+		s.CoolingMinPrior = 5
+	}
+	if s.WarmingMinPrior <= 0 || s.WarmingMinPrior > 1000 {
+		s.WarmingMinPrior = 3
+	}
 	if s.EmotionDailyMax <= 0 || s.EmotionDailyMax > 50 {
 		s.EmotionDailyMax = 10
 	}
-	if s.WeeklyDay < 0 || s.WeeklyDay > 6 {
-		s.WeeklyDay = 0
-	}
 	if !validHHMM(s.DailyCheckTime) {
 		s.DailyCheckTime = "08:00"
-	}
-	if !validHHMM(s.WeeklyTime) {
-		s.WeeklyTime = "20:00"
 	}
 	if s.SMTP.Port <= 0 {
 		s.SMTP.Port = 465
@@ -182,19 +188,31 @@ func loadAssistantSettings(db *sql.DB) (AssistantSettings, error) {
 	return s, nil
 }
 
-func saveAssistantSettings(db *sql.DB, s AssistantSettings) error {
+// sqlExec 抽象 *sql.DB 与 *sql.Tx 共同的 Exec 方法，便于把写操作抽成
+// 可在事务内复用的核心（应用预设时两张设置表需在同一事务里原子写入）。
+type sqlExec interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+// writeAssistantSettings 只做 UPSERT 本身，不加锁、不开事务；
+// 调用方负责持有 dbMu 或提供事务，以支持多表原子写。
+func writeAssistantSettings(ex sqlExec, s AssistantSettings) error {
 	s.normalize()
 	data, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	dbMu.Lock()
-	defer dbMu.Unlock()
-	_, err = db.Exec(
+	_, err = ex.Exec(
 		`INSERT INTO assistant_settings (id, settings_json, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = CURRENT_TIMESTAMP`,
 		string(data))
 	return err
+}
+
+func saveAssistantSettings(db *sql.DB, s AssistantSettings) error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	return writeAssistantSettings(db, s)
 }
 
 // ---------- 重要日子解析 ----------
@@ -256,19 +274,39 @@ func parseImportantDate(raw string) (month, day int, isBirthday bool, ok bool) {
 	return 0, 0, isBirthday, false
 }
 
-// daysUntilNext 计算 month/day 相对 now 的下一次发生日期与相隔天数（今天=0）
+// daysUntilNext 计算 month/day 相对 now 的下一次发生日期与相隔天数（今天=0）。
+//
+// 相隔天数按「民用日历日」计算：把两端都归一到各自 UTC 正午再取整天差，
+// 绝不用 now.Location() 下 time.Sub().Hours()/24——那种算法在有夏令时的时区
+// 会因切换日只有 23/25 小时而把天数算错一天（Asia/Shanghai 无 DST 才恰好没暴露）。
 func daysUntilNext(now time.Time, month, day int) (int, time.Time) {
-	candidate := func(year int) (time.Time, bool) {
-		t := time.Date(year, time.Month(month), day, 0, 0, 0, 0, now.Location())
+	candidate := func(year, m, d int) (time.Time, bool) {
+		t := time.Date(year, time.Month(m), d, 0, 0, 0, 0, now.Location())
 		// time.Date 会把 2/30 这类非法日期滚到 3 月，滚了就说明今年没有这一天
-		return t, t.Month() == time.Month(month) && t.Day() == day
+		return t, t.Month() == time.Month(m) && t.Day() == d
+	}
+	civilDays := func(a, b time.Time) int {
+		an := time.Date(a.Year(), a.Month(), a.Day(), 12, 0, 0, 0, time.UTC)
+		bn := time.Date(b.Year(), b.Month(), b.Day(), 12, 0, 0, 0, time.UTC)
+		return int(bn.Sub(an).Hours() / 24)
 	}
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	if t, ok := candidate(now.Year()); ok && !t.Before(today) {
-		return int(t.Sub(today).Hours() / 24), t
+
+	d, ok := candidate(now.Year(), month, day)
+	if !ok && month == 2 && day == 29 {
+		// 闰年生日（2/29）在平年不存在：回退到 2/28，而不是把这个人连续 3 年静默丢弃
+		d, ok = candidate(now.Year(), 2, 28)
 	}
-	if t, ok := candidate(now.Year() + 1); ok {
-		return int(t.Sub(today).Hours() / 24), t
+	if ok && !d.Before(today) {
+		return civilDays(today, d), d
+	}
+
+	d2, ok2 := candidate(now.Year()+1, month, day)
+	if !ok2 && month == 2 && day == 29 {
+		d2, ok2 = candidate(now.Year()+1, 2, 28)
+	}
+	if ok2 {
+		return civilDays(today, d2), d2
 	}
 	return -1, time.Time{} // 2月30日之类根本不存在的日期
 }
@@ -739,65 +777,7 @@ func buildDailyEmailHTML(now time.Time, dates []AssistantDateItem, cooling []Ass
 	return b.String()
 }
 
-func buildWeeklyEmailHTML(now time.Time, top, intimacy []AssistantIntimacyItem, cooling []AssistantCoolingItem, dates []AssistantDateItem, emotions []map[string]interface{}, msgCount7d int) string {
-	b := &strings.Builder{}
-	b.WriteString(emailHeader("每周关系报告 · " + now.Format("2006年01月02日")))
-	b.WriteString(fmt.Sprintf(`<p>本周共产生 <b>%d</b> 条新消息。</p>`, msgCount7d))
-
-	if len(top) > 0 {
-		b.WriteString(`<h3>🔥 本周互动最多</h3><ol style="line-height:1.9;">`)
-		for _, t := range top {
-			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %d 条消息，%d 天有互动，亲密度 %d</li>`,
-				html.EscapeString(t.Name), t.Mine+t.Other, t.Days, t.Score))
-		}
-		b.WriteString(`</ol>`)
-	}
-	if len(intimacy) > 0 {
-		b.WriteString(`<h3>💞 亲密度 Top5（近 30 天）</h3><ol style="line-height:1.9;">`)
-		for i, it := range intimacy {
-			if i >= 5 {
-				break
-			}
-			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %d 分</li>`, html.EscapeString(it.Name), it.Score))
-		}
-		b.WriteString(`</ol>`)
-	}
-	if len(cooling) > 0 {
-		b.WriteString(`<h3>🕐 最久没联系</h3><ol style="line-height:1.9;">`)
-		for i, c := range cooling {
-			if i >= 5 {
-				break
-			}
-			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %d 天</li>`, html.EscapeString(c.Name), c.Days))
-		}
-		b.WriteString(`</ol>`)
-	}
-	if len(dates) > 0 {
-		b.WriteString(`<h3>📅 下周重要日子</h3><ul style="line-height:1.9;">`)
-		for _, d := range dates {
-			b.WriteString(fmt.Sprintf(`<li>%s（%s）— %d月%d日，%d 天后</li>`,
-				html.EscapeString(d.Name), html.EscapeString(d.Kind), d.Month, d.Day, d.DaysUntil))
-		}
-		b.WriteString(`</ul>`)
-	}
-	if len(emotions) > 0 {
-		b.WriteString(`<h3>💬 情绪速览</h3><ul style="line-height:1.9;">`)
-		for _, e := range emotions {
-			mark := ""
-			if e["alert"] == true {
-				mark = ` <span style="color:#e64340;">⚠ 需要关心</span>`
-			}
-			b.WriteString(fmt.Sprintf(`<li><b>%s</b> — %s（%v/100）：%s%s</li>`,
-				html.EscapeString(fmt.Sprint(e["name"])), html.EscapeString(fmt.Sprint(e["emotion"])),
-				e["score"], html.EscapeString(fmt.Sprint(e["summary"])), mark))
-		}
-		b.WriteString(`</ul>`)
-	}
-	b.WriteString(emailFooter)
-	return b.String()
-}
-
-// ---------- 每日检查 / 每周报告 ----------
+// ---------- 每日检查 ----------
 
 // logEmail 记录发送结果
 func logEmail(db *sql.DB, kind, subject, recipient, status, errMsg string) {
@@ -994,129 +974,82 @@ func emotionAnalysisTargets(db *sql.DB, now time.Time, withinDays, limit int) []
 	return out
 }
 
-// runWeeklyReport 每周报告：本周消息量、互动最多、亲密度 Top5、最久没联系、
-// 下周重要日子、情绪速览，聚合成一封邮件。
-func runWeeklyReport(db *sql.DB, llm *LLMClient, now time.Time, force bool) (string, error) {
-	s, err := loadAssistantSettings(db)
-	if err != nil {
-		return "", err
-	}
-	if !s.Enabled {
-		return "", fmt.Errorf("关系助手未启用")
-	}
-	today := now.Format("2006-01-02")
-	runKind := "weekly"
-	if force {
-		runKind = "weekly-manual"
-		dbMu.Lock()
-		db.Exec(`INSERT OR REPLACE INTO assistant_runs (kind, run_date) VALUES (?, ?)`, runKind, today)
-		dbMu.Unlock()
-	} else if !tryClaimRun(db, runKind, today) {
-		return "本周报告今天已经生成过", nil
-	}
-
-	weekAgo := now.AddDate(0, 0, -7)
-	intimacy30, err := computeIntimacy(db, now, 30)
-	if err != nil {
-		return "", err
-	}
-	// 本周互动最多：用近 7 天窗口单独算
-	top7, err := intimacyWindowTop(db, now, 7, 5)
-	if err != nil {
-		slog.Warn("关系助手：周榜统计失败", "err", err)
-	}
-	cooling, _ := collectCoolingContacts(db, now, s.CoolingDays)
-	dates, _, _ := collectUpcomingDates(db, now, 7)
-	emotions, _ := recentEmotions(db, now, 7)
-
-	msgCount7d := countMessagesSince(db, weekAgo)
-
-	subject := fmt.Sprintf("【每周关系报告】%s：本周 %d 条消息", now.Format("1月2日"), msgCount7d)
-	body := buildWeeklyEmailHTML(now, top7, intimacy30, cooling, dates, emotions, msgCount7d)
-	err = sendAssistantMail(s.SMTP, subject, body)
-	status := "ok"
-	errMsg := ""
-	if err != nil {
-		status, errMsg = "fail", err.Error()
-		slog.Error("关系助手：每周报告邮件发送失败", "err", err)
-	}
-	logEmail(db, "weekly", subject, strings.Join(recipients(s.SMTP.To), ","), status, errMsg)
-	detail := fmt.Sprintf("本周消息 %d 条，邮件%s", msgCount7d, status)
-	updateRunDetail(db, runKind, today, detail)
-	return detail, err
-}
-
-// intimacyWindowTop 近 windowDays 天消息数最多的前 limit 个联系人
-func intimacyWindowTop(db *sql.DB, now time.Time, windowDays, limit int) ([]AssistantIntimacyItem, error) {
-	all, err := computeIntimacy(db, now, windowDays)
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Mine+all[i].Other > all[j].Mine+all[j].Other })
-	if len(all) > limit {
-		all = all[:limit]
-	}
-	return all, nil
-}
-
-func countMessagesSince(db *sql.DB, since time.Time) int {
-	dbMu.Lock()
-	defer dbMu.Unlock()
-	var n int
-	err := db.QueryRow(`SELECT COUNT(*) FROM messages
-		WHERE msg_time IS NOT NULL AND msg_time != '' AND strftime('%s', msg_time) >= strftime('%s', ?)`,
-		since.Format(time.RFC3339)).Scan(&n)
-	if err != nil {
-		return 0
-	}
-	return n
-}
-
 // ---------- 定时调度 ----------
 
-// startAssistantScheduler 启动后台定时任务。每 30 秒醒一次，仅在
-// 「启用 && 当前 HH:MM 命中配置时间 && 今天未跑过」时才真正执行，
-// panic 全部 recover，绝不影响主服务。
+// startAssistantScheduler 启动后台定时任务。每 30 秒醒一次，检查是否到点该跑
+// 每日检查。每日检查在独立 goroutine 中执行：一次耗时很长
+// 的每日检查（内含多联系人 LLM 情绪分析，可达数分钟）不会阻塞 ticker。
+// 触发判定为「到点即触发 + 按天/进程内抢占」，服务在计划时间之后重启也能当天补跑一次。
 func startAssistantScheduler(db *sql.DB, llm *LLMClient) {
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
+		// 进程内记录当天是否已就该任务尝试过，避免触发时间之后每 30 秒空跑一次；
+		// 真正的去重仍以 DB 抢占（tryClaimRun）为准，所以重启后仍能补跑。
+		var lastDaily string
 		for range ticker.C {
+			// 每轮单独 recover：即便某一轮 checkAssistantSchedule 意外 panic（如配置读取路径），
+			// 也不能让本 goroutine 永久退出、导致助手调度从此不再触发。
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						slog.Error("关系助手定时任务异常", "panic", r)
+						slog.Error("关系助手调度周期异常，已恢复（下一周期继续）", "panic", r)
 					}
 				}()
-				checkAssistantSchedule(db, llm, time.Now())
+				lastDaily = checkAssistantSchedule(db, llm, time.Now(), lastDaily)
 			}()
 		}
 	}()
 	slog.Info("关系助手定时任务已启动（默认关闭，网页端「关系助手」页可开启）")
 }
 
-func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time) {
+// atOrAfter 判断 now 是否已到今天的 hhmm 时刻（含）。hhmm 非法时返回 false。
+func atOrAfter(now time.Time, hhmm string) bool {
+	parts := strings.Split(strings.TrimSpace(hhmm), ":")
+	if len(parts) != 2 {
+		return false
+	}
+	h, err1 := strconv.Atoi(parts[0])
+	m, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return false
+	}
+	target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+	return !now.Before(target)
+}
+
+// safeAssistantTask 在独立 goroutine 里跑一个助手任务，panic 全部 recover，
+// 绝不影响主服务与其它定时任务。
+func safeAssistantTask(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("关系助手定时任务异常", "task", name, "panic", r)
+		}
+	}()
+	fn()
+}
+
+// checkAssistantSchedule 每个 ticker 周期调用一次，返回更新后的 lastDaily。
+func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily string) string {
 	s, err := loadAssistantSettings(db)
 	if err != nil {
 		slog.Warn("关系助手配置读取失败", "err", err)
-		return
+		return lastDaily
 	}
 	if !s.Enabled {
-		return
+		return lastDaily
 	}
-	hhmm := now.Format("15:04")
-	if hhmm == s.DailyCheckTime {
-		if summary, err := runDailyCheck(db, llm, now, false); err != nil {
-			slog.Error("关系助手每日检查失败", "err", err)
-		} else {
-			slog.Info("关系助手每日检查完成", "result", summary)
-		}
+	today := now.Format("2006-01-02")
+
+	if atOrAfter(now, s.DailyCheckTime) && lastDaily != today {
+		lastDaily = today
+		go safeAssistantTask("每日检查", func() {
+			if summary, err := runDailyCheck(db, llm, now, false); err != nil {
+				slog.Error("关系助手每日检查失败", "err", err)
+			} else {
+				slog.Info("关系助手每日检查完成", "result", summary)
+			}
+		})
 	}
-	if s.WeeklyReport && int(now.Weekday()) == s.WeeklyDay && hhmm == s.WeeklyTime {
-		if summary, err := runWeeklyReport(db, llm, now, false); err != nil {
-			slog.Error("关系助手每周报告失败", "err", err)
-		} else {
-			slog.Info("关系助手每周报告完成", "result", summary)
-		}
-	}
+	return lastDaily
 }

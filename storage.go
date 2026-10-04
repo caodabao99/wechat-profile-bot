@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -44,7 +45,10 @@ type ContactStats struct {
 
 // InitDB 打开（不存在则创建）SQLite 数据库并建表
 func InitDB(path string) (*sql.DB, error) {
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	// WAL 下 synchronous=NORMAL 既安全又显著降低写盘放大；temp_store=MEMORY、
+	// cache_size(-8000≈8MB) 属保守调优，不会在低内存机器上造成问题。
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
+		"&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-8000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -287,6 +291,192 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 8 {
+		// v8: 数据库性能升级。为 messages 新增 msg_unix（Unix 秒），并建立覆盖
+		// “按联系人 + 时间/分页” 常见查询的复合索引；旧数据分批回填，避免一个超长事务。
+		//
+		// 归档表 messages_archive 的同类列在 ensureArchiveTables 里维护：migrate() 早于
+		// 它执行，此刻归档表可能尚不存在，不能在这里建归档索引/列。
+		//
+		// 幂等：列存在则跳过 ALTER；回填只处理 msg_unix IS NULL 的行，重复启动不会重复全表扫描。
+		// 任一步失败都在 PRAGMA user_version=8 之前返回，下次启动整体重跑，不留半升级状态。
+		var colCount int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='msg_unix'`).
+			Scan(&colCount); err != nil {
+			return err
+		}
+		if colCount == 0 {
+			if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN msg_unix INTEGER`); err != nil {
+				return err
+			}
+		}
+		if err := backfillMsgUnix(db, "messages"); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_messages_contact_id ON messages(contact_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_messages_contact_unix ON messages(contact_id, msg_unix DESC, id DESC)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 8`); err != nil {
+			return err
+		}
+	}
+	if version < 9 {
+		// v9: 全文搜索升级。为 messages 建立 external-content FTS5(trigram) 索引 + 同步触发器，
+		// 并一次性 rebuild 回填历史数据。归档表 messages_archive 的同类索引在 ensureArchiveTables
+		// 里维护（migrate() 早于它执行，此刻归档表可能尚不存在）。
+		//
+		// FTS 建立失败（极端情况：驱动不支持/虚表损坏）绝不让启动整体失败：只告警、把可用性
+		// 开关置为降级，搜索自动退回 LIKE。无论成功与否都推进 user_version，避免每次启动重复
+		// 尝试 rebuild 造成全表扫描（可用管理端「重建索引」接口手动重试）。
+		ensureFTSFor(db, "messages", &ftsMessagesEnabled)
+		if _, err := db.Exec(`PRAGMA user_version = 9`); err != nil {
+			return err
+		}
+	}
+	if version < 10 {
+		// v10: 可信画像——把画像 JSON 里的离散断言（职业/城市/兴趣/重要日子/性格/重要事实/口头禅/亲密度）
+		// 拆成结构化事实，供证据链与人工校对。status 取 active/retired：画像更新后不再出现的旧事实
+		// 不删除而是标 retired，保留其历史与证据（可信度溯源不能断层）。幂等。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS profile_facts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			fact_type TEXT NOT NULL,
+			fact_key TEXT NOT NULL DEFAULT '',
+			fact_value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'profile',
+			confidence REAL NOT NULL DEFAULT 0.6,
+			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),
+			first_seen TEXT NOT NULL DEFAULT '',
+			last_seen TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(contact_id, fact_type, fact_key, fact_value)
+		)`); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_profile_facts_contact ON profile_facts(contact_id, status)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 10`); err != nil {
+			return err
+		}
+	}
+	if version < 11 {
+		// v11: 证据链——把每条事实链到支撑它的消息（含归档，archived 标记来源表）。
+		// 外键 ON DELETE CASCADE：事实被硬删时证据跟着没；日常事实只标 retired，证据保留。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS profile_fact_evidence (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			fact_id INTEGER NOT NULL REFERENCES profile_facts(id) ON DELETE CASCADE,
+			contact_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			archived INTEGER NOT NULL DEFAULT 0,
+			snippet TEXT NOT NULL DEFAULT '',
+			msg_time TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(fact_id, message_id, archived)
+		)`); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_fact_evidence_fact ON profile_fact_evidence(fact_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_fact_evidence_contact ON profile_fact_evidence(contact_id)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 11`); err != nil {
+			return err
+		}
+	}
+	if version < 12 {
+		// v12: 关系变化检测——按联系人×自然日聚合互动量，为升温/降温预警提供不依赖 LLM 的硬数据。
+		// 可随时从 messages 全量重建（RebuildDailyMetrics），故不需外键约束、不必入备份（派生数据）。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS relationship_daily_metrics (
+			contact_id INTEGER NOT NULL,
+			day TEXT NOT NULL,
+			me_count INTEGER NOT NULL DEFAULT 0,
+			other_count INTEGER NOT NULL DEFAULT 0,
+			first_unix INTEGER NOT NULL DEFAULT 0,
+			last_unix INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(contact_id, day)
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 12`); err != nil {
+			return err
+		}
+	}
+	if version < 13 {
+		// v13: 下一步行动建议——由规则引擎（冷却/生日/未回/待跟进）产出，draft 可选地由 LLM 填充。
+		// window_key 做幂等锁：同一联系同类同窗口不重复生成（例 cooling:2026-10）。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS relationship_action_suggestions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			draft TEXT NOT NULL DEFAULT '',
+			priority INTEGER NOT NULL DEFAULT 5,
+			status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','done','dismissed')),
+			window_key TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(contact_id, kind, window_key)
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_action_sugg_contact ON relationship_action_suggestions(contact_id, status)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 13`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// backfillMsgUnix 分批把 msg_time 换算成 Unix 秒写入 msg_unix（仅补 NULL 行）。
+// 按 id 窗口分批自动提交，避免百万级数据落入一个超长事务；首尾打印进度日志。
+// table 只接受内部白名单常量，不接受任何外部输入，故拼接表名是安全的。
+func backfillMsgUnix(db *sql.DB, table string) error {
+	if table != "messages" && table != "messages_archive" {
+		return fmt.Errorf("backfillMsgUnix: 未知表 %q", table)
+	}
+	var minID, maxID sql.NullInt64
+	if err := db.QueryRow(`SELECT MIN(id), MAX(id) FROM `+table).Scan(&minID, &maxID); err != nil {
+		return err
+	}
+	if !maxID.Valid {
+		return nil // 空表，无需回填
+	}
+	const batch = int64(20000)
+	start, end := minID.Int64, maxID.Int64
+	var total int64
+	slog.Info("msg_unix 回填开始", "table", table, "minID", start, "maxID", end)
+	for lo := start; lo <= end; lo += batch {
+		hi := lo + batch - 1
+		res, err := db.Exec(
+			`UPDATE `+table+` SET msg_unix = CAST(strftime('%s', msg_time) AS INTEGER)
+			 WHERE id >= ? AND id <= ? AND msg_unix IS NULL
+			   AND msg_time IS NOT NULL AND msg_time != ''`, lo, hi)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			total += n
+		}
+	}
+	slog.Info("msg_unix 回填完成", "table", table, "updated", total)
 	return nil
 }
 
@@ -296,8 +486,17 @@ func migrate(db *sql.DB) error {
 // 自己调 time.Now()，与 SaveMessages 里的 time.Now() 是两个不同时刻，导致
 // hash 每次都不一样、UNIQUE(contact_id, msg_hash) 去重彻底失效，且 hash 里的
 // 时间与库里的 msg_time 对不上。
-func messageHash(m Message, ts time.Time) string {
-	sum := md5.Sum([]byte(m.Sender + ":" + ts.Format(time.RFC3339) + ":" + m.Content))
+//
+// hasTime=false 表示这条消息没解析到真实时间（聊天记录里没带时间，或格式没认出来）。
+// 此时去重键**不含时间**——否则用 time.Now() 兜底参与 hash，同一段无时间的记录
+// 每次粘贴都会算出不同 hash，INSERT OR IGNORE 去不了重、other_msg_count 虚增。
+// 有真实时间时仍纳入时间，避免同一内容在不同时刻发的两条被误判为重复。
+func messageHash(m Message, ts time.Time, hasTime bool) string {
+	key := m.Sender + ":" + m.Content
+	if hasTime {
+		key = m.Sender + ":" + ts.Format(time.RFC3339) + ":" + m.Content
+	}
+	sum := md5.Sum([]byte(key))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -313,39 +512,55 @@ func parseMsgTime(raw string) time.Time {
 
 // SaveMessages 保存一批消息（INSERT OR IGNORE 去重）。
 // 返回实际新增条数；新增的对方消息同时累加 contacts.other_msg_count。
+//
+// 性能：整批在一个事务内提交（过去每条消息一次隐式提交，粘贴一大片时写盘放大严
+// 重）；other_msg_count 不按条 UPDATE，而是累加后在末尾写一次。整批原子：
+// 中途出错一律回滚，返回 0 与错误，不会留下“半批已入库”。
 func SaveMessages(db *sql.DB, contactID int64, messages []Message) (int, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
 	newCount := 0
+	newOther := 0
 	for _, m := range messages {
 		content := strings.TrimSpace(m.Content)
 		if content == "" {
 			continue
 		}
 		ts := m.Timestamp
-		if ts.IsZero() {
+		hasTime := !ts.IsZero()
+		if !hasTime {
 			ts = time.Now()
 		}
-
-		res, err := db.Exec(
-			`INSERT OR IGNORE INTO messages (contact_id, sender, content, msg_hash, msg_time)
-			 VALUES (?, ?, ?, ?, ?)`,
-			contactID, m.Sender, content, messageHash(m, ts), ts.Format(time.RFC3339))
+		res, err := tx.Exec(
+			`INSERT OR IGNORE INTO messages (contact_id, sender, content, msg_hash, msg_time, msg_unix)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			contactID, m.Sender, content, messageHash(m, ts, hasTime), ts.Format(time.RFC3339), ts.Unix())
 		if err != nil {
-			return newCount, err
+			return 0, err
 		}
-		affected, _ := res.RowsAffected()
-		if affected > 0 {
+		if affected, _ := res.RowsAffected(); affected > 0 {
 			newCount++
 			if m.Sender == "other" {
-				if _, err := db.Exec(
-					`UPDATE contacts SET other_msg_count = other_msg_count + 1 WHERE id = ?`,
-					contactID); err != nil {
-					return newCount, err
-				}
+				newOther++
 			}
 		}
+	}
+	if newOther > 0 {
+		if _, err := tx.Exec(
+			`UPDATE contacts SET other_msg_count = other_msg_count + ? WHERE id = ?`,
+			newOther, contactID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return newCount, nil
 }
@@ -406,10 +621,23 @@ func GetAllMessages(db *sql.DB, contactID int64) ([]Message, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
-	rows, err := db.Query(
-		`SELECT sender, content, msg_time FROM messages
-		 WHERE contact_id = ? ORDER BY id DESC`,
-		contactID)
+	q := `SELECT sender, content, msg_time FROM messages WHERE contact_id = ? ORDER BY id DESC`
+	args := []interface{}{contactID}
+	if tableExistsLocked(db, "messages_archive") {
+		// 归档会把老消息移出 messages，画像语料必须并入 messages_archive，否则用户点一次
+		// 「立即归档」，下次画像就基于被截断的语料重生成。两表 id 序列各自独立，统一按消息时间
+		// 倒序（最新在前，scanMessages 会再翻成正序）；无 msg_unix 的回落 strftime。
+		q = `SELECT sender, content, msg_time FROM (
+			SELECT sender, content, msg_time, COALESCE(msg_unix, CAST(strftime('%s', msg_time) AS INTEGER)) AS ord
+				FROM messages WHERE contact_id = ?
+			UNION ALL
+			SELECT sender, content, msg_time, COALESCE(msg_unix, CAST(strftime('%s', msg_time) AS INTEGER))
+				FROM messages_archive WHERE contact_id = ?
+		) ORDER BY ord DESC, msg_time DESC`
+		args = []interface{}{contactID, contactID}
+	}
+
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -422,7 +650,7 @@ func GetMessagesPage(db *sql.DB, contactID int64, offset, limit int) ([]Message,
 	defer dbMu.Unlock()
 
 	rows, err := db.Query(
-		`SELECT sender, content, msg_time FROM messages
+		`SELECT id, sender, content, msg_time FROM messages
 		 WHERE contact_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
 		contactID, limit, offset)
 	if err != nil {
@@ -431,11 +659,61 @@ func GetMessagesPage(db *sql.DB, contactID int64, offset, limit int) ([]Message,
 	defer rows.Close()
 	out := []Message{} // 空结果也返回 [] 而非 nil（JSON null），前端才不会白屏
 	for rows.Next() {
-		var sender, content, msgTime string
-		if err := rows.Scan(&sender, &content, &msgTime); err != nil {
+		var (
+			id                       int64
+			sender, content, msgTime string
+		)
+		if err := rows.Scan(&id, &sender, &content, &msgTime); err != nil {
 			return nil, err
 		}
-		out = append(out, Message{Sender: sender, Content: content, Timestamp: parseMsgTime(msgTime)})
+		// 必须回填 ID：前端 keyset 翻页（“加载更多”）以末条 id 作游标，
+		// id=0 会被当成假值导致永不带 beforeId、反复拉第一页。
+		out = append(out, Message{ID: id, Sender: sender, Content: content, Timestamp: parseMsgTime(msgTime)})
+	}
+	return out, rows.Err()
+}
+
+// GetMessagesPageBefore 以 keyset（游标）分页取消息：返回严格早于 beforeID 的最近 limit 条，
+// 按时间倒序（最新在前）。beforeID<=0 表示取最新一页。
+//
+// 相比 OFFSET：深翻页时 OFFSET N 要先扫描并丢弃 N 行，越翻越慢；keyset 用
+// (contact_id, id) 复合索引直接定位到 id < beforeID，翻页成本恒定。走的是 Phase1 建的
+// idx_messages_contact_id。结果携带 ID，供前端回传作为下一页游标。
+func GetMessagesPageBefore(db *sql.DB, contactID, beforeID int64, limit int) ([]Message, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	q := `SELECT id, sender, content, msg_time FROM messages
+		  WHERE contact_id = ?`
+	args := []interface{}{contactID}
+	if beforeID > 0 {
+		q += ` AND id < ?`
+		args = append(args, beforeID)
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Message{} // 空结果返回 [] 而非 nil（避免 JSON null 前端白屏）
+	for rows.Next() {
+		var (
+			id                       int64
+			sender, content, msgTime string
+		)
+		if err := rows.Scan(&id, &sender, &content, &msgTime); err != nil {
+			return nil, err
+		}
+		out = append(out, Message{ID: id, Sender: sender, Content: content, Timestamp: parseMsgTime(msgTime)})
 	}
 	return out, rows.Err()
 }
@@ -622,7 +900,15 @@ func GetProfileHistory(db *sql.DB, contactID int64, limit int) ([]ProfileHistory
 
 // SaveProfile 持久化最新画像并写入一条历史记录
 func SaveProfile(db *sql.DB, contactID int64, profileJSON, summary, changeSummary string) error {
-	return saveProfileAtEpoch(db, contactID, profileJSON, summary, changeSummary, currentProfileEpoch())
+	if err := saveProfileAtEpoch(db, contactID, profileJSON, summary, changeSummary, currentProfileEpoch()); err != nil {
+		return err
+	}
+	// 画像更新后同步刷新可信画像（事实 + 证据）。best-effort：失败只记日志，
+	// 绝不让“画像保存成功”因派生表刷新失败而回滚为报错。
+	if _, _, err := RebuildFactsAndEvidence(db, contactID); err != nil {
+		slog.Warn("画像更新后刷新事实/证据失败（不影响画像保存）", "contactId", contactID, "err", err)
+	}
+	return nil
 }
 
 func saveProfileAtEpoch(db *sql.DB, contactID int64, profileJSON, summary, changeSummary string, epoch uint64) error {
@@ -686,19 +972,28 @@ func GetContactStats(db *sql.DB, contactID int64) (ContactStats, error) {
 	// 首/末消息时间不能用 MIN/MAX(msg_time)：msg_time 是 RFC3339 字符串，
 	// MIN/MAX 走的是字典序，只在所有记录时区偏移一致时才等价于时间序。
 	// 改为按 strftime('%s', msg_time) 排序取端点，返回的仍是原始字符串。
-	err := db.QueryRow(
-		`SELECT COUNT(*),
+	// 必须并档 messages_archive：否则归档一次会使总数骤减、首聊日期突然跳到归档后的新日期。
+	unit := `SELECT sender, msg_time FROM messages WHERE contact_id = ?`
+	per := 1
+	if tableExistsLocked(db, "messages_archive") {
+		unit = `SELECT sender, msg_time FROM messages WHERE contact_id = ?
+		        UNION ALL SELECT sender, msg_time FROM messages_archive WHERE contact_id = ?`
+		per = 2
+	}
+	unitW := `(` + unit + `)`
+	q := `SELECT COUNT(*),
 		        COALESCE(SUM(CASE WHEN sender='me' THEN 1 ELSE 0 END), 0),
 		        COALESCE(SUM(CASE WHEN sender='other' THEN 1 ELSE 0 END), 0),
-		        COALESCE((SELECT msg_time FROM messages
-		                  WHERE contact_id = ? AND msg_time IS NOT NULL AND msg_time != ''
-		                  ORDER BY strftime('%s', msg_time) ASC, id ASC LIMIT 1), ''),
-		        COALESCE((SELECT msg_time FROM messages
-		                  WHERE contact_id = ? AND msg_time IS NOT NULL AND msg_time != ''
-		                  ORDER BY strftime('%s', msg_time) DESC, id DESC LIMIT 1), '')
-		 FROM messages WHERE contact_id = ?`,
-		contactID, contactID, contactID, contactID).
-		Scan(&s.Total, &s.Mine, &s.Other, &first, &last)
+		        COALESCE((SELECT msg_time FROM ` + unitW + ` WHERE COALESCE(msg_time,'')!=''
+		                  ORDER BY strftime('%s', msg_time) ASC, msg_time ASC LIMIT 1), ''),
+		        COALESCE((SELECT msg_time FROM ` + unitW + ` WHERE COALESCE(msg_time,'')!=''
+		                  ORDER BY strftime('%s', msg_time) DESC, msg_time DESC LIMIT 1), '')
+		 FROM ` + unitW
+	args := make([]interface{}, 0, 3*per)
+	for i := 0; i < 3*per; i++ {
+		args = append(args, contactID)
+	}
+	err := db.QueryRow(q, args...).Scan(&s.Total, &s.Mine, &s.Other, &first, &last)
 	if err != nil {
 		return s, err
 	}

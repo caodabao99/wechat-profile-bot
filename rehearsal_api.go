@@ -29,6 +29,8 @@ func (s *apiServer) routeContactRehearsal(w http.ResponseWriter, r *http.Request
 		s.hRehearsalTurn(w, r, id)
 	case "review":
 		s.hRehearsalReview(w, r, id)
+	case "simulate":
+		s.hRehearsalSimulate(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
@@ -104,4 +106,34 @@ func (s *apiServer) hRehearsalReview(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	writeJSON(w, http.StatusOK, rev)
+}
+
+// hRehearsalSimulate 回复前模拟：用户写好一句草稿，推演对方可能的 2~3 种反应。
+// 与逐轮预演（turn）不同，这是一次性多分支推演。POST /api/contacts/{id}/rehearsal/simulate
+func (s *apiServer) hRehearsalSimulate(w http.ResponseWriter, r *http.Request, id int64) {
+	if !s.checkRehearsal(w, r, id, http.MethodPost) {
+		return
+	}
+	var req struct {
+		Draft string `json:"draft"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRehearsalBodyBytes)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	recent, err := GetRecentMessages(s.db, id, 24)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取最近对话失败: "+err.Error())
+		return
+	}
+	res, err := SimulateReply(r.Context(), s.db, s.llm, id, req.Draft, recent)
+	if err != nil {
+		if err == ErrLLMNotConfigured {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

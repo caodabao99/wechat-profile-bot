@@ -13,9 +13,41 @@ func (s *apiServer) routeSearch(w http.ResponseWriter, r *http.Request, sub []st
 	switch {
 	case len(sub) == 1 && sub[0] == "messages" && r.Method == http.MethodGet:
 		s.hSearchMessages(w, r)
+	case len(sub) == 1 && sub[0] == "fts-status" && r.Method == http.MethodGet:
+		s.hSearchFTSStatus(w, r)
+	case len(sub) == 1 && sub[0] == "fts-rebuild" && r.Method == http.MethodPost:
+		s.hSearchFTSRebuild(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知搜索接口")
 	}
+}
+
+// hSearchFTSStatus 回报全文索引可用性，供网页端展示「已启用 / 降级」。
+func (s *apiServer) hSearchFTSStatus(w http.ResponseWriter, r *http.Request) {
+	status := "disabled" // 未建立：搜索走 LIKE
+	switch {
+	case ftsMessagesEnabled.Load() && ftsArchiveEnabled.Load():
+		status = "enabled"
+	case ftsMessagesEnabled.Load():
+		status = "partial" // 活跃表已启用、归档表未启用
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"messages": ftsMessagesEnabled.Load(),
+		"archive":  ftsArchiveEnabled.Load(),
+		"status":   status,
+		"degraded": !ftsMessagesEnabled.Load(), // 活跃表 FTS 不可用即整体降级为 LIKE
+	})
+}
+
+// hSearchFTSRebuild 手动重建（回填）全文索引。用于启动时 FTS 建立失败后的修复，
+// 或迁移后一次性重建。rebuild 会读全表，耗时随数据量增长，故仅 POST、且复用登录鉴权。
+func (s *apiServer) hSearchFTSRebuild(w http.ResponseWriter, r *http.Request) {
+	msgOK, archOK := rebuildFTS(s.db)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       msgOK,
+		"messages": msgOK,
+		"archive":  archOK,
+	})
 }
 
 func (s *apiServer) hSearchMessages(w http.ResponseWriter, r *http.Request) {
