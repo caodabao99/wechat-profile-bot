@@ -212,9 +212,9 @@ func (s *apiServer) hAssistantPutSettings(w http.ResponseWriter, r *http.Request
 	// 先读库里当前值，两处用途：
 	//  1) 密码/日历密钥回传掩码 "******" 时保留原值，否则掩码串会被当成真凭据写进库，
 	//     既毁掉 SMTP 密码，也让 .ics 订阅密钥退化成公开可猜的固定串；
-	//  2) 关系趋势阈值（沉寂天数/降温/升温前期互动数）不在本表单里编辑，属运行模式预设维度，
+	//  2) 关系趋势阈值（沉寂天数/降温/升温前期互动数）不在本表单里编辑，
 	//     表单未回传时 JSON 反序列化为 0，normalize 会把 0 兜底成硬默认(30/5/3)——
-	//     等于「保存一次助手设置就抹掉预设调好的阈值」，故从库里原样保留。
+	//     等于「保存一次助手设置就抹掉高灵敏阈值」，故从库里原样保留。
 	old, err := loadAssistantSettings(s.db)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "读取原配置失败，请稍后重试: "+err.Error())

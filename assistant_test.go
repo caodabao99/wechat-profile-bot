@@ -153,7 +153,7 @@ func TestAssistantSettingsRoundTrip(t *testing.T) {
 
 // TestAssistantPutPreservesTrendThresholds 验证 High-3 修复：网页「关系助手」表单 PUT 不回传
 // 关系趋势阈值（silenceDays/coolingMinPrior/warmingMinPrior），它们反序化为 0 会被
-// normalize 兜成硬默认(30/5/3)。保存一次助手设置不能静默抹掉预设调好的阈值；
+// normalize 兜成默认高灵敏档(14/4/3)。保存一次助手设置不能静默抹掉库里已有的阈值；
 // 同时验证表单管理的字段（密码回传掩码时保留、dailyCheckTime）照常生效。
 func TestAssistantPutPreservesTrendThresholds(t *testing.T) {
 	db := assistantTestDB(t)
@@ -184,7 +184,7 @@ func TestAssistantPutPreservesTrendThresholds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 关键：未被表单管理的三个阈值必须保留预设值，不能回退到 30/5/3
+	// 关键：未被表单管理的三个阈值必须保留库内值，不能回退到默认 14/4/3
 	if got.SilenceDays != 15 || got.CoolingMinPrior != 8 || got.WarmingMinPrior != 6 {
 		t.Fatalf("保存助手设置抹掉了预设趋势阈值: silence=%d cool=%d warm=%d",
 			got.SilenceDays, got.CoolingMinPrior, got.WarmingMinPrior)

@@ -87,7 +87,7 @@ func TestPanelPreviewServer(t *testing.T) {
 func ensureAllTablesForPreview(db *sql.DB) error {
 	for _, fn := range []func(*sql.DB) error{
 		ensureTagTables, ensureTimelineTables, ensureFollowupTables,
-		ensureAssistantTables, ensureArchiveTables, ensureModePresetTables,
+		ensureAssistantTables, ensureArchiveTables,
 	} {
 		if err := fn(db); err != nil {
 			return err
@@ -189,11 +189,6 @@ func seedPreviewData(t *testing.T, db *sql.DB) {
 	// 归档一批老消息，让归档页有内容
 	if _, err := RunArchive(db, 30); err != nil {
 		t.Logf("RunArchive: %v", err)
-	}
-
-	// 自定义模式预设一个（列表就有 内置 + 自定义 两类）
-	if _, err := SaveModePreset(db, "我的自定义模式"); err != nil {
-		t.Logf("SaveModePreset: %v", err)
 	}
 
 	t.Logf("预览数据就绪：联系人=%d 标签=%d 备份日志=3 邮件日志=2", len(ids), len(tagIDs))

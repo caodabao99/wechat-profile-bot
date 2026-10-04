@@ -183,12 +183,6 @@ createApp({
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
     });
 
-    // ---------- 运行模式一键切换预设 ----------
-    const modePresets = ref([]);      // [{name, builtin, payload:{assistant,archive}}]
-    const modeSel = ref('');          // 下拉选中的预设名
-    const modeBusy = ref(false);
-    const modeSaveName = ref('');     // 另存为预设的名称
-
     async function loadAssistant() {
       if (asstLoading.value) return;
       asstLoading.value = true;
@@ -220,7 +214,6 @@ createApp({
         // 看板之外的两块增值数据：待跟进列表 + 日历订阅密钥
         loadFollowups();
         loadCalendarKey();
-        loadModePresets();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -310,49 +303,6 @@ createApp({
         setTimeout(() => { if (route.view === 'assistant') { refreshDashboard(); loadFollowups(); } }, 5000);
       } catch (e) { toast(e.message, 'error'); }
       finally { asstBusy.value = ''; }
-    }
-
-    // ---------- 运行模式预设 ----------
-    async function loadModePresets() {
-      try {
-        const out = await api('/api/mode-presets');
-        modePresets.value = (out && out.presets) || [];
-      } catch (e) {
-        if (route.view === 'assistant') toast(e.message, 'error');
-      }
-    }
-    async function applyModePreset() {
-      if (!modeSel.value || modeBusy.value) return;
-      modeBusy.value = true;
-      try {
-        await api('/api/mode-presets/apply', { method: 'POST', body: { name: modeSel.value } });
-        toast('已切换到运行模式「' + modeSel.value + '」');
-        await loadAssistant(); // 应用后重新拉取设置回填表单
-      } catch (e) { toast(e.message, 'error'); }
-      finally { modeBusy.value = false; }
-    }
-    async function saveModePreset() {
-      const name = modeSaveName.value.trim();
-      if (!name || modeBusy.value) return;
-      modeBusy.value = true;
-      try {
-        await api('/api/mode-presets', { method: 'POST', body: { name } });
-        toast('已将当前设置存为预设「' + name + '」');
-        modeSaveName.value = '';
-        await loadModePresets();
-      } catch (e) { toast(e.message, 'error'); }
-      finally { modeBusy.value = false; }
-    }
-    async function deleteModePreset(p) {
-      if (p.builtin || modeBusy.value) return;
-      modeBusy.value = true;
-      try {
-        await api('/api/mode-presets/' + encodeURIComponent(p.name), { method: 'DELETE' });
-        toast('已删除预设「' + p.name + '」');
-        if (modeSel.value === p.name) modeSel.value = '';
-        await loadModePresets();
-      } catch (e) { toast(e.message, 'error'); }
-      finally { modeBusy.value = false; }
     }
 
     // ---------- 弹层 ----------
@@ -682,9 +632,6 @@ createApp({
         route.id = 0;
       } else if (h.startsWith('#/insights')) {
         route.view = 'insights';
-        route.id = 0;
-      } else if (h.startsWith('#/help')) {
-        route.view = 'help';
         route.id = 0;
       } else if (h.startsWith('#/status')) {
         route.view = 'status';
@@ -2350,7 +2297,6 @@ createApp({
       encPassword, impPassword, showEncPwd,
       asst, asstLoading, asstBusy, asstForm,
       loadAssistant, saveAssistantSettings, testAssistantEmail, runAssistantNow,
-      modePresets, modeSel, modeBusy, modeSaveName, loadModePresets, applyModePreset, saveModePreset, deleteModePreset,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,

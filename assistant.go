@@ -36,7 +36,7 @@ type AssistantSettings struct {
 	RemindBirthday      bool          `json:"remindBirthday"`
 	RemindCooling       bool          `json:"remindCooling"`
 
-	// ---- 关系趋势阈值（运行模式预设可切换；读不到时保持旧的硬编码行为） ----
+	// ---- 关系趋势阈值（决定“降温/升温/沉寂”判定的灵敏度；读不到时保持旧的硬编码行为） ----
 	SilenceDays     int `json:"silenceDays"`     // 距上次互动 >= 该天数判定「沉寂」（旧硬编码 30）
 	CoolingMinPrior int `json:"coolingMinPrior"` // 降温判定要求前期至少这么多互动（旧硬编码 5）
 	WarmingMinPrior int `json:"warmingMinPrior"` // 升温判定要求前期至少这么多互动（旧硬编码 3）
@@ -51,15 +51,18 @@ type AssistantSettings struct {
 }
 
 func defaultAssistantSettings() AssistantSettings {
+	// 开箱默认即“主动帮你维护关系”的高灵敏档位（原「客户模式」）：
+	// 提醒全开、沉寂 14 天即判降温、生日提前 5 天、情绪预警与待跟进自动抽取默认开（会调用模型、产生费用）。
+	// 但总开关 Enabled 仍默认关闭：需用户配好 SMTP 后主动启用，避免未配置邮箱就后台空跑/发信失败。
 	return AssistantSettings{
 		Enabled: false, SMTP: AssistantSMTP{Port: 465, SSL: true},
-		DailyCheckTime: "08:00", BirthdayAdvanceDays: 3, CoolingDays: 7,
+		DailyCheckTime: "08:00", BirthdayAdvanceDays: 5, CoolingDays: 7,
 		EmotionAlert: true, EmotionDailyMax: 10,
 		RemindBirthday: true, RemindCooling: true,
-		// 关系趋势阈值：与旧硬编码一致（沉寂 30 天、降温前期≥5、升温前期≥3）
-		SilenceDays: 30, CoolingMinPrior: 5, WarmingMinPrior: 3,
-		// 待跟进/祝福语都要花模型钱，默认关闭，由用户主动打开
-		RemindFollowup: true, FollowupEnabled: false, FollowupDailyMax: 8,
+		// 关系趋势阈值：高灵敏（沉寂 14 天、降温前期≥4、升温前期≥3）
+		SilenceDays: 14, CoolingMinPrior: 4, WarmingMinPrior: 3,
+		// 待跟进与自动抽取默认开（要调模型花钱，与“主动维护关系”定位一致）；祝福语草稿仍默认关
+		RemindFollowup: true, FollowupEnabled: true, FollowupDailyMax: 8,
 		FollowupWindowDays: 30, BlessingDraft: false,
 	}
 }
@@ -67,16 +70,16 @@ func defaultAssistantSettings() AssistantSettings {
 // normalize 兜底非法值，防止用户把数字改空后逻辑除零/永不触发
 func (s *AssistantSettings) normalize() {
 	if s.BirthdayAdvanceDays <= 0 || s.BirthdayAdvanceDays > 30 {
-		s.BirthdayAdvanceDays = 3
+		s.BirthdayAdvanceDays = 5
 	}
 	if s.CoolingDays <= 0 || s.CoolingDays > 365 {
 		s.CoolingDays = 7
 	}
 	if s.SilenceDays <= 0 || s.SilenceDays > 365 {
-		s.SilenceDays = 30
+		s.SilenceDays = 14
 	}
 	if s.CoolingMinPrior <= 0 || s.CoolingMinPrior > 1000 {
-		s.CoolingMinPrior = 5
+		s.CoolingMinPrior = 4
 	}
 	if s.WarmingMinPrior <= 0 || s.WarmingMinPrior > 1000 {
 		s.WarmingMinPrior = 3

@@ -151,24 +151,21 @@ func TestRestoreOldBackupWithoutValueAddedTables(t *testing.T) {
 	}
 }
 
-// 全局配置保护：assistant_settings / mode_presets 不按 contact_id 关联，旧备份缺表时
+// 全局配置保护：assistant_settings / archive_settings 不按 contact_id 关联，旧备份缺表时
 // 必须保留主库现状（而非先清空再回填 0 行）——否则恢复一次旧备份就把用户的
-// 自动化设置/自定义预设静默重置。与上面“按联系人维度清空”互补、不矛盾。
+// 自动化设置静默重置。与上面“按联系人维度清空”互补、不矛盾。
 func TestRestoreOldBackupPreservesGlobalSettings(t *testing.T) {
-	// 旧备份（源库）只建核心表，根本没有 assistant_settings / mode_presets
+	// 旧备份（源库）只建核心表，根本没有 assistant_settings / archive_settings
 	src := regressionDB(t)
 	a := regressionContact(t, src, "老库里的人")
 	regressionMessages(t, src, a, "你好")
 
-	// 目标库已有这些全局配置表并写入可识别内容（与启动后真实一致：三张设置表都在）
+	// 目标库已有这些全局配置表并写入可识别内容（与启动后真实一致：设置表都在）
 	dst := regressionDB(t)
 	if err := ensureAssistantTables(dst); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureArchiveTables(dst); err != nil {
-		t.Fatal(err)
-	}
-	if err := ensureModePresetTables(dst); err != nil {
 		t.Fatal(err)
 	}
 	asst := defaultAssistantSettings()
@@ -179,9 +176,6 @@ func TestRestoreOldBackupPreservesGlobalSettings(t *testing.T) {
 	arch := normalizeArchiveSettings(ArchiveSettings{})
 	arch.RetentionDays = 456
 	if err := saveArchiveSettings(dst, arch); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := SaveModePreset(dst, "我的模式"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -204,10 +198,6 @@ func TestRestoreOldBackupPreservesGlobalSettings(t *testing.T) {
 	}
 	if after, err := loadAssistantSettings(dst); err != nil || after.SilenceDays != 88 {
 		t.Fatalf("助手设置被误重置: %+v err=%v", after, err)
-	}
-	// 自定义预设也必须保留
-	if got := restoreCount(t, dst, `SELECT COUNT(*) FROM mode_presets WHERE name='我的模式'`); got != 1 {
-		t.Fatalf("旧备份无 mode_presets 时自定义预设应保留, got %d", got)
 	}
 	// 归档设置表同样保留（旧备份缺该表时不清空），内容不变
 	if got := restoreCount(t, dst, `SELECT COUNT(*) FROM archive_settings`); got != 1 {

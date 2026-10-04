@@ -328,8 +328,6 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeInsights(w, r, parts[1:])
 	case parts[0] == "relationships":
 		s.routeRelationships(w, r, parts[1:])
-	case parts[0] == "mode-presets":
-		s.routeModePresets(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

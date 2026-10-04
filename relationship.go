@@ -152,8 +152,8 @@ func classifyTrend(t *RelationshipTrend) (string, string) {
 }
 
 // classifyTrendWith 依据互动量变化与沉默时长给出趋势结论（纯规则，可解释）。
-// 沉寂天数门槛与降温/升温的“前期最低互动”门槛可由运行模式预设配置；
-// 传默认值时与旧的硬编码逐字一致（30 / 5 / 3）。
+// 沉寂天数门槛与降温/升温的“前期最低互动”门槛来自助手设置（可配）；
+// 传入默认助手设置时即高灵敏档（沉寂 14 / 降温前期 4 / 升温前期 3）。
 func classifyTrendWith(t *RelationshipTrend, thr AssistantSettings) (string, string) {
 	if t.Recent30 == 0 && t.Prior30 == 0 {
 		if t.DaysSinceLast > 0 {

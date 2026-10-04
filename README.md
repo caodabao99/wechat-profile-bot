@@ -30,7 +30,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.0.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.1.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -47,7 +47,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -265,7 +265,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.0.0.tar.gz`，得到 `wechat-profile-bot:v4.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.1.0.tar.gz`，得到 `wechat-profile-bot:v4.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -549,6 +549,22 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.1.0（2026-10-04）
+
+聚焦“关系助手到底怎么用”的一次体验收敛：去掉冗余的选择项，让助手开箱即是“主动帮你维护关系”的高灵敏行为。升级只需替换二进制并重启，数据库结构向后兼容。
+
+功能调整（精简）
+
+- **下线「运行模式」多预设选择器**：家人/好友/同事/客户/静音专注五套预设对大多数人是冗余负担。关系助手的定位本就是主动维护关系，因此直接将该功能整体移除（前后端与预设表），不再需要“先选模式”这一步
+- **助手默认改为“真·客户档”高灵敏**：开箱即为沉寂 14 天即判降温、生日提前 5 天、情绪预警与待跟进 AI 自动抽取默认开启。总开关仍需你在配好 SMTP 后主动启用，避免未配置邮箱就后台空跑/产生模型费用
+- **移除网页端「命令说明」页**：微信命令说明由微信端（发「帮助」）单一来源提供，网页端不再复制一份，避免两处维护不一致
+- **关系助手页新增「三步上手」引导**：配邮箱→启用开关→看结果/收邮件的使用主线就地说明，功能不再“看不出怎么用”
+
+> 提醒：情绪预警与待跟进自动抽取现在默认开启，会调用大模型、按量产生费用；不需要时可在关系助手页随时关闭。
+> 旧版已创建的 `mode_presets` 表升级后保留不动，不影响备份/恢复。
+
+> 详细变更与部署步骤见上文各功能章节。旧版本说明见下方 v4.0.0 及更早条目。
 
 ### v4.0.0（2026-10-04）
 

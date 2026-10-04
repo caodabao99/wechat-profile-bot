@@ -28,7 +28,7 @@ import (
 func TestZZFeatureSweepLive(t *testing.T) {
 	db := regressionDB(t)
 	ensureAllValueAddedTables(t, db) // 标签/时间线/待跟进表
-	for _, fn := range []func(*sql.DB) error{ensureAssistantTables, ensureArchiveTables, ensureModePresetTables} {
+	for _, fn := range []func(*sql.DB) error{ensureAssistantTables, ensureArchiveTables} {
 		if err := fn(db); err != nil {
 			t.Fatalf("建表失败: %v", err)
 		}
@@ -137,7 +137,6 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"日历订阅密钥", "GET", "/api/assistant/calendar/key", "", true, true},
 
 		{"归档状态", "GET", "/api/archive/status", "", true, true},
-		{"模式预设列表", "GET", "/api/mode-presets", "", true, true},
 		{"系统状态", "GET", "/api/status", "", true, true},
 		{"备份日志", "GET", "/api/backup/logs", "", true, true},
 

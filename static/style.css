@@ -233,9 +233,6 @@ textarea.text-input { resize: vertical; }
 .mg-main { min-width: 0; flex: 1; }
 .mg-title { font-weight: 600; font-size: 14.5px; margin-bottom: 4px; }
 
-/* ---------- 帮助 ---------- */
-.help-card pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px; line-height: 1.7; color: var(--ink); margin: 0; }
-
 /* ---------- 弹层 ---------- */
 .mask {
   position: fixed; inset: 0; z-index: 40;
@@ -553,12 +550,11 @@ textarea.text-input { resize: vertical; }
 .ck-ask-time { font-size: 11px; color: var(--muted); margin-left: 8px; }
 .ck-ask-snip { font-size: 13px; color: var(--muted); margin-top: 4px; }
 .msg-row.msg-flash .m-body { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; transition: outline-color .3s; }
-/* 运行模式预设 */
-.mode-bar { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
-.mode-bar select.text-input { flex: 1; min-width: 180px; }
-.mode-save input.text-input { flex: 1; }
-.mode-list { list-style: none; margin: 8px 0 0; padding: 0; }
-.mode-list > li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 8px 2px; font-size: 14px; }
+
+/* ---------- 关系助手：使用引导 ---------- */
+.guide-card ol.guide-steps { margin: 6px 0 0; padding-left: 22px; line-height: 1.9; font-size: 14.5px; }
+.guide-card ol.guide-steps li { margin: 5px 0; }
+.guide-card ol.guide-steps strong { color: var(--ink); }
 .btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--muted); }
 
 /* ===== 响应式健壮性补丁（PC / 平板 / 手机走查后修复） ===== */
