@@ -180,6 +180,8 @@ createApp({
       followupDailyMax: 8, followupWindowDays: 30, blessingDraft: false,
       // 每周维护计划：默认开，关掉后调度器不再每周一自动生成
       weeklyPlanEnabled: true,
+      // 人生模拟器：默认开，纯 SQL 零模型开销，关掉后不再自动重算人生状态/推演
+      lifeSimEnabled: true,
       // 日历订阅密钥：后端只回传打码值，保存时原样带回，避免把库里的真密钥冲掉
       calendarKey: '',
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
@@ -207,6 +209,7 @@ createApp({
         f.followupWindowDays = st.followupWindowDays || 30;
         f.blessingDraft = !!st.blessingDraft;
         f.weeklyPlanEnabled = st.weeklyPlanEnabled !== false; // 默认开（opt-out）
+        f.lifeSimEnabled = st.lifeSimEnabled !== false; // 默认开（opt-out）
         f.calendarKey = st.calendarKey || '';
         const sm = st.smtp || {};
         f.smtp = {
@@ -298,6 +301,7 @@ createApp({
             remindFollowup: f.remindFollowup, followupEnabled: f.followupEnabled,
             followupDailyMax: nums.followupDailyMax, followupWindowDays: nums.followupWindowDays,
             blessingDraft: f.blessingDraft, weeklyPlanEnabled: f.weeklyPlanEnabled,
+            lifeSimEnabled: f.lifeSimEnabled,
             calendarKey: f.calendarKey,
             smtp,
           },
@@ -1472,7 +1476,7 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('search');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1480,6 +1484,9 @@ createApp({
       if (tab === 'dup' && !insightLoaded.dup) loadDuplicates();
       if (tab === 'period' && !insightLoaded.period) loadPeriodReport();
       if (tab === 'graph' && !insightLoaded.graph) { insightLoaded.graph = true; loadConnections(); }
+      if (tab === 'life' && !insightLoaded.life) { insightLoaded.life = true; loadLifeState(); }
+      if (tab === 'lifeproj' && !insightLoaded.lifeproj) { insightLoaded.lifeproj = true; loadLifeProjection(); }
+      if (tab === 'lifets' && !insightLoaded.lifets) { insightLoaded.lifets = true; loadLifeTimeline(); }
     }
 
     // ---------- 关系图谱 ----------
@@ -1511,6 +1518,70 @@ createApp({
         connections.value = data.connections || [];
       } catch (e) { toast(e.message, 'error'); }
       finally { connBusy.value = false; }
+    }
+
+    // ---------- 人生模拟器 ----------
+    const life = reactive({ enabled: true, generatedAt: '', portfolio: null, assets: [], highRisk: [], time: null, trajectory: [] });
+    const lifeproj = reactive({ enabled: true, generatedAt: '', projection: null });
+    const lifes = reactive({ enabled: true, narrative: null });
+    const lifeBusy = ref(false);
+    const lifeClasses = { close: '挚友', friend: '好友', acquaintance: '熟人', weak: '弱关系', transactional: '事务型' };
+    function lifeClassLabel(c) { return lifeClasses[c] || c; }
+
+    async function loadLifeState() {
+      if (lifeBusy.value) return;
+      lifeBusy.value = true;
+      try {
+        const data = await api('/api/life/state');
+        const st = data.state || {};
+        life.enabled = data.enabled !== false;
+        life.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        life.portfolio = st.portfolio || null;
+        life.assets = st.assets || [];
+        life.highRisk = st.highRisk || [];
+        life.time = st.time || null;
+        life.trajectory = st.trajectory || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { lifeBusy.value = false; }
+    }
+
+    async function loadLifeProjection() {
+      if (lifeBusy.value) return;
+      lifeBusy.value = true;
+      try {
+        const data = await api('/api/life/projection');
+        lifeproj.enabled = data.enabled !== false;
+        lifeproj.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        lifeproj.projection = data.projection || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { lifeBusy.value = false; }
+    }
+
+    async function loadLifeTimeline() {
+      lifeBusy.value = true;
+      try {
+        const data = await api('/api/life/timeline');
+        lifes.enabled = data.enabled !== false;
+        lifes.narrative = data.narrative || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { lifeBusy.value = false; }
+    }
+
+    async function recomputeLife() {
+      if (lifeBusy.value) return;
+      lifeBusy.value = true;
+      try {
+        await api('/api/life/recompute', { method: 'POST' });
+        toast('正在后台重算，稍后自动刷新');
+        setTimeout(() => {
+          lifeBusy.value = false;
+          if (insightTab.value === 'life') loadLifeState();
+          if (insightTab.value === 'lifeproj') loadLifeProjection();
+        }, 6000);
+      } catch (e) {
+        toast(e.message, 'error');
+        lifeBusy.value = false;
+      }
     }
 
     // 聊天记录全文搜索
@@ -2383,6 +2454,9 @@ createApp({
       // 洞察页
       insightTab, switchInsight,
       connections, connBusy, connTypeLabel, loadConnections, rebuildConnections,
+      // 人生模拟器
+      life, lifeproj, lifes, lifeBusy, lifeClassLabel,
+      loadLifeState, loadLifeProjection, loadLifeTimeline, recomputeLife,
       srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
       dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,
       social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,

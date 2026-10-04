@@ -140,6 +140,10 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"关系图谱单联系人", "GET", "/api/contacts/" + cid + "/connections", "", true, true},
 		{"关系图谱重建", "POST", "/api/relationships/connections/rebuild", "", true, true},
 
+		{"人生总览", "GET", "/api/life/state", "", true, true},
+		{"人生推演", "GET", "/api/life/projection", "", true, true},
+		{"人生年表", "GET", "/api/life/timeline", "", true, true},
+
 		{"归档状态", "GET", "/api/archive/status", "", true, true},
 		{"系统状态", "GET", "/api/status", "", true, true},
 		{"备份日志", "GET", "/api/backup/logs", "", true, true},

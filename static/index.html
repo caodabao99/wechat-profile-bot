@@ -776,6 +776,10 @@
             <label class="check-row inline"><input type="checkbox" v-model="asstForm.weeklyPlanEnabled"> 启用每周维护计划</label>
             <span class="hint">每周一自动排行该联系谁并草拟开场白（要调模型），结果在本页看板展示，不发邮件</span>
           </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.lifeSimEnabled"> 启用人生模拟器自动计算</label>
+            <span class="hint">每周一自动算好人际资产账本、90 天未来推演与人生年表（纯本地规则、不调模型、零费用），在「洞察」页直接看结果</span>
+          </div>
 
           <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
           <div class="asst-row">
@@ -979,6 +983,9 @@
         <a href="#" :class="{active: insightTab==='social'}" @click.prevent="switchInsight('social')">社交大盘</a>
         <a href="#" :class="{active: insightTab==='dup'}" @click.prevent="switchInsight('dup')">重复联系人</a>
         <a href="#" :class="{active: insightTab==='graph'}" @click.prevent="switchInsight('graph')">关系图谱</a>
+        <a href="#" :class="{active: insightTab==='life'}" @click.prevent="switchInsight('life')">人生总览</a>
+        <a href="#" :class="{active: insightTab==='lifeproj'}" @click.prevent="switchInsight('lifeproj')">未来推演</a>
+        <a href="#" :class="{active: insightTab==='lifets'}" @click.prevent="switchInsight('lifets')">人生年表</a>
       </nav>
 
       <!-- ---- 聊天记录全文搜索 ---- -->
@@ -1388,6 +1395,99 @@
                 <span class="chip">{{ connTypeLabel(c.connectionType) }}</span>
                 <span class="hint" v-if="c.detail">{{ c.detail }}</span>
                 <span class="hint">可信度 {{ Math.round(c.confidence * 100) }}%</span>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </template>
+
+      <!-- ---- 人生总览（状态模型） ---- -->
+      <template v-if="insightTab==='life'">
+        <div class="card life-card">
+          <div class="tl-head">
+            <h2>人生总览</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="life.generatedAt">更新于 {{ life.generatedAt }}</span>
+              <button class="btn sm" @click="recomputeLife" :disabled="lifeBusy">{{ lifeBusy ? '计算中…' : '重新计算' }}</button>
+            </div>
+          </div>
+          <p class="hint block">系统自动把你们的关系算成一份“人际资产账本”：谁在增值、谁在缩水、哪些关系濒临断开。纯本地计算，不花模型费用。</p>
+
+          <div class="life-metrics" v-if="life.portfolio">
+            <div class="life-metric"><span class="lm-num">{{ Math.round(life.portfolio.totalWealth) }}</span><span class="lm-lbl">人际总财富</span></div>
+            <div class="life-metric"><span class="lm-num" :class="{up: life.portfolio.quarterDelta>0, down: life.portfolio.quarterDelta<0}">{{ life.portfolio.quarterDelta>0?'+':'' }}{{ Math.round(life.portfolio.quarterDelta) }}</span><span class="lm-lbl">近况涨跌</span></div>
+            <div class="life-metric"><span class="lm-num down">{{ life.portfolio.highRiskCount }}</span><span class="lm-lbl">高风险关系</span></div>
+            <div class="life-metric"><span class="lm-num">{{ life.portfolio.contactCount }}</span><span class="lm-lbl">在账联系人</span></div>
+            <div class="life-metric"><span class="lm-num">{{ Math.round(life.portfolio.concentration*100) }}%</span><span class="lm-lbl">依赖集中度</span></div>
+          </div>
+          <p class="empty" v-else>暂无数据</p>
+
+          <h3 class="life-sub" v-if="life.time && life.time.insights && life.time.insights.length">时间精力回流</h3>
+          <ul class="life-insights" v-if="life.time && life.time.insights && life.time.insights.length">
+            <li v-for="(s,i) in life.time.insights" :key="i">{{ s }}</li>
+          </ul>
+
+          <h3 class="life-sub" v-if="life.highRisk && life.highRisk.length">需要留意的关系（按风险排序）</h3>
+          <ul class="life-list" v-if="life.highRisk && life.highRisk.length">
+            <li v-for="a in life.highRisk" :key="a.contactId">
+              <a :href="'#/contact/' + a.contactId" class="life-name">{{ a.name || ('#'+a.contactId) }}</a>
+              <span class="chip">{{ lifeClassLabel(a.assetClass) }}</span>
+              <span class="hint" v-if="a.category">{{ a.category }}</span>
+              <span class="hint">{{ a.decayDays }} 天没联系</span>
+              <span class="hint" v-if="a.weeklyRate<0">每周约 {{ a.weeklyRate }} 条</span>
+              <span class="life-risk">风险 {{ Math.round(a.riskScore*100) }}%</span>
+            </li>
+          </ul>
+          <p class="empty" v-else-if="life.portfolio && !life.highRisk.length">目前没有高风险关系，继续保持</p>
+        </div>
+      </template>
+
+      <!-- ---- 未来推演（模拟引擎） ---- -->
+      <template v-if="insightTab==='lifeproj'">
+        <div class="card life-card">
+          <div class="tl-head"><h2>未来推演</h2></div>
+          <p class="hint block" v-if="lifeproj.generatedAt">基于当前互动趋势的确定性外推（{{ lifeproj.generatedAt }}）。系统已替你把“如果什么都不做”和“做一点小调整”两种未来都推演好了。</p>
+          <p class="empty" v-if="lifeBusy && !lifeproj.projection">正在推演…</p>
+          <template v-if="lifeproj.projection">
+            <div class="lp-summary">
+              <span>人际总财富：现在 <b>{{ Math.round(lifeproj.projection.nowWealth) }}</b></span>
+              <span>→ {{ lifeproj.projection.horizonDays }} 天后 <b :class="{down: lifeproj.projection.futureWealth<lifeproj.projection.nowWealth, up: lifeproj.projection.futureWealth>=lifeproj.projection.nowWealth}">{{ Math.round(lifeproj.projection.futureWealth) }}</b></span>
+              <span class="down" v-if="lifeproj.projection.breakCount>0">预计 {{ lifeproj.projection.breakCount }} 段关系将自然断开</span>
+            </div>
+            <h3 class="life-sub">你可以怎么做（自动对比）</h3>
+            <ul class="lp-strategies">
+              <li v-for="st in lifeproj.projection.strategies" :key="st.key" :class="{hl: st.savedCount>0}">
+                <div class="lp-st-name">{{ st.name }}</div>
+                <div class="lp-st-sum">{{ st.summary }}</div>
+              </li>
+            </ul>
+            <h3 class="life-sub" v-if="lifeproj.projection.projections && lifeproj.projection.projections.length">走势清单（最先变化的在前）</h3>
+            <ul class="lp-list" v-if="lifeproj.projection.projections && lifeproj.projection.projections.length">
+              <li v-for="p in lifeproj.projection.projections" :key="p.contactId">
+                <a :href="'#/contact/' + p.contactId" class="life-name">{{ p.name || ('#'+p.contactId) }}</a>
+                <span class="lp-bar"><i :style="{width: p.nowBalance+'%'}" class="lp-now"></i></span>
+                <span class="hint">{{ p.nowBalance }} → {{ p.futureBalance }}</span>
+                <span class="lp-break" v-if="p.willBreak">将断</span>
+                <span class="hint lp-reason">{{ p.reason }}</span>
+              </li>
+            </ul>
+          </template>
+        </div>
+      </template>
+
+      <!-- ---- 人生年表（叙事） ---- -->
+      <template v-if="insightTab==='lifets'">
+        <div class="card life-card">
+          <div class="tl-head"><h2>人生年表</h2></div>
+          <p class="hint block" v-if="lifes.narrative">这些年你们一共 {{ lifes.narrative.totalMsgs }} 条往来，跨越 {{ lifes.narrative.yearsCovered }} 个年头。</p>
+          <p class="empty" v-if="!lifes.narrative">加载中…</p>
+          <p class="empty" v-else-if="!lifes.narrative.milestones || !lifes.narrative.milestones.length">还没有足够的过往数据来生成人生年表——多录入一些聊天记录后自动会出</p>
+          <ul class="lt-list" v-if="lifes.narrative && lifes.narrative.milestones && lifes.narrative.milestones.length">
+            <li v-for="(m,i) in lifes.narrative.milestones" :key="i">
+              <span class="lt-date">{{ m.date }}</span>
+              <div class="lt-body">
+                <div class="lt-title">{{ m.title }}</div>
+                <div class="hint" v-if="m.detail">{{ m.detail }}</div>
               </div>
             </li>
           </ul>

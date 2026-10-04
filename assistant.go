@@ -49,6 +49,7 @@ type AssistantSettings struct {
 	BlessingDraft      bool   `json:"blessingDraft"`      // 重要日子提醒里是否附 AI 祝福语草稿
 	CalendarKey        string `json:"calendarKey"`        // .ics 订阅链接的独立密钥（ICS 客户端带不了 Authorization 头）
 	WeeklyPlanEnabled  bool   `json:"weeklyPlanEnabled"`  // 是否启用每周维护计划（默认开，opt-out）
+	LifeSimEnabled     bool   `json:"lifeSimEnabled"`     // 是否启用人生模拟器（人生状态+推演，默认开，纯 SQL 零模型开销）
 }
 
 func defaultAssistantSettings() AssistantSettings {
@@ -66,6 +67,7 @@ func defaultAssistantSettings() AssistantSettings {
 		RemindFollowup: true, FollowupEnabled: true, FollowupDailyMax: 8,
 		FollowupWindowDays: 30, BlessingDraft: false,
 		WeeklyPlanEnabled: true,
+		LifeSimEnabled:    true,
 	}
 }
 
@@ -1061,18 +1063,37 @@ func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily
 		})
 	}
 
-	// 每周一到点触发周计划生成 + 图谱重建
-	if s.WeeklyPlanEnabled && int(now.Weekday()) == 1 && atOrAfter(now, s.DailyCheckTime) {
-		weekKey := now.Format("2006-W01")
-		if lastWeekly != weekKey {
-			lastWeekly = weekKey
-			go safeAssistantTask("每周计划生成", func() {
-				if err := GenerateWeeklyPlan(db, llm, now); err != nil {
-					slog.Error("每周维护计划生成失败", "err", err)
-				} else {
-					slog.Info("每周维护计划生成完成")
-				}
-			})
+	// 每周一到点触发周计划生成 + 人生模拟器刷新。两者共用这个触发点（零新增调度器），
+	// 但各自独立加锁、互不影响：
+	//   - 周计划用 lastWeekly 周锁，仅在开关开时推进（保持原有幂等语义）
+	//   - 人生模拟器用缓存新鲜度（IsLifeStateStale）作「每周一跳」的天然锁，
+	//     既不占 lastWeekly，也不需要新增持久化字段
+	if int(now.Weekday()) == 1 && atOrAfter(now, s.DailyCheckTime) {
+		if s.WeeklyPlanEnabled {
+			weekKey := now.Format("2006-W01")
+			if lastWeekly != weekKey {
+				lastWeekly = weekKey
+				go safeAssistantTask("每周计划生成", func() {
+					if err := GenerateWeeklyPlan(db, llm, now); err != nil {
+						slog.Error("每周维护计划生成失败", "err", err)
+					} else {
+						slog.Info("每周维护计划生成完成")
+					}
+				})
+			}
+		}
+		if s.LifeSimEnabled {
+			if _, genAt, _ := GetCachedLifeState(db); IsLifeStateStale(genAt, now) {
+				go safeAssistantTask("人生模拟器刷新", func() {
+					if err := ComputeLifeState(db, now); err != nil {
+						slog.Error("人生状态计算失败", "err", err)
+					} else if err := ProjectLifeForward(db, now, 90); err != nil {
+						slog.Error("人生推演计算失败", "err", err)
+					} else {
+						slog.Info("人生模拟器刷新完成")
+					}
+				})
+			}
 		}
 	}
 

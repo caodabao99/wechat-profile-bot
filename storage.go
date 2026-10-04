@@ -496,6 +496,26 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 16 {
+		// v16: 人生模拟器——人生状态快照缓存 + 90 天推演缓存（均为派生表，不入备份、自愈重建）
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS life_state_cache (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			generated_at TEXT NOT NULL,
+			state_json TEXT NOT NULL
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS life_projection_cache (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			generated_at TEXT NOT NULL,
+			proj_json TEXT NOT NULL
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 16`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

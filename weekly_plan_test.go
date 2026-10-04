@@ -487,14 +487,14 @@ func TestWeeklyPlanMigrationsIdempotent(t *testing.T) {
 	}
 	var ver int
 	db.QueryRow(`PRAGMA user_version`).Scan(&ver)
-	if ver != 15 {
-		t.Fatalf("迁移后 user_version 应为 15, got %d", ver)
+	if ver != 16 {
+		t.Fatalf("迁移后 user_version 应为 16, got %d", ver)
 	}
-	for _, tbl := range []string{"weekly_plan_cache", "suggestion_outcomes", "contact_connections"} {
+	for _, tbl := range []string{"weekly_plan_cache", "suggestion_outcomes", "contact_connections", "life_state_cache", "life_projection_cache"} {
 		var n int
 		if err := db.QueryRow(
 			`SELECT COUNT(*) FROM pragma_table_info(?)`, tbl).Scan(&n); err != nil || n == 0 {
-			t.Fatalf("v14/v15 表 %s 应存在: err=%v cols=%d", tbl, err, n)
+			t.Fatalf("v14~v16 表 %s 应存在: err=%v cols=%d", tbl, err, n)
 		}
 	}
 	// 写入数据后关库重开：migrate 对已是 v15 的库应全部跳过，数据不丢
@@ -509,7 +509,7 @@ func TestWeeklyPlanMigrationsIdempotent(t *testing.T) {
 	}
 	defer db2.Close()
 	db2.QueryRow(`PRAGMA user_version`).Scan(&ver)
-	if ver != 15 {
+	if ver != 16 {
 		t.Fatalf("重开后版本应变, got %d", ver)
 	}
 	items, _, err := GetCachedWeeklyPlan(db2)
@@ -517,8 +517,8 @@ func TestWeeklyPlanMigrationsIdempotent(t *testing.T) {
 		t.Fatalf("重开后周计划缓存应完好: items=%+v err=%v", items, err)
 	}
 	// 备份头的版本号必须跟迁移终点一致，否则恢复链会误判兼容性
-	if backupCurrentDBVer != 15 {
-		t.Fatalf("backupCurrentDBVer 应同步到 15, got %d", backupCurrentDBVer)
+	if backupCurrentDBVer != 16 {
+		t.Fatalf("backupCurrentDBVer 应同步到 16, got %d", backupCurrentDBVer)
 	}
 }
 
