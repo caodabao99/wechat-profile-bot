@@ -326,6 +326,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeSearch(w, r, parts[1:])
 	case parts[0] == "insights":
 		s.routeInsights(w, r, parts[1:])
+	case parts[0] == "insight":
+		s.routeInsight(w, r, parts[1:])
 	case parts[0] == "relationships":
 		s.routeRelationships(w, r, parts[1:])
 	case parts[0] == "life":

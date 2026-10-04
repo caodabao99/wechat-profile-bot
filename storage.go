@@ -516,6 +516,27 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 17 {
+		// v17: 高阶洞察四件套——社交网络 / 自我画像 / 干预学习 / 主动简报
+		// （均为派生缓存表，单行 id=1，不入备份、恢复末尾清空、访问缺则自愈重建，沿用 life_* 骨架）
+		for _, tbl := range []struct{ name, col string }{
+			{"network_insight_cache", "net_json"},
+			{"self_portrait_cache", "portrait_json"},
+			{"intervention_cache", "learn_json"},
+			{"briefing_cache", "brief_json"},
+		} {
+			if _, err := db.Exec(fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+				id INTEGER PRIMARY KEY CHECK(id = 1),
+				generated_at TEXT NOT NULL,
+				%s TEXT NOT NULL
+			)`, tbl.name, tbl.col)); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 17`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

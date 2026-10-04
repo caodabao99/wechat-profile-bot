@@ -182,6 +182,8 @@ createApp({
       weeklyPlanEnabled: true,
       // 人生模拟器：默认开，纯 SQL 零模型开销，关掉后不再自动重算人生状态/推演
       lifeSimEnabled: true,
+      // 高阶洞察四件套（社交网络/自我画像/干预学习/本周简报）：默认开，纯确定性零模型
+      advancedInsightsEnabled: true,
       // 日历订阅密钥：后端只回传打码值，保存时原样带回，避免把库里的真密钥冲掉
       calendarKey: '',
       smtp: { host: '', port: 465, ssl: true, user: '', pass: '', from: '', toText: '' },
@@ -210,6 +212,7 @@ createApp({
         f.blessingDraft = !!st.blessingDraft;
         f.weeklyPlanEnabled = st.weeklyPlanEnabled !== false; // 默认开（opt-out）
         f.lifeSimEnabled = st.lifeSimEnabled !== false; // 默认开（opt-out）
+        f.advancedInsightsEnabled = st.advancedInsightsEnabled !== false; // 默认开（opt-out）
         f.calendarKey = st.calendarKey || '';
         const sm = st.smtp || {};
         f.smtp = {
@@ -302,6 +305,7 @@ createApp({
             followupDailyMax: nums.followupDailyMax, followupWindowDays: nums.followupWindowDays,
             blessingDraft: f.blessingDraft, weeklyPlanEnabled: f.weeklyPlanEnabled,
             lifeSimEnabled: f.lifeSimEnabled,
+            advancedInsightsEnabled: f.advancedInsightsEnabled,
             calendarKey: f.calendarKey,
             smtp,
           },
@@ -1475,8 +1479,8 @@ createApp({
     }
 
     // ---------- 洞察页 ----------
-    const insightTab = ref('search');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false });
+    const insightTab = ref('briefing');
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1487,6 +1491,10 @@ createApp({
       if (tab === 'life' && !insightLoaded.life) { insightLoaded.life = true; loadLifeState(); }
       if (tab === 'lifeproj' && !insightLoaded.lifeproj) { insightLoaded.lifeproj = true; loadLifeProjection(); }
       if (tab === 'lifets' && !insightLoaded.lifets) { insightLoaded.lifets = true; loadLifeTimeline(); }
+      if (tab === 'briefing' && !insightLoaded.briefing) { insightLoaded.briefing = true; loadBriefing(); }
+      if (tab === 'network' && !insightLoaded.network) { insightLoaded.network = true; loadNetwork(); }
+      if (tab === 'self' && !insightLoaded.self) { insightLoaded.self = true; loadSelfPortrait(); }
+      if (tab === 'learning' && !insightLoaded.learning) { insightLoaded.learning = true; loadIntervention(); }
     }
 
     // ---------- 关系图谱 ----------
@@ -1581,6 +1589,83 @@ createApp({
       } catch (e) {
         toast(e.message, 'error');
         lifeBusy.value = false;
+      }
+    }
+
+    // ---------- 高阶洞察四件套 ----------
+    const advBusy = ref(false);
+    const net = reactive({ enabled: true, generatedAt: '', network: null });
+    const selfpt = reactive({ enabled: true, generatedAt: '', self: null });
+    const learn = reactive({ enabled: true, generatedAt: '', intervention: null });
+    const brief = reactive({ enabled: true, generatedAt: '', briefing: null });
+
+    async function loadNetwork() {
+      if (advBusy.value) return;
+      advBusy.value = true;
+      try {
+        const data = await api('/api/insight/network');
+        net.enabled = data.enabled !== false;
+        net.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        net.network = data.network || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { advBusy.value = false; }
+    }
+
+    async function loadSelfPortrait() {
+      if (advBusy.value) return;
+      advBusy.value = true;
+      try {
+        const data = await api('/api/insight/self');
+        selfpt.enabled = data.enabled !== false;
+        selfpt.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        selfpt.self = data.self || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { advBusy.value = false; }
+    }
+
+    async function loadIntervention() {
+      if (advBusy.value) return;
+      advBusy.value = true;
+      try {
+        const data = await api('/api/insight/intervention');
+        learn.enabled = data.enabled !== false;
+        learn.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        learn.intervention = data.intervention || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { advBusy.value = false; }
+    }
+
+    async function loadBriefing() {
+      if (advBusy.value) return;
+      advBusy.value = true;
+      try {
+        const data = await api('/api/insight/briefing');
+        brief.enabled = data.enabled !== false;
+        brief.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        brief.briefing = data.briefing || null;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { advBusy.value = false; }
+    }
+
+    function refreshCurrentInsightTab() {
+      if (insightTab.value === 'briefing') loadBriefing();
+      else if (insightTab.value === 'network') loadNetwork();
+      else if (insightTab.value === 'self') loadSelfPortrait();
+      else if (insightTab.value === 'learning') loadIntervention();
+      else if (insightTab.value === 'life') loadLifeState();
+      else if (insightTab.value === 'lifeproj') loadLifeProjection();
+    }
+
+    async function recomputeInsights() {
+      if (advBusy.value) return;
+      advBusy.value = true;
+      try {
+        await api('/api/insight/recompute', { method: 'POST' });
+        toast('高阶洞察正在后台重算，稍后自动刷新');
+        setTimeout(() => { advBusy.value = false; refreshCurrentInsightTab(); }, 6000);
+      } catch (e) {
+        toast(e.message, 'error');
+        advBusy.value = false;
       }
     }
 
@@ -2457,6 +2542,9 @@ createApp({
       // 人生模拟器
       life, lifeproj, lifes, lifeBusy, lifeClassLabel,
       loadLifeState, loadLifeProjection, loadLifeTimeline, recomputeLife,
+      // 高阶洞察四件套
+      advBusy, net, selfpt, learn, brief,
+      loadNetwork, loadSelfPortrait, loadIntervention, loadBriefing, recomputeInsights,
       srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
       dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,
       social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,

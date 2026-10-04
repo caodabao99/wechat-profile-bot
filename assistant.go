@@ -42,14 +42,15 @@ type AssistantSettings struct {
 	WarmingMinPrior int `json:"warmingMinPrior"` // 升温判定要求前期至少这么多互动（旧硬编码 3）
 
 	// ---- 增值功能（默认关闭，老配置读不到这些字段时保持零值/默认值，行为不变） ----
-	RemindFollowup     bool   `json:"remindFollowup"`     // 每日邮件是否附「待跟进」板块
-	FollowupEnabled    bool   `json:"followupEnabled"`    // 是否用 LLM 自动抽取待跟进（有模型开销）
-	FollowupDailyMax   int    `json:"followupDailyMax"`   // 每日最多扫描几个联系人
-	FollowupWindowDays int    `json:"followupWindowDays"` // 只看最近 N 天的消息
-	BlessingDraft      bool   `json:"blessingDraft"`      // 重要日子提醒里是否附 AI 祝福语草稿
-	CalendarKey        string `json:"calendarKey"`        // .ics 订阅链接的独立密钥（ICS 客户端带不了 Authorization 头）
-	WeeklyPlanEnabled  bool   `json:"weeklyPlanEnabled"`  // 是否启用每周维护计划（默认开，opt-out）
-	LifeSimEnabled     bool   `json:"lifeSimEnabled"`     // 是否启用人生模拟器（人生状态+推演，默认开，纯 SQL 零模型开销）
+	RemindFollowup          bool   `json:"remindFollowup"`          // 每日邮件是否附「待跟进」板块
+	FollowupEnabled         bool   `json:"followupEnabled"`         // 是否用 LLM 自动抽取待跟进（有模型开销）
+	FollowupDailyMax        int    `json:"followupDailyMax"`        // 每日最多扫描几个联系人
+	FollowupWindowDays      int    `json:"followupWindowDays"`      // 只看最近 N 天的消息
+	BlessingDraft           bool   `json:"blessingDraft"`           // 重要日子提醒里是否附 AI 祝福语草稿
+	CalendarKey             string `json:"calendarKey"`             // .ics 订阅链接的独立密钥（ICS 客户端带不了 Authorization 头）
+	WeeklyPlanEnabled       bool   `json:"weeklyPlanEnabled"`       // 是否启用每周维护计划（默认开，opt-out）
+	LifeSimEnabled          bool   `json:"lifeSimEnabled"`          // 是否启用人生模拟器（人生状态+推演，默认开，纯 SQL 零模型开销）
+	AdvancedInsightsEnabled bool   `json:"advancedInsightsEnabled"` // 是否启用高阶洞察（社交网络/自我画像/干预学习/本周简报，默认开，纯确定性零模型）
 }
 
 func defaultAssistantSettings() AssistantSettings {
@@ -66,8 +67,9 @@ func defaultAssistantSettings() AssistantSettings {
 		// 待跟进与自动抽取默认开（要调模型花钱，与“主动维护关系”定位一致）；祝福语草稿仍默认关
 		RemindFollowup: true, FollowupEnabled: true, FollowupDailyMax: 8,
 		FollowupWindowDays: 30, BlessingDraft: false,
-		WeeklyPlanEnabled: true,
-		LifeSimEnabled:    true,
+		WeeklyPlanEnabled:       true,
+		LifeSimEnabled:          true,
+		AdvancedInsightsEnabled: true,
 	}
 }
 
@@ -1091,6 +1093,19 @@ func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily
 						slog.Error("人生推演计算失败", "err", err)
 					} else {
 						slog.Info("人生模拟器刷新完成")
+					}
+				})
+			}
+		}
+		// 高阶洞察四件套 + 简报：同样并入周一触发、独立加锁，用简报缓存新鲜度作天然周锁，
+		//   不占 lastWeekly、不新增持久化字段。它内部会先确保人生状态基座新鲜，故天然串在人生模拟器之后。
+		if s.AdvancedInsightsEnabled {
+			if _, genAt, _ := GetCachedBriefing(db); IsBriefingStale(genAt, now) {
+				go safeAssistantTask("高阶洞察刷新", func() {
+					if err := ComputeAdvancedInsights(db, now); err != nil {
+						slog.Error("高阶洞察计算失败", "err", err)
+					} else {
+						slog.Info("高阶洞察刷新完成")
 					}
 				})
 			}

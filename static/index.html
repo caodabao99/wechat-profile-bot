@@ -780,6 +780,10 @@
             <label class="check-row inline"><input type="checkbox" v-model="asstForm.lifeSimEnabled"> 启用人生模拟器自动计算</label>
             <span class="hint">每周一自动算好人际资产账本、90 天未来推演与人生年表（纯本地规则、不调模型、零费用），在「洞察」页直接看结果</span>
           </div>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="asstForm.advancedInsightsEnabled"> 启用高阶洞察自动计算</label>
+            <span class="hint">每周一自动算好社交网络、自我画像、干预学习与本周简报（纯确定性图算法/规则、不调模型、零费用），在「洞察」页直接看结果</span>
+          </div>
 
           <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
           <div class="asst-row">
@@ -983,6 +987,10 @@
         <a href="#" :class="{active: insightTab==='social'}" @click.prevent="switchInsight('social')">社交大盘</a>
         <a href="#" :class="{active: insightTab==='dup'}" @click.prevent="switchInsight('dup')">重复联系人</a>
         <a href="#" :class="{active: insightTab==='graph'}" @click.prevent="switchInsight('graph')">关系图谱</a>
+        <a href="#" :class="{active: insightTab==='briefing'}" @click.prevent="switchInsight('briefing')">本周简报</a>
+        <a href="#" :class="{active: insightTab==='network'}" @click.prevent="switchInsight('network')">社交网络</a>
+        <a href="#" :class="{active: insightTab==='self'}" @click.prevent="switchInsight('self')">自我画像</a>
+        <a href="#" :class="{active: insightTab==='learning'}" @click.prevent="switchInsight('learning')">干预学习</a>
         <a href="#" :class="{active: insightTab==='life'}" @click.prevent="switchInsight('life')">人生总览</a>
         <a href="#" :class="{active: insightTab==='lifeproj'}" @click.prevent="switchInsight('lifeproj')">未来推演</a>
         <a href="#" :class="{active: insightTab==='lifets'}" @click.prevent="switchInsight('lifets')">人生年表</a>
@@ -1491,6 +1499,176 @@
               </div>
             </li>
           </ul>
+        </div>
+      </template>
+
+      <!-- ---- 本周简报（编排层，默认落地） ---- -->
+      <template v-if="insightTab==='briefing'">
+        <div class="card life-card">
+          <div class="tl-head">
+            <h2>本周简报</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="brief.generatedAt">更新于 {{ brief.generatedAt }}</span>
+              <button class="btn sm" @click="recomputeInsights" :disabled="advBusy">{{ advBusy ? '计算中…' : '重新计算' }}</button>
+            </div>
+          </div>
+          <p class="hint block">系统把人生模拟器 + 社交网络 + 自我画像 + 干预学习四层揉成一页，打开即可行动。纯本地确定性计算，不花模型费用。</p>
+          <p class="empty" v-if="advBusy && !brief.briefing">生成中…</p>
+          <template v-if="brief.briefing">
+            <div class="bf-headline">{{ brief.briefing.headline }}</div>
+            <p class="bf-health" v-if="brief.briefing.healthLine">{{ brief.briefing.healthLine }}</p>
+            <h3 class="life-sub" v-if="brief.briefing.topActions && brief.briefing.topActions.length">最值得你花时间的事</h3>
+            <ol class="bf-actions" v-if="brief.briefing.topActions && brief.briefing.topActions.length">
+              <li v-for="(a,i) in brief.briefing.topActions" :key="i">
+                <div class="bf-act-title">{{ a.title }}</div>
+                <div class="hint" v-if="a.detail">{{ a.detail }}</div>
+              </li>
+            </ol>
+            <h3 class="life-sub" v-if="brief.briefing.signals && brief.briefing.signals.length">最强信号</h3>
+            <ul class="life-insights" v-if="brief.briefing.signals && brief.briefing.signals.length">
+              <li v-for="(s,i) in brief.briefing.signals" :key="i">{{ s }}</li>
+            </ul>
+            <ul class="bf-notes" v-if="brief.briefing.notes && brief.briefing.notes.length">
+              <li v-for="(n,i) in brief.briefing.notes" :key="i" class="hint">{{ n }}</li>
+            </ul>
+          </template>
+        </div>
+      </template>
+
+      <!-- ---- 社交网络智能（结构层） ---- -->
+      <template v-if="insightTab==='network'">
+        <div class="card life-card">
+          <div class="tl-head">
+            <h2>社交网络</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="net.generatedAt">更新于 {{ net.generatedAt }}</span>
+              <button class="btn sm" @click="recomputeInsights" :disabled="advBusy">{{ advBusy ? '计算中…' : '重新计算' }}</button>
+            </div>
+          </div>
+          <p class="hint block">把你的关系连线升级成一张网络：自动识别圈簇、找出删掉就会让你的圈子碎片化的桥梁人物、给出撮合引荐。纯图算法，零模型开销。</p>
+          <p class="empty" v-if="advBusy && !net.network">分析中…</p>
+          <template v-if="net.network">
+            <div class="life-metrics">
+              <div class="life-metric"><span class="lm-num">{{ net.network.nodeCount }}</span><span class="lm-lbl">网络人数</span></div>
+              <div class="life-metric"><span class="lm-num">{{ net.network.edgeCount }}</span><span class="lm-lbl">关联连线</span></div>
+              <div class="life-metric"><span class="lm-num">{{ net.network.clusterCount }}</span><span class="lm-lbl">识别圈簇</span></div>
+              <div class="life-metric"><span class="lm-num" :class="{down: net.network.fragilityScore>=0.4}">{{ Math.round(net.network.fragilityScore*100) }}%</span><span class="lm-lbl">网络脆弱度</span></div>
+            </div>
+            <p class="hint block" v-if="net.network.fragilityNote">{{ net.network.fragilityNote }}</p>
+
+            <h3 class="life-sub" v-if="net.network.clusters && net.network.clusters.length">你的圈子</h3>
+            <ul class="nw-clusters" v-if="net.network.clusters && net.network.clusters.length">
+              <li v-for="c in net.network.clusters" :key="c.id">
+                <span class="nw-cl-name">{{ c.label }}</span>
+                <span class="chip">{{ c.size }} 人</span>
+                <span class="hint">{{ (c.members||[]).join('、') }}</span>
+              </li>
+            </ul>
+
+            <h3 class="life-sub" v-if="net.network.bridges && net.network.bridges.length">关键桥梁人物</h3>
+            <ul class="nw-bridges" v-if="net.network.bridges && net.network.bridges.length">
+              <li v-for="b in net.network.bridges" :key="b.contactId" :class="{fragile: b.fragile}">
+                <a :href="'#/contact/' + b.contactId" class="life-name">{{ b.name || ('#'+b.contactId) }}</a>
+                <span class="chip" v-if="b.articulation">桥梁</span>
+                <span class="nw-risk" v-if="b.riskLevel==='high'">高风险</span>
+                <span class="hint" v-if="b.connectsClusters && b.connectsClusters.length">连接 {{ b.connectsClusters.join(' 与 ') }}</span>
+                <span class="hint">重要度 {{ Math.round(b.betweenness) }}%</span>
+              </li>
+            </ul>
+
+            <h3 class="life-sub" v-if="net.network.introductions && net.network.introductions.length">撮合引荐（你可以把…介绍给…）</h3>
+            <ul class="nw-intros" v-if="net.network.introductions && net.network.introductions.length">
+              <li v-for="(it,i) in net.network.introductions" :key="i">
+                <div class="nw-intro-title">{{ it.aName }} ⇄ {{ it.bName }}</div>
+                <div class="hint">{{ it.reason }}</div>
+              </li>
+            </ul>
+
+            <ul class="life-insights" v-if="net.network.insights && net.network.insights.length">
+              <li v-for="(s,i) in net.network.insights" :key="i">{{ s }}</li>
+            </ul>
+            <p class="empty" v-if="net.network.nodeCount===0">还没识别出人际关联，等画像里出现共同城市/兴趣/职业会自动成网。</p>
+          </template>
+        </div>
+      </template>
+
+      <!-- ---- 自我关系画像（镜像层） ---- -->
+      <template v-if="insightTab==='self'">
+        <div class="card life-card">
+          <div class="tl-head">
+            <h2>自我画像</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="selfpt.generatedAt">更新于 {{ selfpt.generatedAt }}</span>
+              <button class="btn sm" @click="recomputeInsights" :disabled="advBusy">{{ advBusy ? '计算中…' : '重新计算' }}</button>
+            </div>
+          </div>
+          <p class="hint block">从全体关系里反照出你自己的社交模式——谁在主动先开口、精力往哪里迁移、有多少关系几乎一厢情愿。工具变镜子，零新增采数。</p>
+          <p class="empty" v-if="advBusy && !selfpt.self">分析中…</p>
+          <template v-if="selfpt.self">
+            <div class="sp-tags" v-if="selfpt.self.styleTags && selfpt.self.styleTags.length">
+              <span class="sp-tag" v-for="t in selfpt.self.styleTags" :key="t.key" :title="t.reason">{{ t.label }}</span>
+            </div>
+            <div class="life-metrics">
+              <div class="life-metric"><span class="lm-num">{{ Math.round(selfpt.self.initiationRate) }}%</span><span class="lm-lbl">你先开口</span></div>
+              <div class="life-metric"><span class="lm-num">{{ selfpt.self.activeContacts }}</span><span class="lm-lbl">近期往来人数</span></div>
+              <div class="life-metric"><span class="lm-num down">{{ selfpt.self.oneWayCount }}</span><span class="lm-lbl">单向关系</span></div>
+              <div class="life-metric"><span class="lm-num">{{ Math.round(selfpt.self.imbalanceAvg) }}%</span><span class="lm-lbl">平均失衡度</span></div>
+            </div>
+
+            <h3 class="life-sub">你先开口的比例（按类别）</h3>
+            <ul class="sp-bars">
+              <li v-for="(v,k) in selfpt.self.categoryInitiation" :key="k">
+                <span class="sp-cat">{{ k }}</span>
+                <span class="sp-bar"><i :style="{width: v+'%'}"></i></span>
+                <span class="hint">{{ Math.round(v) }}%</span>
+              </li>
+            </ul>
+
+            <h3 class="life-sub" v-if="selfpt.self.migration && selfpt.self.migration.length">精力去向</h3>
+            <ul class="life-insights" v-if="selfpt.self.migration && selfpt.self.migration.length">
+              <li v-for="(s,i) in selfpt.self.migration" :key="i">{{ s }}</li>
+            </ul>
+            <ul class="life-insights" v-if="selfpt.self.insights && selfpt.self.insights.length">
+              <li v-for="(s,i) in selfpt.self.insights" :key="i">{{ s }}</li>
+            </ul>
+          </template>
+        </div>
+      </template>
+
+      <!-- ---- 证据化干预学习（因果层） ---- -->
+      <template v-if="insightTab==='learning'">
+        <div class="card life-card">
+          <div class="tl-head">
+            <h2>干预学习</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="learn.generatedAt">更新于 {{ learn.generatedAt }}</span>
+              <button class="btn sm" @click="recomputeInsights" :disabled="advBusy">{{ advBusy ? '计算中…' : '重新计算' }}</button>
+            </div>
+          </div>
+          <p class="hint block">用你自己的历史回测数据学“对哪类人做什么真有效”：建议被执行 14 天后自动回测互动变化，系统算出带置信区间的回暖率。样本不够时会诚实标注。</p>
+          <p class="empty" v-if="advBusy && !learn.intervention">学习中…</p>
+          <template v-if="learn.intervention">
+            <p class="hint block" v-if="learn.intervention.dataNote">{{ learn.intervention.dataNote }}</p>
+            <div class="life-metrics" v-if="learn.intervention.totalResolved>0">
+              <div class="life-metric"><span class="lm-num">{{ learn.intervention.totalResolved }}</span><span class="lm-lbl">已回测样本</span></div>
+              <div class="life-metric"><span class="lm-num">{{ Math.round(learn.intervention.baseRate) }}%</span><span class="lm-lbl">整体回暖率</span></div>
+            </div>
+            <h3 class="life-sub" v-if="learn.intervention.byKind && learn.intervention.byKind.length">按干预方式的效果</h3>
+            <ul class="iv-list" v-if="learn.intervention.byKind && learn.intervention.byKind.length">
+              <li v-for="(a,i) in learn.intervention.byKind" :key="i" :class="{low: a.lowSample}">
+                <span class="iv-kind">{{ a.kindLabel }}</span>
+                <span class="iv-rate">{{ Math.round(a.successRate) }}%</span>
+                <span class="hint">回暖 {{ a.improved }} / 共 {{ a.n }}（置信 {{ Math.round(a.wilsonLow) }}~{{ Math.round(a.wilsonHigh) }}%）</span>
+                <span class="chip" v-if="a.lowSample">样本不足</span>
+                <div class="hint" v-if="a.verdict">{{ a.verdict }}</div>
+              </li>
+            </ul>
+            <h3 class="life-sub" v-if="learn.intervention.bestActions && learn.intervention.bestActions.length">被验证有效的动作</h3>
+            <ul class="life-insights" v-if="learn.intervention.bestActions && learn.intervention.bestActions.length">
+              <li v-for="(s,i) in learn.intervention.bestActions" :key="i">{{ s }}</li>
+            </ul>
+            <p class="empty" v-if="learn.intervention.totalResolved===0">还没有回测样本。当你在周计划里联系某人，系统 14 天后会自动回测，数据攒够这里就有结论。</p>
+          </template>
         </div>
       </template>
     </section>

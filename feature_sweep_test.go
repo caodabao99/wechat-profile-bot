@@ -144,6 +144,12 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"人生推演", "GET", "/api/life/projection", "", true, true},
 		{"人生年表", "GET", "/api/life/timeline", "", true, true},
 
+		{"高阶洞察-社交网络", "GET", "/api/insight/network", "", true, true},
+		{"高阶洞察-自我画像", "GET", "/api/insight/self", "", true, true},
+		{"高阶洞察-干预学习", "GET", "/api/insight/intervention", "", true, true},
+		{"高阶洞察-本周简报", "GET", "/api/insight/briefing", "", true, true},
+		{"高阶洞察-手动重算", "POST", "/api/insight/recompute", "", true, true},
+
 		{"归档状态", "GET", "/api/archive/status", "", true, true},
 		{"系统状态", "GET", "/api/status", "", true, true},
 		{"备份日志", "GET", "/api/backup/logs", "", true, true},
