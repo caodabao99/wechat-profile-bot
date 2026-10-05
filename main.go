@@ -118,6 +118,7 @@ func main() {
 		{"联系人标签", ensureTagTables},
 		{"联系人时间线", ensureTimelineTables},
 		{"待跟进事项", ensureFollowupTables},
+		{"提示词模板", ensurePromptTemplates},
 	} {
 		if err := init.fn(db); err != nil {
 			slog.Warn(init.name+"数据表初始化失败", "err", err)

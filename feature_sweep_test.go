@@ -122,6 +122,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"标签列表", "GET", "/api/tags", "", true, true},
 		{"标签创建", "POST", "/api/tags", `{"name":"体检标签"}`, true, true},
 		{"标签智能建议", "GET", "/api/assistant/tags/suggest", "", true, true},
+		{"提示词模板列表", "GET", "/api/assistant/prompts", "", true, true},
 
 		{"搜索FTS状态", "GET", "/api/search/fts-status", "", true, true},
 		{"搜索FTS重建", "POST", "/api/search/fts-rebuild", "", true, true},
@@ -265,6 +266,26 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		}
 		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Suggestions) {
 			t.Errorf("[标签建议] total 应与 suggestions 长度一致: %s", truncate(body))
+		}
+	}
+
+	// v5.1.0：/api/assistant/prompts 须返回 {items, total}，每项含 key/isCustom/vars；列表应恰好 13 个模板。
+	if code, body, err := do("GET", "/api/assistant/prompts", ""); err != nil {
+		t.Errorf("[提示词模板] /assistant/prompts 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[提示词模板] /assistant/prompts → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"items"`, `"total"`, `"key"`, `"isCustom"`, `"vars"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[提示词模板] /assistant/prompts 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+		var out struct {
+			Items []PromptTemplateInfo `json:"items"`
+			Total int                  `json:"total"`
+		}
+		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 13 {
+			t.Errorf("[提示词模板] items/total 应齐备且为 13 项: %s", truncate(body))
 		}
 	}
 }

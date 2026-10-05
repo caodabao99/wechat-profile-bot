@@ -254,33 +254,14 @@ func GenerateOrUpdateProfile(ctx context.Context, db *sql.DB, llmClient *LLMClie
 		return fmt.Errorf("没有可用于生成画像的聊天记录")
 	}
 
-	prompt := fmt.Sprintf(`你是人物画像分析助手。请根据【旧画像】和【新增聊天记录】，更新该联系人的人物画像。
-要求：
-1. 只基于聊天记录中的证据，不要编造。
-2. 如果新信息与旧画像冲突，以新信息为准。
-3. 输出完整 JSON，结构同旧画像。
-4. intent_patterns 的键（意图名称）必须用中文，如"分享资源"、"技术支持"、"闲聊问候"。
-5. summary 字段用 100 字以内概括这个人的核心特征。
-
-画像 JSON 结构如下：
-{
-  "basic_info": {"occupation": "", "location": "", "important_dates": []},
-  "personality": [],
-  "communication_style": {"reply_length": "", "tone": "", "frequent_phrases": [], "emoji_usage": "", "initiative": ""},
-  "interests": [],
-  "emotional_patterns": {"stressors": [], "comfort_topics": [], "when_upset": ""},
-  "relationship": {"closeness": "", "recent_events": [], "interaction_pattern": ""},
-  "intent_patterns": {"中文意图名称": "描述该意图的典型表现"},
-  "important_facts": [],
-  "summary": ""
-}
-
-联系人：%s
-【旧画像】
-%s
-【新增聊天记录】
-%s
-请只输出 JSON，不要其他内容。`, contactName, oldJSON, formatMessagesForPromptLimited(messages))
+	prompt, err := RenderPrompt(db, "profile_update", map[string]string{
+		"contactName": contactName,
+		"oldJSON":     oldJSON,
+		"messages":    formatMessagesForPromptLimited(messages),
+	})
+	if err != nil {
+		return fmt.Errorf("渲染画像提示词失败: %w", err)
+	}
 
 	raw, err := llmClient.CallContext(ctx, prompt)
 	if err != nil {
@@ -299,7 +280,7 @@ func GenerateOrUpdateProfile(ctx context.Context, db *sql.DB, llmClient *LLMClie
 	newJSON := string(newJSONBytes)
 
 	// 用模型生成一句话的本次变化说明（失败不影响主流程）
-	changeSummary := summarizeProfileChange(ctx, llmClient, oldJSON, newJSON)
+	changeSummary := summarizeProfileChange(ctx, db, llmClient, oldJSON, newJSON)
 
 	if err := saveProfileAtEpoch(db, contactID, newJSON, profile.Summary, changeSummary, epoch); err != nil {
 		return fmt.Errorf("保存画像失败: %w", err)
@@ -309,14 +290,14 @@ func GenerateOrUpdateProfile(ctx context.Context, db *sql.DB, llmClient *LLMClie
 }
 
 // summarizeProfileChange 让模型用一句话概括画像变化；任何失败都返回兜底文案
-func summarizeProfileChange(ctx context.Context, llmClient *LLMClient, oldJSON, newJSON string) string {
-	prompt := fmt.Sprintf(`对比下面两份人物画像 JSON，用一句中文（30 字以内）概括新画像相对旧画像的主要变化。
-如果除了首次生成外没有实质变化，也请简述新增了哪些信息。
-只输出 JSON：{"change_summary": "一句话"}
-【旧画像】
-%s
-【新画像】
-%s`, oldJSON, newJSON)
+func summarizeProfileChange(ctx context.Context, db *sql.DB, llmClient *LLMClient, oldJSON, newJSON string) string {
+	prompt, err := RenderPrompt(db, "profile_change_summary", map[string]string{
+		"oldJSON": oldJSON,
+		"newJSON": newJSON,
+	})
+	if err != nil {
+		return "画像已更新"
+	}
 
 	raw, err := llmClient.CallContext(ctx, prompt)
 	if err != nil {
@@ -356,20 +337,14 @@ func SupplementProfile(ctx context.Context, db *sql.DB, llmClient *LLMClient, co
 		oldJSON = "{}"
 	}
 
-	prompt := fmt.Sprintf(`你是人物画像分析助手。用户手动提供了关于联系人的新信息，请把这些信息合并到现有画像中。
-要求：
-1. 用户手动提供的信息是准确的第一手资料，优先级最高，直接更新到画像对应字段。
-2. 不要删除原有画像中没有被新信息覆盖的内容。
-3. 日期类信息（如生日、纪念日）严格按照用户提供的精度记录：提供了年月日就记年月日，只提供月日就只记月日，不要自行补全或猜测缺失的部分。
-4. 输出完整 JSON，结构同旧画像。
-5. summary 字段用 100 字以内概括这个人的核心特征。
-
-联系人：%s
-【旧画像】
-%s
-【用户手动补充的信息】
-%s
-请只输出 JSON，不要其他内容。`, contactName, oldJSON, strings.TrimSpace(userNote))
+	prompt, err := RenderPrompt(db, "profile_supplement", map[string]string{
+		"contactName": contactName,
+		"oldJSON":     oldJSON,
+		"userNote":    strings.TrimSpace(userNote),
+	})
+	if err != nil {
+		return fmt.Errorf("渲染补充提示词失败: %w", err)
+	}
 
 	raw, err := llmClient.CallContext(ctx, prompt)
 	if err != nil {
@@ -409,34 +384,14 @@ func AnalyzeIntent(ctx context.Context, db *sql.DB, llmClient *LLMClient, contac
 		profileSummary = "（暂无画像，消息积累到一定数量后会自动生成）"
 	}
 
-	prompt := fmt.Sprintf(`你是聊天分析助手。下面是联系人的人物画像和本次对话，请分析对方最新消息的意图。
-【人物画像】
-%s
-【本次对话】
-%s
-【当前对方最新消息】
-对方：%s
-请输出 JSON：
-{
-  "surface": "表面意思",
-  "intent": "潜在意图，从[邀约/试探/求安慰/敷衍/婉拒/分享/日常寒暄/其他]中选择",
-  "emotion": "情绪状态",
-  "subtext": "潜台词",
-  "suggested_replies": [
-    {"style": "稳妥得体", "text": "该风格的回复"},
-    {"style": "简洁直接", "text": "该风格的回复"},
-    {"style": "亲切热情", "text": "该风格的回复"},
-    {"style": "委婉留余地", "text": "该风格的回复"}
-  ],
-  "confidence": 0.0
-}
-suggested_replies 规则：
-1. style 只能从【稳妥得体、简洁直接、亲切热情、委婉留余地】四个名称中原样选择，不得自造名称，四种各给一条，一个都不能少，也不要重复。
-2. 四种风格的含义：稳妥得体=礼貌周全有分寸，不犯错的默认选择；简洁直接=最少字数一句话说清，不寒暄；亲切热情=有温度、表达关心、拉近距离；委婉留余地=不把话说死、给对方面子，适合拒绝或敏感话题。
-3. 固定按【稳妥得体、简洁直接、亲切热情、委婉留余地】的顺序输出。即使某种风格在当前语境下不是最优，也要写出该风格下最得体、不违和的版本（例如对方求安慰时，简洁直接也要简短而不失温度）。
-4. 每条 text 都要真正体现对应风格，四条之间要有可感知的明显差异，而不是换几个字；不要编造事实，不要替用户做承诺。
-只输出 JSON，不要其他内容。`,
-		profileSummary, formatMessagesForPromptLimited(messages), strings.TrimSpace(newMessage))
+	prompt, err := RenderPrompt(db, "intent_analysis", map[string]string{
+		"profileSummary": profileSummary,
+		"messages":       formatMessagesForPromptLimited(messages),
+		"newMessage":     strings.TrimSpace(newMessage),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("渲染意图提示词失败: %w", err)
+	}
 
 	raw, err := llmClient.CallContext(ctx, prompt)
 	if err != nil {

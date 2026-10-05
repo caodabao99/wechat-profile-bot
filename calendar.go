@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -327,22 +328,18 @@ func GenerateBlessings(db *sql.DB, llm *LLMClient, item AssistantDateItem) ([]st
 		when = fmt.Sprintf("%d 天后（%s）", item.DaysUntil, item.DateStr)
 	}
 
-	prompt := fmt.Sprintf(`你是微信关系助手。联系人「%s」的%s%s，就是%s。
-
-已知画像信息：%s
-
-用户（"我"）平时的说话风格参考：%s
-
-请替用户起草 %d 条微信祝福语。要求：
-1. 三条风格各不相同：第一条走心真诚、第二条轻松俏皮、第三条简短干脆；
-2. 每条不超过 60 个字，口语化，像真人发的微信，不要书面套话、不要"值此…之际"；
-3. 可以自然带入画像里的兴趣爱好或近期共同事件，但不要编造画像中没有的事实；
-4. 避开已知雷点；不要使用表情符号以外的花哨符号，最多可用 1~2 个常见 emoji。
-
-严格输出如下 JSON（不要输出任何其他内容）：
-{"blessings":["第一条","第二条","第三条"]}`,
-		name, item.Kind, fmt.Sprintf("%d月%d日", item.Month, item.Day), when,
-		hintBlock, styleHint, blessingMaxCount)
+	prompt, err := RenderPrompt(db, "calendar_blessing", map[string]string{
+		"name":      name,
+		"kind":      item.Kind,
+		"dateLabel": fmt.Sprintf("%d月%d日", item.Month, item.Day),
+		"when":      when,
+		"hintBlock": hintBlock,
+		"styleHint": styleHint,
+		"maxCount":  strconv.Itoa(blessingMaxCount),
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), blessingTimeout)
 	defer cancel()

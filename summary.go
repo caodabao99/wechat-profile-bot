@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -113,22 +114,18 @@ func SummarizeContact(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 	sources, captioned := numberMessagesForSummary(msgs)
 	base.Sources = sources
 
-	prompt := fmt.Sprintf(
-		`你是微信关系管理助手。下面是我（"我"）与联系人「%s」近 %d 天的聊天记录（已按时间正序编号，编号即引用锚点）。`+
-			`请基于原文给我一份结构化回顾，严格只依据记录本身，不臆测、不补充原文里没有的信息。\n`+
-			`对方画像概要：%s\n\n`+
-			`聊天记录（编号从 1 开始）：\n%s\n\n`+
-			`输出要求（严格 JSON，不要任何解释文字）：\n`+
-			`{\n`+
-			`  "overview": "一段 80~200 字的中文总结，讲清这段时间主要聊了什么、有没有悬而未决的事；若引用具体消息，用 [n] 标注出处",\n`+
-			`  "topics": ["3~%d 个话题标签词，短名词为主，例如 旅行/工作/家庭/健康"],\n`+
-			`  "todos": [\n`+
-			`    {"text": "一句中文待办，不超过 %d 字", "owner": "我 或 对方", "ref": "[n] 对应编号"}\n`+
-			`  ]\n`+
-			`}\n`+
-			`若原文里没有明确待办，todos 输出空数组 []。最多 %d 条。`,
-		base.Name, days, summary, strings.Join(captioned, "\n"),
-		summaryTopicsMax, summaryTodoTextMax, summaryTodosMax)
+	prompt, err := RenderPrompt(db, "summary", map[string]string{
+		"name":        base.Name,
+		"days":        strconv.Itoa(days),
+		"summary":     summary,
+		"captioned":   strings.Join(captioned, "\n"),
+		"topicsMax":   strconv.Itoa(summaryTopicsMax),
+		"todoTextMax": strconv.Itoa(summaryTodoTextMax),
+		"todosMax":    strconv.Itoa(summaryTodosMax),
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	raw, err := llm.CallContext(ctx, prompt)
 	if err != nil {

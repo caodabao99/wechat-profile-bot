@@ -16,6 +16,8 @@ RUN go mod download
 # go:embed 需要 static/ 目录（网页管理界面），缺了会报 pattern static: no matching files found
 COPY *.go ./
 COPY static ./static
+# v5.1.0：prompts.go 用 //go:embed prompts 内嵌默认提示词模板，缺目录会报 pattern prompts: no matching files found
+COPY prompts ./prompts
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o wechat-profile-bot .
 
 # 运行阶段

@@ -69,12 +69,15 @@ func SimulateReply(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 		ctxTail = ctxTail[len(ctxTail)-24:]
 	}
 
-	prompt := fmt.Sprintf(
-		`你在帮助"我"预判一段微信对话。请根据对方画像与最近对话，推演"我"发出下面这句草稿后，对方最可能的 2~3 种反应。\n`+
-			`对方昵称：%s\n对方画像概要：%s\n最近对话：\n%s\n\n我的草稿：%s\n\n`+
-			`要求：贴合对方性格与当前关系，不要鸡汤、不像群发。只输出 JSON：`+
-			`{"replies":[{"text":"对方的回复","mood":"积极|中性|消极","rationale":"为什么会这样反应，一句话"}]}`,
-		name, summary, strings.Join(ctxTail, "\n"), draft)
+	prompt, err := RenderPrompt(db, "simulate_reply", map[string]string{
+		"name":    name,
+		"summary": summary,
+		"convo":   strings.Join(ctxTail, "\n"),
+		"draft":   draft,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	raw, err := llm.CallContext(ctx, prompt)
 	if err != nil {

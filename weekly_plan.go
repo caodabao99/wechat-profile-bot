@@ -343,10 +343,14 @@ func generateOutreachDraft(db *sql.DB, llm *LLMClient, contactID int64, kind str
 		reasonHint = "对方发了消息你还没回"
 	}
 
-	prompt := fmt.Sprintf(
-		"你是一位社交顾问。用户想维护与「%s」的关系（画像：%s）。原因：%s。"+
-			"请为用户生成一句简短自然的微信开场白（不超过50字），像朋友之间随口发的那种，不要写得太正式。只输出这句话，不要解释。",
-		name, summary, reasonHint)
+	prompt, err := RenderPrompt(db, "weekly_plan", map[string]string{
+		"name":       name,
+		"summary":    summary,
+		"reasonHint": reasonHint,
+	})
+	if err != nil {
+		return ""
+	}
 
 	raw, err := llm.CallContext(ctx, prompt)
 	if err != nil || raw == "" {

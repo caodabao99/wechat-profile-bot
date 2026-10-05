@@ -31,6 +31,7 @@
 - **关系维护日历**（v4.7.0，关系助手页）：新增只读聚合端点 `GET /api/assistant/calendar/events`，把生日/纪念日（年度重复逐年展开、含 2/29 平年回退 2/28）、手动大事记、带截止日的待跟进聚合成统一事件流，前端用自研 7 列月历网格呈现（按 kind 着色、点事件直达联系人）。待跟进新增可选 `due_date` 列（懒建表走幂等 ALTER、不 bump user_version、不改 backup.go）。零第三方库（不引 FullCalendar）、确定性排序、只读端点
 - **对话质量评分**（v4.8.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/quality?days=90`，对单个联系人从**回复及时性 / 对话深度 / 话题多样性 / 情绪正向度**四维各给 0-100 分并加权出综合分，前端用手写内联 SVG 雷达图 + 维度条呈现。全部在本地按消息与画像确定性计算、不调模型（情绪为增值表，缺失则该维不计入综合、按比例归一，诚实标注“无数据”）；可随时刷新、结果稳定可复现。零第三方库（不引 Chart.js/ECharts）、只读、不新增表
 - **智能回顾摘要**（v4.9.0，联系人驾驶舱）：新增 `POST /api/contacts/{id}/summary` body `{days}`，选定时间窗口后基于窗口内真实聊天原文调模型产一份结构化回顾——overview一段话总结 + topics 话题 chips + todos 待办列表（每条标 [n] 出处可跳转原文、可一键转跟进）。复用 ask.go 两段式检索与降级：未配模型 503、不编造；窗口内原文不足 4 条时如实返回空摘要 + note；模型返回坏 JSON 回退为原文摘录。摘要一次性返回不落库。
+- **插件化分析引擎·提示词模板外置**（v5.1.0，关系助手）：把全部 13 个 LLM 提示词模板从硬编码外置为可编辑「分析插件」——内置默认经 `go:embed` 逐字内嵌、可被 SQLite `prompt_templates` 覆盖并**运行时热加载**（改完即生效、无需重启）。变量用**字面占位符 `{{key}}`**、渲染为单趟精确字符串替换（非 text/template，杜绝模板注入、结果确定）；保存时强制校验必填变量齐备、拒绝未知/游离占位符、限 8KB；坏覆盖或读取失败一律**回退内置默认、绝不因模板问题 500 阻断业务**。默认渲染与迁移前 `fmt.Sprintf` **逐字节一致**（golden 测试锁死，纯重构零行为变化）。新增 `/api/assistant/prompts*` 一组端点支持列表/取详情/保存/重置/试渲染，覆盖表自动纳入备份恢复。
 - **智能联系人自动分组**（v5.0.0，标签管理）：新增只读端点 `GET /api/assistant/tags/suggest?ids=1,2,3`，基于联系人画像（地域/职业/兴趣）与互动指标（亲密度分层、情绪告警、往来待跟进）用**确定性规则**批量产标签建议（含命中理由与置信度），前端一键/勾选批量采纳经 `POST /api/assistant/tags/apply` 走 `CreateTag`（幂等）+ `INSERT OR IGNORE` 落库。全程本地计算、不调模型、结果可复现（同数据同参跑两次逐字段相等）；情绪/待跟进为增值表，缺失则静默跳过对应规则不报错。零第三方库、采纳幂等（重复采纳不产生重复链接）。
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
@@ -49,7 +50,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.0.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.1.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -66,7 +67,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -284,7 +285,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.0.0.tar.gz`，得到 `wechat-profile-bot:v5.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.1.0.tar.gz`，得到 `wechat-profile-bot:v5.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -415,7 +416,8 @@ sudo systemctl enable docker
 4. **Bearer Token**（`apiToken`）：所有接口（含 `status`）都要求 `Authorization: Bearer <token>`，缺失或不匹配返回 401
 5. **接口限流**：`/api/ingest` 每 IP 每分钟最多 120 次，防止 Token 泄露后被脚本刷爆大模型账单
 6. **安全响应头**：所有响应自动带 `X-Content-Type-Options`、`X-Frame-Options: DENY`、`Referrer-Policy`、`Content-Security-Policy`，防点击劫持与 MIME 嗅探
-7. **HTTP 超时**：`ReadHeaderTimeout 10s` + `IdleTimeout 120s`，避免慢速连接（Slowloris）长期占满连接数
+7. **HTTP 超时**：`ReadHeaderTimeout 10s`、`IdleTimeout 120s`，避免慢速连接（Slowloris）长期占满连接数
+8. **提示词编辑（v5.1.0）**：`/api/assistant/prompts*` 与上述接口同走同一认证（IP 黑白名单 + Bearer/会话）——编辑提示词等价于编辑本工具自己的模型指令，适用于单主自托管。缓解措施：仅**字面占位符**（非模板引擎、不执行任意逻辑）、保存时**必填变量校验 + 8KB 上限**、每个模板**可一键回滚内置默认**，且覆盖只改提示词文本、**不改代码路径与降级语义**。
 
 > 服务端暴露在公网时务必同时配置 `apiToken` 和 `apiWhitelist`，或用防火墙/安全组限制来源。
 
@@ -514,6 +516,11 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | POST | `/api/contacts/{id}/summary` | 智能回顾摘要，body `{"days":30}`，返回 overview/topics/todos(带 [n] 出处)/sources；未配模型 503、不编造 |
 | GET | `/api/assistant/tags/suggest?ids=1,2,3` | 智能标签建议（ids 缺省=全部活跃联系人，带上限护栏），返回 `{suggestions:[{contactId,name,tagName,reason,confidence}],total}`；纯本地确定性、不调模型 |
 | POST | `/api/assistant/tags/apply` | 批量采纳标签建议，body `{"items":[{contactId,tagName}]}`，走 `CreateTag`幂等 + `INSERT OR IGNORE`，返回 `{affected}`；重复采纳不产生重复链接 |
+| GET | `/api/assistant/prompts` | 提示词模板列表，返回 `{items:[{key,title,feature,vars,isCustom,updatedAt}],total}`（共 13 个） |
+| GET | `/api/assistant/prompts/{key}` | 单个模板详情：`{default,effective,isCustom,override,vars,...}` |
+| PUT | `/api/assistant/prompts/{key}` | 保存覆盖，body `{"content":"...含 {{key}} 占位符"}`；非法/缺必填变量/超 8KB → 400，未知 key → 404；下次 LLM 调用即热加载生效 |
+| DELETE | `/api/assistant/prompts/{key}` | 重置为内置默认（删除覆盖行） |
+| POST | `/api/assistant/prompts/{key}/preview` | 用样本变量试渲染（只读、不调模型），body `{"vars":{...}}`，返回 `{prompt}` |
 | POST | `/api/relationships/connections/rebuild` | 手动全量重建关系连线（纯 SQL，不调模型） |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
@@ -587,6 +594,17 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v5.1.0（2026-10-05）
+
+- **插件化分析引擎（第一阶）：LLM 提示词模板外置**。将全部 13 个 LLM 提示词模板（画像更新/补充/变化摘要、意图分析、提问关键词/作答、回顾摘要、情绪分析、待跟进抽取、关系开场白、周计划开场白、回复推演、节日祝福）从硬编码 `fmt.Sprintf` 外置为可编辑「分析插件」：
+  - 内置默认逐字迁移至 `prompts/*.txt`，经 `//go:embed prompts` 内嵌；覆盖项存 SQLite 新表 `prompt_templates`（懒建、不进版本化 migrate、不 bump user_version）。
+  - 渲染入口 `RenderPrompt(db, key, vars)`：读取优先级 DB 覆盖 → 内置默认；变量用字面占位符 `{{key}}`，以单趟 `strings.NewReplacer` 精确替换（非 text/template），杜绝模板注入、结果确定、且值内 `{{x}}` 不会被二次扫描。
+  - 安全护栏：保存时校验必填变量齐备、拒绝未声明/游离 `{{}}`、空内容与 8KB 超限；渲染期遇非法覆盖记日志并回退内置默认，绝不因坏模板 500 阻断业务；未配模型时各站点原有 `ErrLLMNotConfigured`→503 降级不变。
+  - 热加载：不做进程内缓存（LLM 调用稀少、多库场景下全局缓存不安全），每次渲染读一行主键即反映最新覆盖，改完即生效、无需重启。
+- **新增 API**：`GET /api/assistant/prompts`、`GET /api/assistant/prompts/{key}`、`PUT /api/assistant/prompts/{key}`、`DELETE /api/assistant/prompts/{key}`、`POST /api/assistant/prompts/{key}/preview`（挂在 `routeAssistant` 下，复用既有认证）。
+- **备份兼容**：`prompt_templates` 被 `listRestoreTables` 动态纳入（自动随备份）；`restorePreserveWhenAbsent` 新增该表，恢复旧备份（缺该表）时保留本机自定义、不清空。
+- **行为无损**：`prompts_test.go` golden 逐字节对比（位置参数 `fmt.Sprintf` vs 命名变量 `RenderPrompt`）锁死 13 个模板默认输出与迁移前一致；另覆盖生命周期/校验拒绝/坏覆盖回退/防级联注入/注册表自洽。`feature_sweep_test.go` 新增提示词模板列表用例（63/63 全绿）。`go test -race -cover` 全绿、覆盖率 63.9%。零第三方库、`CGO_ENABLED=0` 四目标交叉编译不变。
 
 ### v5.0.0（2026-10-05）
 

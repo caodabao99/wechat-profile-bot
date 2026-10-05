@@ -62,7 +62,7 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 		return nil, fmt.Errorf("联系人不存在: %w", err)
 	}
 
-	keywords := extractAskKeywords(ctx, llm, question)
+	keywords := extractAskKeywords(ctx, db, llm, question)
 	candidates := retrieveRelevantMessages(db, contactID, keywords)
 	if len(candidates) == 0 {
 		return &AskResult{
@@ -86,12 +86,15 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 			candidates[i].N, who, candidates[i].MsgTime, candidates[i].Snippet))
 	}
 
-	prompt := fmt.Sprintf(
-		`你在帮助"我"回答关于某个人历史聊天记录的问题。只依据下面给出的、带编号的真实消息原文作答，`+
-			`并在引用某条依据时标注对应编号 [n]。若原文不足以回答，如实说明。不要编造原文里没有的信息。\n`+
-			`对方昵称：%s\n对方画像概要：%s\n\n可引用的历史消息（编号从 1 开始）：\n%s\n\n我的问题：%s\n\n`+
-			`只输出 JSON：{"answer":"你的回答，尽量带上 [n] 出处标注"}`,
-		name, summary, strings.Join(captioned, "\n"), question)
+	prompt, err := RenderPrompt(db, "ask_answer", map[string]string{
+		"name":      name,
+		"summary":   summary,
+		"captioned": strings.Join(captioned, "\n"),
+		"question":  question,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	raw, err := llm.CallContext(ctx, prompt)
 	if err != nil {
@@ -107,19 +110,18 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 }
 
 // extractAskKeywords 让模型把口语问题改写成若干检索关键词；失败则回退为按空格切分问题。
-func extractAskKeywords(ctx context.Context, llm *LLMClient, question string) []string {
-	prompt := fmt.Sprintf(
-		`从下面的问题里提取 2~6 个用于全文检索微信聊天记录的关键词（名词/地名/事件词为主，`+
-			`可包含同义词以提高召回）。只输出 JSON：{"keywords":["词1","词2"]}。\n问题：%s`, question)
+func extractAskKeywords(ctx context.Context, db *sql.DB, llm *LLMClient, question string) []string {
 	kws := []string{}
-	if raw, err := llm.CallContext(ctx, prompt); err == nil {
-		var wrapper struct {
-			Keywords []string `json:"keywords"`
-		}
-		if json.Unmarshal([]byte(ExtractJSON(raw)), &wrapper) == nil {
-			for _, k := range wrapper.Keywords {
-				if k = strings.TrimSpace(k); k != "" {
-					kws = append(kws, k)
+	if prompt, err := RenderPrompt(db, "ask_keywords", map[string]string{"question": question}); err == nil {
+		if raw, err := llm.CallContext(ctx, prompt); err == nil {
+			var wrapper struct {
+				Keywords []string `json:"keywords"`
+			}
+			if json.Unmarshal([]byte(ExtractJSON(raw)), &wrapper) == nil {
+				for _, k := range wrapper.Keywords {
+					if k = strings.TrimSpace(k); k != "" {
+						kws = append(kws, k)
+					}
 				}
 			}
 		}

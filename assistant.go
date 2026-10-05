@@ -617,18 +617,14 @@ func analyzeContactEmotion(db *sql.DB, llm *LLMClient, contactID int64, now time
 		}
 	}
 
-	prompt := fmt.Sprintf(`你是微信关系分析助手。下面是用户（"我"）与联系人「%s」（"对方"）最近一周的聊天记录：
-
-%s
-%s
-请分析"对方"最近的情绪状态。要求：
-1. 只依据聊天记录，不要臆测记录之外的事实；
-2. 对方消息大多是事务性内容（约时间、收发文件等）时，emotion 用"中性"、alert 用 false；
-3. 只有出现明显负面情绪（持续低落、烦躁、冷淡、抱怨）且值得用户主动关心时 alert 才为 true。
-
-严格输出如下 JSON（不要输出任何其他内容）：
-{"emotion":"积极|中性|低落|愤怒|焦虑 五选一","score":0到100的整数（情绪积极程度）,"summary":"50字以内概括对方近期状态","advice":"50字以内给用户的具体建议","alert":true或false}`,
-		displayName(c), strings.Join(lines, "\n"), emotionHint)
+	prompt, err := RenderPrompt(db, "emotion_analyze", map[string]string{
+		"name":        displayName(c),
+		"messages":    strings.Join(lines, "\n"),
+		"emotionHint": emotionHint,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -353,25 +354,14 @@ func extractFollowups(db *sql.DB, llm *LLMClient, contactID int64, now time.Time
 		return 0, fmt.Errorf("近 %d 天消息不足 4 条，暂不抽取", windowDays)
 	}
 
-	prompt := fmt.Sprintf(`你是微信关系管理助手。下面是用户（"我"）与联系人「%s」（"对方"）最近的聊天记录。
-请从中找出"我"容易忘掉、需要主动跟进的事项，只挑这三类：
-1. kind="question"：对方明确问了"我"一个问题，而后续记录里"我"没有给出答复；
-2. kind="promise"："我"答应/承诺过要做但记录里看不出已经完成的事（例如"我明天发给你""下周请你吃饭"）；
-3. kind="money"：涉及借钱、还钱、代付、转账金额的事项，务必在 amount 里写清金额和方向（如"借给对方500元""对方欠我200元"）。
-
-硬性要求：
-- 只依据记录本身，不要臆测；记录里已经解决的、已经回复过的，一律不要输出；
-- 寒暄、闲聊、纯事务性对话不算；
-- content 用一句中文说清"要做什么"，不超过 40 字，不要复述原文；
-- sourceTime 填对应消息的时间（照抄方括号里的时间即可）；
-- 最多输出 %d 条，按重要程度排序；确实没有就输出空数组。
-
-聊天记录：
-%s
-
-严格输出如下 JSON（不要输出任何其他内容）：
-{"items":[{"kind":"question|promise|money","content":"要跟进的事","amount":"金额与方向，没有就留空","sourceTime":"消息时间"}]}`,
-		displayName(c), followupMaxPerContact, strings.Join(lines, "\n"))
+	prompt, err := RenderPrompt(db, "followup_extract", map[string]string{
+		"name":          displayName(c),
+		"maxPerContact": strconv.Itoa(followupMaxPerContact),
+		"messages":      strings.Join(lines, "\n"),
+	})
+	if err != nil {
+		return 0, err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()

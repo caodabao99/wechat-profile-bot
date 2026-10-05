@@ -357,10 +357,14 @@ func fillDrafts(db *sql.DB, llm *LLMClient, ids []int64) {
 	}
 	rows.Close()
 	for _, r := range pending {
-		prompt := fmt.Sprintf(
-			`你在帮用户维护微信关系。对方昵称：%s。对方画像概要：%s。当前状态：%s。`+
-				`请生成 1 句自然的、不油腻、不像群发的中文开场白，用于重新开启聊天。`+
-				`只输出 JSON：{"draft":"开场白内容"}`, r.name, r.summary, r.kind)
+		prompt, err := RenderPrompt(db, "relationship_draft", map[string]string{
+			"name":    r.name,
+			"summary": r.summary,
+			"kind":    r.kind,
+		})
+		if err != nil {
+			continue
+		}
 		raw, err := llm.CallContext(ctx, prompt)
 		if err != nil {
 			continue
