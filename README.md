@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.1.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.2.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.1.tar.gz`，得到 `wechat-profile-bot:v5.5.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.2.tar.gz`，得到 `wechat-profile-bot:v5.5.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -629,6 +629,18 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v5.5.2（2026-10-05）
+
+本版为**全库深度验证 + 缺陷修复**（无新增用户可见功能）：对整个代码库做系统性体检——用密码学已知答案向量与独立实现交叉校验安全核心、活体跑通全部变更类端点、并修复一处真实计数缺陷：
+
+- **修复：`RecomputeOtherMsgCount` 非归档感知**（`merge.go`）。公共版此前只 `COUNT` 活跃表 `messages`、漏算 `messages_archive`，一旦对已归档的联系人调用就会把多年积累的对方消息数清零（事务版 `recomputeOtherMsgCountTx` 早已归档感知，两口径漂移）。现改为委派事务版（单趟事务、归档感知），彻底消除双份口径；新增用例：归档 3 条后重算仍为 3（旧实现会得到 0）。
+- **备份加密安全测试**（`backup_crypto_test.go`，此前 0% 覆盖）：口令派生用一份独立的教科书 PBKDF2-HMAC-SHA256 实现交叉校验生产实现（120k 迭代逐字节相等）；AES-256-GCM 往返、错口令/篡改/截断/魔数不符一律拒绝、随机盐使同明文两次密文不同、空明文往返、`BackupNeedsPassword` 真实 zip 判定。
+- **TOTP 安全测试**（`twofa_crypto_test.go`，此前 0%）：`totpCodeAt` 用 **RFC 6238 附录 B 已知答案向量**校验 HMAC-SHA1 动态截断（最易出 bug 处）；窗口容差、`totpNewSecret`、`otpauth` URI、常量时间 `tokenMatches`、网页会话生命周期（创建/校验/未知/过期清理/活动续期/吊销）。
+- **核心纯函数测试**（`helpers_pure_test.go`）：`coachKindAction`/`clampSummaryDays`/`sortQualityDims`/`firstID`/`cleanList`/`headerSafe`（邮件头注入防护）/`extractQRPayload`/`orUnknown`/`ifEmpty`/`isNoSuchTable` 全 100% 覆盖。
+- **DB 逻辑 + 变更端点活体扫描**（`db_logic_test.go`、`mutating_sweep_test.go`）：分页/筛选「总数与分页一致、limit 夹取、offset 归一、合并排除」；并把真实 mux 跑起来逐个走「联系人 CRUD」「合并→撤销」「标签建/改名/批量贴/删」「待跟进建/改状态/删」「归档 run→status→restore→settings」「备份导出」「日历密钥 rotate→clear」全链路，每步用直连 SQL 断言状态真的变了。
+- 覆盖率 67.2% → **69.9%**（安全核心/纯函数升至 75–100%，多个写端点从 0% 到 45–75%）；`-race` 全绿，linux/windows/arm64 交叉编译（`CGO_ENABLED=0`）通过。
+- 备注：核对 `go.mod` 发现后端实际使用 `glebarez/go-sqlite`、`go-resty/resty`、`skip2/go-qrcode` 等第三方依赖且 `go 1.25.1`；`backup.go` 中「为避开 go1.24 而手搓 PBKDF2」的注释系历史遗留（现 stdlib 已可用），但手搓实现经交叉校验正确，出于不改动已验证密码学的原则本版不动它，仅记录。
 
 ### v5.5.1（2026-10-05）
 

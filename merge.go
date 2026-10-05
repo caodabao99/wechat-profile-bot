@@ -459,15 +459,21 @@ func recomputeOtherMsgCountTx(tx *sql.Tx, contactID int64) error {
 	return err
 }
 
-// RecomputeOtherMsgCount 全量重算联系人的对方消息数
+// RecomputeOtherMsgCount 全量重算联系人的对方消息数。
+// 归档感知：与合并路径的 recomputeOtherMsgCountTx 保持同一口径（并计 messages 与
+// messages_archive），否则对已有归档的联系人重算会把多年积累的对方消息数清零。
 func RecomputeOtherMsgCount(db *sql.DB, contactID int64) error {
 	dbMu.Lock()
 	defer dbMu.Unlock()
-
-	_, err := db.Exec(`UPDATE contacts SET other_msg_count = (
-		SELECT COUNT(*) FROM messages WHERE contact_id = ? AND sender = 'other'
-	) WHERE id = ?`, contactID, contactID)
-	return err
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := recomputeOtherMsgCountTx(tx, contactID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetMergeCandidates 获取可合并的目标联系人列表（排除自己和已合并的）
