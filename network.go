@@ -54,6 +54,25 @@ type Introduction struct {
 	Reason     string `json:"reason"`
 }
 
+// NetworkNode 图上单个联系人的可渲染节点（供前端力导向图消费）。
+type NetworkNode struct {
+	ContactID    int64   `json:"contactId"`
+	Name         string  `json:"name"`
+	Cluster      int     `json:"cluster"`      // 所属簇下标，-1 表示未成圈
+	RiskLevel    string  `json:"riskLevel"`    // 复用人生状态风险
+	Betweenness  float64 `json:"betweenness"`  // 归一化介数重要度 0-100
+	Articulation bool    `json:"articulation"` // 是否割点（前端标红环）
+	Fragile      bool    `json:"fragile"`      // 割点且高风险
+	Degree       int     `json:"degree"`       // 连接数（前端节点半径依据）
+}
+
+// NetworkEdge 图上的一条无向连线（已按端点联系人 id 归一化、去重）。
+type NetworkEdge struct {
+	A      int64   `json:"a"`
+	B      int64   `json:"b"`
+	Weight float64 `json:"weight"` // 互动强度代理：contact_connections.confidence
+}
+
 // NetworkInsight 一次完整的社交网络洞察快照。
 type NetworkInsight struct {
 	GeneratedAt    string           `json:"generatedAt"`
@@ -68,6 +87,8 @@ type NetworkInsight struct {
 	NodeCap        int              `json:"nodeCap"`   // 触发截断时的入图上限（0=未截断）
 	Introductions  []Introduction   `json:"introductions"`
 	Insights       []string         `json:"insights"`
+	Nodes          []NetworkNode    `json:"nodes"` // 可渲染拓扑（v4.6.0，加性字段）
+	Edges          []NetworkEdge    `json:"edges"`
 }
 
 const (
@@ -110,18 +131,22 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 	}
 
 	// 2) 单独取锁把 contact_connections 边一次读尽进内存并 Close。
-	type edge struct{ a, b int64 }
+	type edge struct {
+		a, b int64
+		w    float64 // confidence：互动强度代理
+	}
 	var edges []edge
 	dbMu.Lock()
-	rows, err := db.Query(`SELECT contact_a, contact_b FROM contact_connections`)
+	rows, err := db.Query(`SELECT contact_a, contact_b, COALESCE(confidence, 0) FROM contact_connections`)
 	if err != nil {
 		dbMu.Unlock()
 		return nil, fmt.Errorf("读取关系连线失败: %w", err)
 	}
 	for rows.Next() {
 		var a, b int64
-		if rows.Scan(&a, &b) == nil && a != b {
-			edges = append(edges, edge{a, b})
+		var w float64
+		if rows.Scan(&a, &b, &w) == nil && a != b {
+			edges = append(edges, edge{a, b, w})
 		}
 	}
 	rows.Close()
@@ -218,13 +243,17 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 	for i, id := range ids {
 		g.index[id] = i
 	}
-	// 边去重（无向）
+	// 边去重（无向）；同一对多条取最大 confidence（与读取顺序无关，保确定性）。
 	seenEdge := map[[2]int]bool{}
+	weightByPair := map[[2]int]float64{}
 	for _, e := range edges {
 		u, v := g.index[e.a], g.index[e.b]
 		key := [2]int{u, v}
 		if u > v {
 			key = [2]int{v, u}
+		}
+		if e.w > weightByPair[key] {
+			weightByPair[key] = e.w
 		}
 		if seenEdge[key] {
 			continue
@@ -244,6 +273,8 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 		ins.Bridges = []NetworkBridge{}
 		ins.Introductions = []Introduction{}
 		ins.Insights = []string{}
+		ins.Nodes = []NetworkNode{}
+		ins.Edges = []NetworkEdge{}
 		ins.FragilityNote = "还没有识别出人际关联，等画像里出现共同城市/兴趣/职业后会自动成网。"
 		return ins, nil
 	}
@@ -494,6 +525,41 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 	if ins.Truncated {
 		ins.Insights = append([]string{fmt.Sprintf("社交网络较大，图分析已聚焦最亲密的 %d 人核心圈（其余暂未纳入）。", netMaxNodes)}, ins.Insights...)
 	}
+
+	// 12) 导出可渲染拓扑（v4.6.0）：节点按联系人 id 升序（ids 已升序），
+	//   边按 (A,B) 升序（u 升序、adj[u] 升序且 v>u），与图读取/遍历顺序无关，保确定性。
+	nodes := make([]NetworkNode, 0, len(ids))
+	for u := range ids {
+		id := g.ids[u]
+		nm := names[id]
+		if nm == "" {
+			nm = fmt.Sprintf("联系人%d", id)
+		}
+		risk := ""
+		if a, ok := assets[id]; ok {
+			risk = a.RiskLevel
+		}
+		normB := 0.0
+		if maxBtw > 0 {
+			normB = roundF(btw[u]/maxBtw*100, 2)
+		}
+		nodes = append(nodes, NetworkNode{
+			ContactID: id, Name: nm, Cluster: nodeCluster[u], RiskLevel: risk,
+			Betweenness: normB, Articulation: artic[u],
+			Fragile: artic[u] && risk == "high", Degree: len(g.adj[u]),
+		})
+	}
+	ins.Nodes = nodes
+	edgesOut := []NetworkEdge{}
+	for u := range ids {
+		for _, v := range g.adj[u] {
+			if v <= u {
+				continue // 无向边只取 u<v 一次
+			}
+			edgesOut = append(edgesOut, NetworkEdge{A: g.ids[u], B: g.ids[v], Weight: roundF(weightByPair[[2]int{u, v}], 4)})
+		}
+	}
+	ins.Edges = edgesOut
 
 	return ins, nil
 }

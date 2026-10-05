@@ -775,3 +775,24 @@ textarea.text-input { resize: vertical; }
 .iv-kind { font-weight: 600; color: var(--accent2); }
 .iv-rate { margin-left: auto; font-weight: 700; font-size: 15px; color: var(--ink); }
 .iv-list > li .verdict { flex-basis: 100%; }
+
+/* ---------- v4.6.0 关系知识图谱（手写内联 SVG 力导向） ---------- */
+.net-graph { --net-c0: #0ea5e9; --net-c1: #8b5cf6; --net-c2: #f59e0b; --net-c3: #10b981; --net-c4: #ef4444; --net-c5: #ec4899; --net-c6: #6366f1; --net-c7: #14b8a6; --net-unc: #9ca3af; --net-fragile: #dc2626; }
+.net-graph { margin: 14px 0 4px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.net-graph .ng-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.net-graph .ng-head .life-sub { margin: 0; }
+.net-graph-wrap { position: relative; margin-top: 8px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(180deg, #fbfcff, #f4f6fb); overflow: hidden; }
+.net-svg { display: block; width: 100%; height: 440px; touch-action: none; cursor: grab; user-select: none; }
+.net-svg:active { cursor: grabbing; }
+.net-edge { stroke: #b6bccb; stroke-opacity: 0.55; }
+.net-node { cursor: pointer; }
+.net-node circle { stroke: #fff; stroke-width: 1.5; transition: filter .1s; }
+.net-node:hover circle { filter: brightness(1.08); }
+.net-artic { stroke: var(--net-fragile) !important; stroke-width: 3px !important; }
+.net-fragile { fill: var(--net-fragile) !important; }
+.net-label { font-size: 11px; fill: var(--ink); text-anchor: middle; pointer-events: none; paint-order: stroke; stroke: rgba(255,255,255,.85); stroke-width: 3px; }
+.net-tip { position: fixed; z-index: 40; transform: translate(-50%, calc(-100% - 12px)); background: rgba(26,29,41,.94); color: #fff; font-size: 12.5px; line-height: 1.5; padding: 6px 10px; border-radius: 8px; pointer-events: none; white-space: nowrap; box-shadow: var(--shadow); }
+.net-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.net-lg { display: inline-flex; align-items: center; gap: 5px; }
+.net-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #fff; box-shadow: 0 0 0 1px var(--line); }
+.net-ring { width: 12px; height: 12px; border-radius: 50%; display: inline-block; background: transparent; border: 3px solid var(--net-fragile); }

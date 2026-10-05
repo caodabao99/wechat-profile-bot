@@ -1612,6 +1612,7 @@ createApp({
         net.enabled = data.enabled !== false;
         net.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
         net.network = data.network || null;
+        buildNetGraph();   // v4.6.0：拿到拓扑即跑确定性力导向布局（同步）
       } catch (e) { toast(e.message, 'error'); }
       finally { advBusy.value = false; }
     }
@@ -1680,6 +1681,171 @@ createApp({
         return x.toFixed(1) + ',' + y.toFixed(1);
       }).join(' ');
     }
+
+    // ---------- v4.6.0 关系知识图谱：手写内联 SVG 力导向（零第三方库、确定性） ----------
+    // 数据来自 /api/insight/network 的 nodes/edges；自研斥力+弹簧+引力固定迭代收敛，
+    // 确定性初值（按 index 均布圆周、不用 Math.random）保证同输入渲染可复现。
+    const NET_W = 900, NET_H = 640;              // 内部坐标系（viewBox 空间）
+    const NET_CLUSTER_N = 8;                     // 圈簇调色板槽位数
+    const netGraph = reactive({
+      nodes: [], edges: [], posIndex: {}, maxWeight: 1, maxDegree: 1,
+      view: { x: 0, y: 0, k: 1 }, ready: false,
+    });
+    const netHover = ref(null);                  // 悬停 tooltip：{node, x, y}
+    const netGRef = ref(null);                   // <g> 引用，用于屏幕↔图层坐标换算
+    let netDrag = null;                           // 进行中的拖拽：{type,node,moved,...}
+
+    function resetNetGraph() {
+      netGraph.nodes = []; netGraph.edges = []; netGraph.posIndex = {};
+      netGraph.view = { x: 0, y: 0, k: 1 }; netGraph.ready = false; netHover.value = null; netDrag = null;
+    }
+
+    // buildNetGraph：把 net.network 的 nodes/edges 转成可布局结构并跑力导向（同步、确定性）。
+    function buildNetGraph() {
+      const nn = (net.network && net.network.nodes) || [];
+      const ee = (net.network && net.network.edges) || [];
+      if (!nn.length) { resetNetGraph(); return; }
+      const idx = {}, nodes = [];
+      const cx = NET_W / 2, cy = NET_H / 2;
+      const R = Math.min(NET_W, NET_H) * 0.42;
+      nn.forEach((n, i) => {
+        const ang = (2 * Math.PI * i) / nn.length;   // 确定性初值：均布圆周
+        nodes.push({
+          id: n.contactId, name: n.name || ('#' + n.contactId), cluster: (typeof n.cluster === 'number' ? n.cluster : -1),
+          riskLevel: n.riskLevel || '', betweenness: n.betweenness || 0, articulation: !!n.articulation,
+          fragile: !!n.fragile, degree: n.degree || 0,
+          x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang), fx: null, fy: null,
+        });
+        idx[n.contactId] = i;
+      });
+      const edges = []; let maxW = 0;
+      ee.forEach(e => {
+        if (idx[e.a] == null || idx[e.b] == null) return;
+        if ((e.weight || 0) > maxW) maxW = e.weight || 0;
+        edges.push({ a: e.a, b: e.b, weight: e.weight || 0, ai: idx[e.a], bi: idx[e.b] });
+      });
+      netGraph.nodes = nodes; netGraph.edges = edges; netGraph.posIndex = idx;
+      netGraph.maxWeight = maxW || 1;
+      netGraph.maxDegree = nodes.reduce((m, n) => Math.max(m, n.degree), 1);
+      runForceLayout(nodes, edges, cx, cy);
+      netGraph.view = { x: 0, y: 0, k: 1 };
+      netGraph.ready = true; netHover.value = null;
+    }
+
+    // runForceLayout：固定 300 步退火迭代。斥力 O(n²)（n≤netMaxNodes=250 可接受）+ 弹簧 + 中心引力。
+    function runForceLayout(nodes, edges, cx, cy) {
+      const n = nodes.length; if (n < 2) return;
+      const ITER = 300, K_REP = 6000, K_SPRING = 0.02, L = 90, K_GRAV = 0.02;
+      let temp = 20;
+      const dx = new Array(n).fill(0), dy = new Array(n).fill(0);
+      for (let it = 0; it < ITER; it++) {
+        dx.fill(0); dy.fill(0);
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            let ox = nodes[i].x - nodes[j].x, oy = nodes[i].y - nodes[j].y;
+            let d2 = ox * ox + oy * oy;
+            if (d2 < 0.01) { ox = 0.1 + (i - j) * 1e-3; oy = 0.1; d2 = ox * ox + oy * oy; }
+            const d = Math.sqrt(d2), f = K_REP / d2, fx = (ox / d) * f, fy = (oy / d) * f;
+            dx[i] += fx; dy[i] += fy; dx[j] -= fx; dy[j] -= fy;
+          }
+        }
+        for (let e = 0; e < edges.length; e++) {
+          const ed = edges[e], i = ed.ai, j = ed.bi;
+          const ox = nodes[j].x - nodes[i].x, oy = nodes[j].y - nodes[i].y;
+          const d = Math.sqrt(ox * ox + oy * oy) || 0.01, f = K_SPRING * (d - L), fx = (ox / d) * f, fy = (oy / d) * f;
+          dx[i] += fx; dy[i] += fy; dx[j] -= fx; dy[j] -= fy;
+        }
+        for (let i = 0; i < n; i++) {
+          dx[i] += (cx - nodes[i].x) * K_GRAV;
+          dy[i] += (cy - nodes[i].y) * K_GRAV;
+          if (nodes[i].fx != null) { nodes[i].x = nodes[i].fx; nodes[i].y = nodes[i].fy; continue; }
+          const dl = Math.sqrt(dx[i] * dx[i] + dy[i] * dy[i]) || 0.001;
+          const step = Math.min(dl, temp);
+          nodes[i].x += (dx[i] / dl) * step;
+          nodes[i].y += (dy[i] / dl) * step;
+          nodes[i].x = Math.max(20, Math.min(NET_W - 20, nodes[i].x));
+          nodes[i].y = Math.max(20, Math.min(NET_H - 20, nodes[i].y));
+        }
+        temp *= 0.97; if (temp < 0.5) temp = 0.5;
+      }
+    }
+
+    // 渲染派生量：节点半径、边粗细、圈色、是否显名（仅高度数/桥梁/高介数，避免拥挤）。
+    function netRadius(nd) { return 6 + (nd.degree / netGraph.maxDegree) * 14; }
+    function netEdgeWidth(ed) { return 1 + (ed.weight / netGraph.maxWeight) * 4; }
+    function netClusterColor(c) { return c < 0 ? 'var(--net-unc)' : 'var(--net-c' + (c % NET_CLUSTER_N) + ')'; }
+    function netShowLabel(nd) { return nd.articulation || nd.degree >= Math.max(3, Math.ceil(netGraph.maxDegree * 0.5)) || nd.betweenness >= 60; }
+    const netEdgeGeo = computed(() => netGraph.edges.map(ed => {
+      const A = netGraph.nodes[ed.ai], B = netGraph.nodes[ed.bi];
+      return { key: ed.a + '-' + ed.b, x1: A.x, y1: A.y, x2: B.x, y2: B.y, weight: ed.weight, _ed: ed };
+    }));
+    function netTransform() { const v = netGraph.view; return 'translate(' + v.x + ',' + v.y + ') scale(' + v.k + ')'; }
+
+    // 屏幕坐标 → 图层局部坐标（含 viewBox 缩放 + pan/zoom 变换），用 <g> 的 screenCTM 逆矩阵。
+    function clientToLayer(e) {
+      const g = netGRef.value; if (!g || !g.getScreenCTM) return null;
+      const ctm = g.getScreenCTM(); if (!ctm) return null;
+      const svg = g.ownerSVGElement, pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const p = pt.matrixTransform(ctm.inverse());
+      return { x: p.x, y: p.y };
+    }
+
+    function onNetNodeDown(e, nd) {
+      e.stopPropagation();
+      const p = clientToLayer(e); if (!p) return;
+      netDrag = { type: 'node', node: nd, moved: false, offx: nd.x - p.x, offy: nd.y - p.y };
+      nd.fx = nd.x; nd.fy = nd.y;
+      if (e.currentTarget.setPointerCapture) { try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {} }
+    }
+    function onNetBgDown(e) {
+      const svg = e.currentTarget, rect = svg.getBoundingClientRect();
+      const scale = rect.width ? (NET_W / rect.width) : 1;   // 屏幕像素 → 图层单位（viewBox 均等缩放）
+      netDrag = { type: 'pan', moved: false, sx: e.clientX, sy: e.clientY, ox: netGraph.view.x, oy: netGraph.view.y, scale };
+      if (svg.setPointerCapture) { try { svg.setPointerCapture(e.pointerId); } catch (_) {} }
+    }
+    function onNetMove(e) {
+      if (!netDrag) return;
+      if (netDrag.type === 'node') {
+        const p = clientToLayer(e); if (!p) return;
+        const nd = netDrag.node;
+        nd.fx = p.x + netDrag.offx; nd.fy = p.y + netDrag.offy;
+        nd.x = Math.max(20, Math.min(NET_W - 20, nd.fx));
+        nd.y = Math.max(20, Math.min(NET_H - 20, nd.fy));
+        if (netHover.value) { netHover.value.x = e.clientX; netHover.value.y = e.clientY; }
+        netDrag.moved = true;
+      } else {
+        const ddx = (e.clientX - netDrag.sx) / netDrag.scale, ddy = (e.clientY - netDrag.sy) / netDrag.scale;
+        netGraph.view.x = netDrag.ox + ddx; netGraph.view.y = netDrag.oy + ddy;
+        if (Math.abs(e.clientX - netDrag.sx) + Math.abs(e.clientY - netDrag.sy) > 3) netDrag.moved = true;
+      }
+    }
+    function onNetUp(e) {
+      if (netDrag && netDrag.type === 'node') {
+        const nd = netDrag.node; nd.fx = null; nd.fy = null;
+        if (!netDrag.moved) gotoDetail(nd.id);   // 未拖动视作点击 → 跳联系人详情
+      }
+      netDrag = null;
+    }
+    function onNetWheel(e) {
+      if (!netGraph.ready) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      netGraph.view.k = Math.max(0.4, Math.min(3, netGraph.view.k * factor));
+    }
+    function onNetNodeEnter(e, nd) { netHover.value = { node: nd, x: e.clientX, y: e.clientY }; }
+    function onNetNodeLeave() { if (!netDrag) netHover.value = null; }
+    function netResetView() { netGraph.view = { x: 0, y: 0, k: 1 }; }
+    function netRelayout() { buildNetGraph(); }
+    function netTipText(h) {
+      const nd = h.node; const parts = [nd.name];
+      parts.push(nd.cluster < 0 ? '未成圈' : ('圈子 #' + (nd.cluster + 1)));
+      if (nd.riskLevel === 'high') parts.push('高风险'); else if (nd.riskLevel === 'mid') parts.push('中风险');
+      parts.push('重要度 ' + Math.round(nd.betweenness) + '%');
+      parts.push('连接 ' + nd.degree + ' 人');
+      return parts.join(' · ');
+    }
+
 
     // 全量数据导出（可选脱敏）：带 Bearer fetch 成 Blob 触发浏览器下载，与全站认证一致。
     async function exportData() {
@@ -2610,6 +2776,12 @@ createApp({
       loadNetwork, loadSelfPortrait, loadIntervention, loadBriefing, recomputeInsights,
       // 趋势周环比 + 数据导出
       trend, loadTrend, trendSeries, sparkPoints,
+      // v4.6.0 关系知识图谱（手写 SVG 力导向）
+      netGraph, netHover, netGRef, netEdgeGeo,
+      netRadius, netEdgeWidth, netClusterColor, netShowLabel, netTransform,
+      onNetNodeDown, onNetBgDown, onNetMove, onNetUp, onNetWheel,
+      onNetNodeEnter, onNetNodeLeave, netResetView, netRelayout, netTipText,
+      NET_W, NET_H,
       exportBusy, exportRedact, exportData,
       srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
       dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,

@@ -1581,6 +1581,45 @@
             </div>
             <p class="hint block" v-if="net.network.fragilityNote">{{ net.network.fragilityNote }}</p>
 
+            <!-- v4.6.0 关系知识图谱：手写内联 SVG 力导向，零第三方库 -->
+            <div class="net-graph" v-if="netGraph.ready && netGraph.nodes.length">
+              <div class="ng-head">
+                <h3 class="life-sub">关系网络图</h3>
+                <div class="lh-actions">
+                  <button class="btn sm" @click="netRelayout">重新布局</button>
+                  <button class="btn sm" @click="netResetView">复位视图</button>
+                </div>
+              </div>
+              <p class="hint block">节点=联系人、连线粗细=互动强度、颜色=所属圈子；红环=删掉就会让圈子碎片化的桥梁人物、红填充=桥梁且高风险。滚轮缩放、拖背景平移、拖节点微调、点节点看详情。</p>
+              <div class="net-graph-wrap">
+                <svg class="net-svg" :viewBox="'0 0 ' + NET_W + ' ' + NET_H" preserveAspectRatio="xMidYMid meet"
+                     @pointerdown="onNetBgDown" @pointermove="onNetMove" @pointerup="onNetUp" @wheel="onNetWheel">
+                  <g ref="netGRef" :transform="netTransform()">
+                    <line v-for="e in netEdgeGeo" :key="e.key" class="net-edge"
+                          :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" :stroke-width="netEdgeWidth(e._ed)"/>
+                    <g v-for="nd in netGraph.nodes" :key="nd.id" class="net-node"
+                       @pointerdown="onNetNodeDown($event, nd)" @pointerenter="onNetNodeEnter($event, nd)" @pointerleave="onNetNodeLeave">
+                      <circle :cx="nd.x" :cy="nd.y" :r="netRadius(nd)" :fill="netClusterColor(nd.cluster)"
+                              :class="{ 'net-artic': nd.articulation, 'net-fragile': nd.fragile }"/>
+                      <text v-if="netShowLabel(nd)" :x="nd.x" :y="nd.y - netRadius(nd) - 3" class="net-label">{{ nd.name }}</text>
+                    </g>
+                  </g>
+                </svg>
+                <div class="net-tip" v-if="netHover" :style="{ left: netHover.x + 'px', top: netHover.y + 'px' }">{{ netTipText(netHover) }}</div>
+              </div>
+              <div class="net-legend">
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c0)'}"></i>圈子</span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c1)'}"></i></span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c2)'}"></i></span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c3)'}"></i></span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c4)'}"></i></span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-c5)'}"></i></span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-unc)'}"></i>未成圈</span>
+                <span class="net-lg"><i class="net-ring"></i>桥梁人物</span>
+                <span class="net-lg"><i class="net-dot" :style="{background:'var(--net-fragile)'}"></i>桥梁+高风险</span>
+              </div>
+            </div>
+
             <h3 class="life-sub" v-if="net.network.clusters && net.network.clusters.length">你的圈子</h3>
             <ul class="nw-clusters" v-if="net.network.clusters && net.network.clusters.length">
               <li v-for="c in net.network.clusters" :key="c.id">

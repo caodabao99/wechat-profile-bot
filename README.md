@@ -27,6 +27,7 @@
 - **跨层闭环自校准**（v4.5.0）：复用已有干预回测表（零新表），让“上次建议是否奏效”反向重排简报 Top 行动——已回暖的关系自动沉底不重复催、仍无改善的浮顶并附“上次建议后仍无改善”标注，四层互相咬合；无回测数据时严格等同旧行为
 - **图计算规模护栏**（v4.5.0）：联系人增长后，网络图算法进 Brandes/Tarjan 前对节点数封顶（按亲密度取最亲密的 250 人核心圈，tie-break 按 id 保确定性），防周一重算拖慢单连接池，并在洞察里诚实说明“已聚焦核心圈”
 - **数据可携与遗忘**（v4.5.0）：新增一键全量开放 JSON 导出（可选脱敏：姓名→伪名、正文抹除、保留结构与计数），并把“彻底删除联系人”的级联补齐隐私残留（互动指标/画像事实与证据/关系连线/建议回测）——纯本地、只读、零费用，给你的敏感关系数据真正的掌控感
+- **关系知识图谱可视化**（v4.6.0，洞察页社交网络）：把已有图算法算出的完整拓扑（节点/连线及权重、圈簇归属、割点、介数重要度）导出到前端，用自研内联 SVG 力导向图交互呈现——节点=联系人、连线粗细=互动强度、颜色=所属圈子、红环=桥梁人物、红填充=桥梁且高风险，支持缩放/平移/拖拽微调/悬停详情/点击跳转联系人，把数据洞察升级为视觉洞察。零第三方库（不引 D3/Cytoscape）、确定性布局（不用随机数）、不新增端点
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -44,7 +45,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.5.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.6.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -61,7 +62,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.5.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.6.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -279,7 +280,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.5.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.5.0.tar.gz`，得到 `wechat-profile-bot:v4.5.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.6.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.6.0.tar.gz`，得到 `wechat-profile-bot:v4.6.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -578,6 +579,20 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.6.0（2026-10-05）
+
+把 v4.5.0 已算好的社交网络图从“文字洞察”升级为“视觉洞察”：将图算法内部已有的逐节点中间态（圈簇归属、割点、介数重要度、风险）与连线拓扑完整导出，前端用自研内联 SVG 力导向图交互式呈现。严格延续本仓铁律——go:embed 单文件 Vue3、无构建工具、不引入任何重型第三方 JS（无 D3/Cytoscape）、纯确定性。只改 `GET /api/insight/network` 响应体（加性字段 nodes/edges），不新增端点、不改数据库结构。
+
+新增功能
+
+- **关系知识图谱可视化**：`NetworkInsight` 新增 `nodes`/`edges` 两个加性字段（逐节点 contactId/姓名/圈簇/风险/归一化介数/是否割点/是否脆弱/度数，逐边端点/权重）；buildNetwork 在算完圈簇/割点/介数后加一个确定性第二遍，按联系人 id 升序输出节点、按 (A,B) 升序输出无向边（与读取/遍历顺序无关，可复现）；边权重取 `contact_connections.confidence` 作互动强度代理
+- **自研力导向图**：前端在洞察页“社交网络”子页的文本洞察上方新增“关系网络图”卡片。确定性初值（节点按 index 均布圆周、不用 Math.random）+ 固定 300 步退火迭代（库仑斥力 O(n²) + 弹簧 + 中心引力）；支持滚轮缩放、拖背景平移、拖节点微调、悬停 tooltip（姓名/圈子/风险/重要度/连接数）、点击节点跳转联系人详情；节点半径∝度数、连线粗细∝权重、颜色按圈簇取调色板、割点红环、脆弱（割点且高风险）红填充
+
+内部改进
+
+- 现有文本消费方（圈簇/桥梁/撮合列表）不受影响（nodes/edges 为加性字段）；空图/未成圈时 nodes/edges 为非 nil 空数组（前端 `.length` 直读不崩）
+- 新增拓扑导出单测：节点数=`nodeCount`、逐边两端均在节点集且 A<B、degree 与邻接一致（sum=2×边数）、betweenness∈[0,100]、cluster 索引合法、桥节点为割点、Fragile 蕴含 Articulation；确定性（同输入两次逐字段全等）与缓存往返一致；活体扫描断言 `/api/insight/network` 响应含 nodes/edges 键（端点总数仍 59）
 
 ### v4.5.0（2026-10-05）
 

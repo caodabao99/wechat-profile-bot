@@ -7,6 +7,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -335,5 +336,126 @@ func TestBuildNetworkUnderCapNotTruncated(t *testing.T) {
 	}
 	if ins.Truncated || ins.NodeCap != 0 {
 		t.Errorf("小图不该截断, got Truncated=%v NodeCap=%d", ins.Truncated, ins.NodeCap)
+	}
+}
+
+// v4.6.0：导出可渲染拓扑 Nodes/Edges 的正确性与确定性。
+func TestNetworkTopologyExport(t *testing.T) {
+	db := regressionAssistantDB(t)
+	// 哑铃图：簇A(1-2-3)、簇B(4-5-6)、桥 7 连接 a1—bridge—b1，共 8 边 7 节点。
+	ids := make([]int64, 0, 7)
+	for i := 0; i < 7; i++ {
+		ids = append(ids, regressionContact(t, db, string(rune('A'+i))))
+	}
+	a1, a2, a3, b1, b2, b3, bridge := ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6]
+	for _, e := range [][2]int64{
+		{a1, a2}, {a2, a3}, {a1, a3},
+		{b1, b2}, {b2, b3}, {b1, b3},
+		{a1, bridge}, {bridge, b1},
+	} {
+		seedConn(t, db, e[0], e[1])
+	}
+
+	now := time.Now()
+	ins, err := buildNetwork(db, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 数量一致
+	if len(ins.Nodes) != ins.NodeCount || len(ins.Edges) != ins.EdgeCount {
+		t.Fatalf("Nodes/Edges 数量不符: nodes=%d/%d edges=%d/%d", len(ins.Nodes), ins.NodeCount, len(ins.Edges), ins.EdgeCount)
+	}
+	// 节点按联系人 id 升序、边按 (A,B) 升序
+	for i := 1; i < len(ins.Nodes); i++ {
+		if ins.Nodes[i-1].ContactID >= ins.Nodes[i].ContactID {
+			t.Fatalf("Nodes 未按 contactID 升序: %d >= %d", ins.Nodes[i-1].ContactID, ins.Nodes[i].ContactID)
+		}
+	}
+	for i := 1; i < len(ins.Edges); i++ {
+		p, c := ins.Edges[i-1], ins.Edges[i]
+		if p.A > c.A || (p.A == c.A && p.B >= c.B) {
+			t.Fatalf("Edges 未按 (A,B) 升序: %+v vs %+v", p, c)
+		}
+	}
+	// 每条边端点都在节点集；每边 A<B
+	nodeSet := map[int64]bool{}
+	deg := map[int64]int{}
+	for _, n := range ins.Nodes {
+		nodeSet[n.ContactID] = true
+	}
+	for _, e := range ins.Edges {
+		if !nodeSet[e.A] || !nodeSet[e.B] {
+			t.Fatalf("边端点不在节点集: %+v", e)
+		}
+		if e.A >= e.B {
+			t.Fatalf("边应 A<B: %+v", e)
+		}
+		if e.Weight <= 0 {
+			t.Errorf("边权应为 confidence(>0): %+v", e)
+		}
+		deg[e.A]++
+		deg[e.B]++
+	}
+	// degree 与邻接一致；sum degree = 2*edges
+	var sumDeg int
+	for _, n := range ins.Nodes {
+		if n.Degree != deg[n.ContactID] {
+			t.Errorf("节点 %d degree=%d，实际边度=%d", n.ContactID, n.Degree, deg[n.ContactID])
+		}
+		sumDeg += n.Degree
+		if n.Betweenness < 0 || n.Betweenness > 100 {
+			t.Errorf("betweenness 越界: %v", n.Betweenness)
+		}
+		if n.Cluster < -1 || (n.Cluster >= 0 && n.Cluster >= ins.ClusterCount) {
+			t.Errorf("cluster 索引非法: %d (clusters=%d)", n.Cluster, ins.ClusterCount)
+		}
+	}
+	if sumDeg != 2*ins.EdgeCount {
+		t.Errorf("sum(degree)=%d，应为 2*edges=%d", sumDeg, 2*ins.EdgeCount)
+	}
+	// 桥应为割点且高介数；叶子端点不为割点
+	for _, n := range ins.Nodes {
+		if n.ContactID == bridge && !n.Articulation {
+			t.Error("桥接节点应为割点")
+		}
+		if n.Fragile && !n.Articulation {
+			t.Error("Fragile 蕴含 Articulation")
+		}
+	}
+	// 确定性：同输入两次 Nodes/Edges 逐字段全等
+	ins2, err := buildNetwork(db, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ins.Nodes, ins2.Nodes) || !reflect.DeepEqual(ins.Edges, ins2.Edges) {
+		t.Fatalf("拓扑导出两次不一致（非确定性）:\n nodes1=%d edges1=%d\n nodes2=%d edges2=%d",
+			len(ins.Nodes), len(ins.Edges), len(ins2.Nodes), len(ins2.Edges))
+	}
+
+	// 缓存往返：经 Compute+GetCachedNetwork（JSON 序列化）仍带拓扑
+	if err := ComputeNetworkInsights(db, now); err != nil {
+		t.Fatal(err)
+	}
+	cached, _, err := GetCachedNetwork(db)
+	if err != nil || cached == nil {
+		t.Fatal(err)
+	}
+	if len(cached.Nodes) != 7 || len(cached.Edges) != 8 {
+		t.Errorf("缓存往返后拓扑丢失: nodes=%d edges=%d", len(cached.Nodes), len(cached.Edges))
+	}
+}
+
+// 空图 Nodes/Edges 应为非 nil 空数组（供前端 .length 直读不崩）。
+func TestNetworkTopologyExportEmpty(t *testing.T) {
+	db := regressionAssistantDB(t)
+	ins, err := buildNetwork(db, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ins.Nodes == nil || ins.Edges == nil {
+		t.Fatalf("空图 Nodes/Edges 应为空数组非 nil: nodes=%v edges=%v", ins.Nodes, ins.Edges)
+	}
+	if len(ins.Nodes) != 0 || len(ins.Edges) != 0 {
+		t.Errorf("空图应为零节点零边: %d/%d", len(ins.Nodes), len(ins.Edges))
 	}
 }

@@ -205,6 +205,15 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		}
 	}
 	t.Logf("活体扫描完成：%d/%d 端点通过（确定性端点已验证 2xx+JSON；LLM 端点仅验证可达/不崩）", pass, len(cases))
+
+	// v4.6.0：/api/insight/network 须在既有文本洞察之上附加可渲染拓扑 nodes/edges 两键（加性字段）。
+	if code, body, err := do("GET", "/api/insight/network", ""); err != nil {
+		t.Errorf("[网络拓扑] /api/insight/network 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[网络拓扑] /api/insight/network → %d: %s", code, truncate(body))
+	} else if !strings.Contains(body, `"nodes"`) || !strings.Contains(body, `"edges"`) {
+		t.Errorf("[网络拓扑] /api/insight/network 响应缺 nodes/edges 键: %s", truncate(body))
+	}
 }
 
 func validJSON(s string) bool {
