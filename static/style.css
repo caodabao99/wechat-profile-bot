@@ -858,3 +858,31 @@ textarea.text-input { resize: vertical; }
 .q-bar > i.q-na { background: var(--q-na); }
 .q-dim-detail { font-size: 12px; color: var(--muted); margin: 0; }
 @media (max-width: 560px) { .q-body { flex-direction: column; align-items: center; } .q-dims { width: 100%; } }
+
+/* ============ v4.9.0 智能回顾摘要 ============ */
+.sum-card { --sum-me: var(--accent); --sum-other: var(--warn); }
+.sum-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.sum-bar .sel { width: 140px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); font-size: 13px; }
+.sum-body { margin-top: 4px; }
+.sum-meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.sum-overview { font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre-wrap; word-break: break-word; padding: 8px 12px; background: rgba(5,150,105,.06); border-left: 3px solid var(--sum-me); border-radius: 4px; }
+.sum-overview-empty { font-size: 13px; color: var(--muted); font-style: italic; padding: 8px 0; }
+.sum-topics { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.sum-topic { padding: 2px 10px; background: rgba(5,150,105,.08); color: var(--sum-me); border-radius: 999px; font-size: 12px; border: 1px solid rgba(5,150,105,.18); }
+.sum-todos { margin-top: 12px; }
+.sum-todos-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.sum-todo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+.sum-todo:last-child { border-bottom: none; }
+.sum-owner { display: inline-block; min-width: 42px; text-align: center; padding: 1px 8px; border-radius: 4px; font-size: 12px; color: #fff; background: var(--sum-me); }
+.sum-owner.is-other { background: var(--sum-other); }
+.sum-text { flex: 1 1 200px; color: var(--text); word-break: break-word; }
+.sum-ref { color: var(--sum-me); cursor: pointer; font-size: 12px; text-decoration: underline; }
+.sum-add { flex-shrink: 0; }
+.sum-sources { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sum-src-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.sum-src { padding: 6px 8px; border-radius: 6px; cursor: pointer; transition: background .15s; display: grid; grid-template-columns: auto auto 1fr; gap: 4px 8px; align-items: baseline; }
+.sum-src:hover { background: rgba(5,150,105,.06); }
+.sum-n { color: var(--sum-me); font-weight: 600; font-size: 12px; }
+.sum-who { color: var(--text); font-size: 12px; }
+.sum-time { color: var(--muted); font-size: 11px; }
+.sum-snip { grid-column: 1 / -1; font-size: 12px; color: var(--text); line-height: 1.5; }

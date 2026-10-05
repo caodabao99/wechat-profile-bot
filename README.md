@@ -30,6 +30,7 @@
 - **关系知识图谱可视化**（v4.6.0，洞察页社交网络）：把已有图算法算出的完整拓扑（节点/连线及权重、圈簇归属、割点、介数重要度）导出到前端，用自研内联 SVG 力导向图交互呈现——节点=联系人、连线粗细=互动强度、颜色=所属圈子、红环=桥梁人物、红填充=桥梁且高风险，支持缩放/平移/拖拽微调/悬停详情/点击跳转联系人，把数据洞察升级为视觉洞察。零第三方库（不引 D3/Cytoscape）、确定性布局（不用随机数）、不新增端点
 - **关系维护日历**（v4.7.0，关系助手页）：新增只读聚合端点 `GET /api/assistant/calendar/events`，把生日/纪念日（年度重复逐年展开、含 2/29 平年回退 2/28）、手动大事记、带截止日的待跟进聚合成统一事件流，前端用自研 7 列月历网格呈现（按 kind 着色、点事件直达联系人）。待跟进新增可选 `due_date` 列（懒建表走幂等 ALTER、不 bump user_version、不改 backup.go）。零第三方库（不引 FullCalendar）、确定性排序、只读端点
 - **对话质量评分**（v4.8.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/quality?days=90`，对单个联系人从**回复及时性 / 对话深度 / 话题多样性 / 情绪正向度**四维各给 0-100 分并加权出综合分，前端用手写内联 SVG 雷达图 + 维度条呈现。全部在本地按消息与画像确定性计算、不调模型（情绪为增值表，缺失则该维不计入综合、按比例归一，诚实标注“无数据”）；可随时刷新、结果稳定可复现。零第三方库（不引 Chart.js/ECharts）、只读、不新增表
+- **智能回顾摘要**（v4.9.0，联系人驾驶舱）：新增 `POST /api/contacts/{id}/summary` body `{days}`，选定时间窗口后基于窗口内真实聊天原文调模型产一份结构化回顾——overview一段话总结 + topics 话题 chips + todos 待办列表（每条标 [n] 出处可跳转原文、可一键转跟进）。复用 ask.go 两段式检索与降级：未配模型 503、不编造；窗口内原文不足 4 条时如实返回空摘要 + note；模型返回坏 JSON 回退为原文摘录。摘要一次性返回不落库。
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -47,7 +48,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.8.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.9.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -64,7 +65,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.8.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.9.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -282,7 +283,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.8.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.8.0.tar.gz`，得到 `wechat-profile-bot:v4.8.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.9.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.9.0.tar.gz`，得到 `wechat-profile-bot:v4.9.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -509,6 +510,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/relationships/connections` | 关系图谱全量连线（表为空时自动重建，上限 500） |
 | GET | `/api/contacts/{id}/connections` | 某联系人的关联（上限 100，按可信度降序） |
 | GET | `/api/contacts/{id}/quality?days=90` | 对话质量四维评分（回复及时性/深度/话题多样性/情绪正向度，各 0-100 + 综合分；纯本地确定性、不调模型） |
+| POST | `/api/contacts/{id}/summary` | 智能回顾摘要，body `{"days":30}`，返回 overview/topics/todos(带 [n] 出处)/sources；未配模型 503、不编造 |
 | POST | `/api/relationships/connections/rebuild` | 手动全量重建关系连线（纯 SQL，不调模型） |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
@@ -582,6 +584,19 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.9.0（2026-10-05）
+
+**新增功能**
+- **智能回顾摘要**（`POST /api/contacts/{id}/summary` body `{days}`）：选定时间窗口后基于窗口内真实聊天原文，让模型产一份结构化回顾——`overview` 一段话总结 + `topics` 话题 chips + `todos` 待办列表（每条带 `[n]` 出处、可跳转定位原文、可一键转跟进）。
+- **cockpit 「回顾摘要」卡片**（联系人驾驶舱）：时间窗选择 7/30/90/180 天 + 生成/重新生成 + 展示 overview 高亮块 + topics chips + todos 列表 + 出处内联卡（复用 ask 出处跳转 与 待跟进写入路径），零新增写路径。
+
+**工程与铁律**
+- 复用 ask.go 两段式框架与降级：`!llm.configured()` → `ErrLLMNotConfigured` → HTTP 503，绝不编造；窗口内原文不足 4 条时如实返回空摘要 + note；模型返回坏 JSON 回退为原文摘录，不新增信息。
+- 单连接池、分层取锁、不嵌套：GetContactByID 一次锁 + 消息查询一次锁；消息扫描上限 400 条护栏、prompt 上限 120 条、单条原文截断 200 字、topics≤ 8、todos≤ 12、ref 越界自动清空。一次性返回不落库、不新增开关。
+
+**测试覆盖**
+- `summary_test.go` 5 用例：未配模型 503 / 桩 LLM 全链 200 验证 overview+topics+todos+sources+note / 消息不足空摘要不硬编 / 桩坏 JSON 回退不 panic / 服务层 days clamp 与联系人不存在。`go test -race -cover` 全绿、覆盖率 63.6%（>上一版本 63.4%）。
 
 ### v4.8.0（2026-10-05）
 

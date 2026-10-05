@@ -391,6 +391,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactQuality(w, r, id)
 	case "ask":
 		s.routeContactAsk(w, r, id)
+	case "summary":
+		s.routeContactSummary(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}

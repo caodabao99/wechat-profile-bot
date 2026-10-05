@@ -120,6 +120,38 @@ func (s *apiServer) routeContactQuality(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, q)
 }
 
+// routeContactSummary POST /api/contacts/{id}/summary  body {"days":30}
+// 智能回顾摘要：同窗口内的真实原文 → LLM 抽 overview/topics/todos（带 [n] 出处）。
+// 未配置模型 503；days 缺省/非法回落默认值。body 大小护栏复用 maxRehearsalBodyBytes。
+func (s *apiServer) routeContactSummary(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	if _, err := GetContactByID(s.db, id); err != nil {
+		writeErr(w, http.StatusNotFound, "联系人不存在")
+		return
+	}
+	var req struct {
+		Days int `json:"days"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRehearsalBodyBytes)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体解析失败")
+		return
+	}
+	res, err := SummarizeContact(r.Context(), s.db, s.llm, id, req.Days)
+	if err != nil {
+		if err == ErrLLMNotConfigured {
+			writeErr(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
 // routeContactAsk POST /api/contacts/{id}/ask  body {"question":"..."}
 // “问 TA 的历史”：先检索相关原文，再让模型带出处作答。未配置模型返回 503。
 func (s *apiServer) routeContactAsk(w http.ResponseWriter, r *http.Request, id int64) {

@@ -2369,6 +2369,8 @@ createApp({
       askQ: '', askBusy: false, askResult: null, askFailed: false, askError: '',
       // v4.8.0 对话质量评分：四维 0-100 + 综合分 + 手绘内联 SVG 雷达（纯确定性、零 LLM）
       quality: null, qualityBusy: false, qualityFailed: false, qualityError: '', qualityDays: 90,
+      // v4.9.0 智能回顾摘要（LLM，同 ask 风格降级：未配模型 503 不编造）
+      summaryDays: 30, summaryBusy: false, summaryResult: null, summaryFailed: false, summaryError: '',
     });
     const ckTrendMeta = {
       warming: { label: '关系升温', cls: 'st-ok' },
@@ -2497,6 +2499,49 @@ createApp({
         toast('该条原文可能在更早的记录里，可在聊天记录按时间翻查', 'info');
       }
     }
+    // v4.9.0 智能回顾摘要：同窗口内真实原文 → 模型产 overview/topics/todos（带 [n] 出处）
+    async function genSummary() {
+      if (ck.summaryBusy) return;
+      const my = detailSeq;
+      const cid = route.id;
+      ck.summaryBusy = true;
+      ck.summaryFailed = false;
+      ck.summaryError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/summary', { method: 'POST', body: { days: ck.summaryDays } });
+        if (my !== detailSeq || route.id !== cid) return;
+        out.topics = out.topics || [];
+        out.todos = out.todos || [];
+        out.sources = out.sources || [];
+        ck.summaryResult = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.summaryFailed = true; ck.summaryError = e.message || '摘要失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.summaryBusy = false; }
+    }
+    function reloadSummary() { ck.summaryResult = null; genSummary(); }
+    // 摘要里 todo 行上的 [n] → 反查 sources 里同编号的原文→复用 jumpToAskSource 高亮定位
+    function jumpToSummarySource(td) {
+      if (!td || !td.ref || !ck.summaryResult || !ck.summaryResult.sources) return;
+      const m = String(td.ref).match(/\[(\d+)\]/);
+      if (!m) return;
+      const n = parseInt(m[1], 10);
+      const src = ck.summaryResult.sources.find(s => s.n === n);
+      if (src) jumpToAskSource(src);
+    }
+    // 摘要里的待办一键转 followup（不新增写路径，复用 POST /api/assistant/followups）
+    async function todoToFollowup(td) {
+      if (!td || !td.text) return;
+      const cid = route.id;
+      if (!cid) { toast('联系人丢失', 'error'); return; }
+      const prefix = td.owner === '对方' ? '【待对方】' : '【我需要】';
+      const body = { contactId: cid, kind: 'custom', content: (prefix + td.text).slice(0, 100), amount: '', dueDate: '' };
+      try {
+        await api('/api/assistant/followups', { method: 'POST', body });
+        toast('已加入待跟进');
+        td._added = true;
+        if (typeof loadFollowups === 'function') loadFollowups();
+      } catch (e) { toast(e.message || '写入待跟进失败', 'error'); }
+    }
     function resetCockpit() {
       ck.loaded = false;
       ck.facts = []; ck.factsBusy = false; ck.factsFailed = false;
@@ -2505,6 +2550,7 @@ createApp({
       ck.draft = ''; ck.simBusy = false; ck.simResult = null; ck.simFailed = false; ck.simError = '';
       ck.askQ = ''; ck.askBusy = false; ck.askResult = null; ck.askFailed = false; ck.askError = '';
       ck.quality = null; ck.qualityBusy = false; ck.qualityFailed = false; ck.qualityError = '';
+      ck.summaryBusy = false; ck.summaryResult = null; ck.summaryFailed = false; ck.summaryError = '';
       Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
     }
 
@@ -2945,6 +2991,8 @@ createApp({
       askContact, jumpToAskSource,
       // v4.8.0 对话质量评分 + 雷达
       loadQuality, reloadQuality, qualityRadar, qScoreCls,
+      // v4.9.0 智能回顾摘要 + 待办一键转跟进
+      genSummary, reloadSummary, todoToFollowup, jumpToSummarySource,
       // 待跟进 / 日历订阅 / 祝福草稿
       followups, followupFilter, followupBusy, showFollowupModal, followupForm,
       pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,

@@ -543,6 +543,48 @@
             <p class="hint" v-if="ck.askResult.note">{{ ck.askResult.note }}</p>
           </div>
         </div>
+
+        <div class="card sum-card">
+          <h2>回顾摘要 <span class="chip st-purple">AI · 带出处</span></h2>
+          <p class="hint block">选一个时间窗口，基于窗口内的真实聊天原文自动总结：讨论了什么（overview + topics）、需要跟进什么（todos）；每条带 [n] 出处可点击跳转原文，待办可一键转跟进。未配置模型时返回 503，不编造。</p>
+          <div class="sum-bar">
+            <select class="text-input sel" v-model.number="ck.summaryDays" :disabled="ck.summaryBusy">
+              <option :value="7">近 7 天</option>
+              <option :value="30">近 30 天</option>
+              <option :value="90">近 90 天</option>
+              <option :value="180">近 180 天</option>
+            </select>
+            <button class="btn" @click="genSummary" :disabled="ck.summaryBusy">{{ ck.summaryBusy ? '生成中…' : (ck.summaryResult ? '重新生成' : '生成回顾') }}</button>
+          </div>
+          <p class="empty" v-if="ck.summaryFailed && !ck.summaryResult">{{ ck.summaryError }}</p>
+          <div v-if="ck.summaryResult" class="sum-body">
+            <div class="sum-meta">回顾窗口：{{ ck.summaryResult.from }} → {{ ck.summaryResult.to }}</div>
+            <div class="sum-overview" v-if="ck.summaryResult.overview">{{ ck.summaryResult.overview }}</div>
+            <div class="sum-overview-empty" v-else>窗口内原文不足，未生成总结（不硬编）。</div>
+            <div class="sum-topics" v-if="ck.summaryResult.topics && ck.summaryResult.topics.length">
+              <span class="sum-topic" v-for="(t,i) in ck.summaryResult.topics" :key="i">{{ t }}</span>
+            </div>
+            <div class="sum-todos" v-if="ck.summaryResult.todos && ck.summaryResult.todos.length">
+              <div class="sum-todos-title">待办事项</div>
+              <div class="sum-todo" v-for="(td,i) in ck.summaryResult.todos" :key="i">
+                <span class="sum-owner" :class="td.owner==='对方' ? 'is-other':'is-me'">{{ td.owner }}</span>
+                <span class="sum-text">{{ td.text }}</span>
+                <a class="sum-ref" v-if="td.ref" @click="jumpToSummarySource(td)">{{ td.ref }}</a>
+                <button class="btn ghost sm sum-add" @click="todoToFollowup(td)" :disabled="td._added">{{ td._added ? '已加入' : '记为待跟进' }}</button>
+              </div>
+            </div>
+            <div class="sum-sources" v-if="ck.summaryResult.sources && ck.summaryResult.sources.length">
+              <div class="sum-src-title">出处（点击可跳转聊天记录定位）</div>
+              <div class="sum-src" v-for="s in ck.summaryResult.sources" :key="s.n" @click="jumpToAskSource(s)">
+                <span class="sum-n">[{{ s.n }}]</span>
+                <span class="sum-who">{{ s.who }}</span>
+                <span class="sum-time">{{ s.msgTime }}</span>
+                <div class="sum-snip">{{ s.snippet }}</div>
+              </div>
+            </div>
+            <p class="hint" v-if="ck.summaryResult.note">{{ ck.summaryResult.note }}</p>
+          </div>
+        </div>
       </div>
     </section>
 
