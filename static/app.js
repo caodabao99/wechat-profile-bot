@@ -1407,6 +1407,46 @@ createApp({
       } catch (e) { toast(e.message, 'error'); }
       finally { tagBusy.value = false; }
     }
+
+    // ---------- v5.0.0 智能分组建议（确定性规则，只读 + 一键采纳） ----------
+    const suggest = reactive({ items: [], busy: false, failed: false, error: '', loaded: false });
+    async function loadTagSuggestions() {
+      suggest.busy = true;
+      suggest.failed = false;
+      suggest.error = '';
+      try {
+        const out = await api('/api/assistant/tags/suggest?perContactMax=4');
+        suggest.items = ((out && out.suggestions) || []).map(s => ({ ...s, _picked: true, _done: false }));
+        suggest.loaded = true;
+      } catch (e) {
+        suggest.failed = true; suggest.error = e.message || '获取建议失败';
+        suggest.items = [];
+      } finally { suggest.busy = false; }
+    }
+    async function acceptSuggestion(item) {
+      if (!item || item._done) return;
+      item._busy = true;
+      try {
+        await api('/api/assistant/tags/apply', { method: 'POST', body: { items: [{ contactId: item.contactId, tagName: item.tagName }] } });
+        item._done = true;
+        await loadTags();
+        toast('已采纳：' + item.tagName);
+      } catch (e) { toast(e.message || '采纳失败', 'error'); }
+      finally { item._busy = false; }
+    }
+    async function acceptAllSuggestions() {
+      const picked = suggest.items.filter(s => s._picked && !s._done);
+      if (!picked.length) { toast('没有可采纳的建议', 'info'); return; }
+      suggest.busy = true;
+      try {
+        const items = picked.map(s => ({ contactId: s.contactId, tagName: s.tagName }));
+        const out = await api('/api/assistant/tags/apply', { method: 'POST', body: { items } });
+        picked.forEach(s => { s._done = true; });
+        await loadTags();
+        toast('已批量采纳，新增关联 ' + ((out && out.affected) || 0) + ' 条');
+      } catch (e) { toast(e.message || '批量采纳失败', 'error'); }
+      finally { suggest.busy = false; }
+    }
     function toggleFilterTag(id) {
       const i = filterTagIds.value.indexOf(id);
       if (i >= 0) filterTagIds.value.splice(i, 1); else filterTagIds.value.push(id);
@@ -2953,6 +2993,8 @@ createApp({
       tags, tagsError, filterTagIds, picked, showTagMgr, showBatchTag, tagBusy, tagNewName,
       tagEditId, tagEditName, batchTagIds, batchTagRemove, tagEditOpen, tagEditIds,
       loadTags, createTag, startTagRename, cancelTagRename, commitTagRename, deleteTag,
+      // v5.0.0 智能分组建议
+      suggest, loadTagSuggestions, acceptSuggestion, acceptAllSuggestions,
       toggleFilterTag, clearFilterTags, togglePick, togglePickAll, clearPicks,
       openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
       // 洞察页

@@ -121,6 +121,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 
 		{"标签列表", "GET", "/api/tags", "", true, true},
 		{"标签创建", "POST", "/api/tags", `{"name":"体检标签"}`, true, true},
+		{"标签智能建议", "GET", "/api/assistant/tags/suggest", "", true, true},
 
 		{"搜索FTS状态", "GET", "/api/search/fts-status", "", true, true},
 		{"搜索FTS重建", "POST", "/api/search/fts-rebuild", "", true, true},
@@ -244,6 +245,26 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		var q ContactQuality
 		if json.Unmarshal([]byte(body), &q) != nil || len(q.Dims) != 4 {
 			t.Errorf("[对话质量] /quality dims 应为 4 个: %s", truncate(body))
+		}
+	}
+
+	// v5.0.0：/api/assistant/tags/suggest 须返回 {suggestions, total}（总可为空）。
+	if code, body, err := do("GET", "/api/assistant/tags/suggest", ""); err != nil {
+		t.Errorf("[标签建议] /assistant/tags/suggest 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[标签建议] /assistant/tags/suggest → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"suggestions"`, `"total"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[标签建议] /assistant/tags/suggest 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+		var out struct {
+			Suggestions []TagSuggestion `json:"suggestions"`
+			Total       int             `json:"total"`
+		}
+		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Suggestions) {
+			t.Errorf("[标签建议] total 应与 suggestions 长度一致: %s", truncate(body))
 		}
 	}
 }

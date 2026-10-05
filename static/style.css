@@ -886,3 +886,23 @@ textarea.text-input { resize: vertical; }
 .sum-who { color: var(--text); font-size: 12px; }
 .sum-time { color: var(--muted); font-size: 11px; }
 .sum-snip { grid-column: 1 / -1; font-size: 12px; color: var(--text); line-height: 1.5; }
+
+/* ============ v5.0.0 智能分组建议 ============ */
+.sug-panel { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.sug-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sug-head h3 { margin: 0; font-size: 15px; color: var(--text); }
+.sug-head-acts { display: flex; gap: 6px; }
+.sug-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+.sug-table th, .sug-table td { padding: 6px 8px; text-align: left; border-bottom: 1px dashed var(--border); vertical-align: middle; }
+.sug-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.sug-table tr.done td { opacity: .55; }
+.sug-col-pick { width: 32px; }
+.sug-col-conf { width: 120px; }
+.sug-col-act { width: 84px; }
+.sug-name { color: var(--text); font-weight: 500; }
+.sug-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(147,51,234,.08); color: #9333ea; font-size: 12px; border: 1px solid rgba(147,51,234,.18); }
+.sug-conf { display: flex; align-items: center; gap: 6px; }
+.sug-bar { display: inline-block; width: 60px; height: 6px; background: rgba(0,0,0,.06); border-radius: 3px; overflow: hidden; }
+.sug-bar > i { display: block; height: 100%; background: var(--accent); }
+.sug-conf-n { font-size: 11px; color: var(--muted); }
+.sug-reason { color: var(--muted); font-size: 12px; }

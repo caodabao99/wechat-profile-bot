@@ -65,6 +65,8 @@ func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub [
 		s.hAssistantRunNow(w, r)
 	case "followups":
 		s.routeFollowups(w, r, sub[1:])
+	case "tags":
+		s.routeAssistantTags(w, r, sub[1:])
 	case "blessing":
 		if r.Method != http.MethodPost {
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")

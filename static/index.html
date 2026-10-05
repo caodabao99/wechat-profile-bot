@@ -2080,6 +2080,36 @@
           </template>
         </li>
       </ul>
+      <div class="sug-panel">
+        <div class="sug-head">
+          <h3>智能分组建议 <span class="chip st-purple">确定性规则·零模型</span></h3>
+          <span class="sug-head-acts">
+            <button class="btn ghost sm" type="button" @click="loadTagSuggestions" :disabled="suggest.busy">{{ suggest.busy ? '生成中…' : (suggest.loaded ? '刷新' : '生成建议') }}</button>
+            <button class="btn sm primary" type="button" @click="acceptAllSuggestions" :disabled="suggest.busy || !suggest.items.filter(s => s._picked && !s._done).length">全部采纳</button>
+          </span>
+        </div>
+        <p class="hint block">基于画像（地域/职业/兴趣）+ 亲密度分层 + 情绪告警 + 待跟进，确定性规则自动打标签建议。已挂同名标签自动去重、每联系人限 4 条。只读不写库，需你确认采纳。</p>
+        <p class="empty" v-if="suggest.failed && !suggest.items.length">{{ suggest.error }}</p>
+        <p class="empty" v-else-if="suggest.loaded && !suggest.items.length">暂无可采纳的建议（可能画像未生成、也无情绪告警/待跟进）</p>
+        <table class="sug-table" v-if="suggest.items.length">
+          <thead><tr>
+            <th class="sug-col-pick">选</th>
+            <th>联系人</th><th>建议标签</th><th class="sug-col-conf">置信度</th><th>理由</th><th class="sug-col-act">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="(s, i) in suggest.items" :key="i" :class="{done: s._done}">
+              <td><input type="checkbox" v-model="s._picked" :disabled="s._done"></td>
+              <td class="sug-name">{{ s.name }}</td>
+              <td><span class="sug-tag">{{ s.tagName }}</span></td>
+              <td class="sug-conf"><span class="sug-bar"><i :style="{width: s.confidence + '%'}"></i></span><span class="sug-conf-n">{{ s.confidence }}</span></td>
+              <td class="sug-reason">{{ s.reason }}</td>
+              <td>
+                <button class="btn ghost xs" type="button" @click="acceptSuggestion(s)" :disabled="s._done || s._busy">{{ s._done ? '已采纳' : (s._busy ? '处理中…' : '采纳') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div class="modal-actions">
         <button class="btn" @click="showTagMgr = false">关闭</button>
       </div>
