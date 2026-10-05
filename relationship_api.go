@@ -243,11 +243,35 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 		s.hRelationshipHealth(w, r)
 	case "state":
 		s.routeRelationshipState(w, r, sub[1:])
+	case "decisions":
+		s.routeTodayDecisions(w, r)
 	case "circles":
 		s.hRelationshipCircles(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
+}
+
+// routeTodayDecisions GET /api/relationships/decisions/today?top=3：Decision Engine（Phase 4）。
+// 汇聚 State Machine + Health + Followup + Goal + 重要日子 + 行动建议，以确定性打分
+// （非 LLM 排序）产出「今天谁最值得投入时间、为什么、做什么」（规格 7.2/7.3）。
+func (s *apiServer) routeTodayDecisions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	top := 3
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			top = n
+		}
+	}
+	list, err := TodayDecisions(s.db, time.Now(), top)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "决策计算失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(list), "decisions": list})
 }
 
 // hRelationshipHealth GET /api/relationships/health?window=90：全局关系健康度仪表盘（只读、计算即读）。

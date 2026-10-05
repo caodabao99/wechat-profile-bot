@@ -563,6 +563,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/contacts/{id}/state` | 关系状态机单联系人视图（`base_state`×`dynamic_state`+亲密度/趋势/预警/理由/转态时间；`?history=1` 附变迁历史）；存量缺失则自愈刷新整板 |
 | GET | `/api/relationships/state` | 全局关系状态看板（按健康度升序/亲密度降序） |
 | POST | `/api/relationships/state/recompute` | 强制重算全体关系状态（仅当状态真实跨越阈值才写变迁事件，返回 `{changed,total,states}`） |
+| GET | `/api/relationships/decisions/today` | Decision Engine（Phase 4）「今天最值得做的关系行动」Top N（`?top=3`）：汇聚状态机+健康度+待办+目标+重要日子+行动建议，确定性打分（非 LLM 排序），每条含 `reason_codes`/为什么现在/建议行动/最佳时段/来源/置信度 |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
 | GET | `/api/life/timeline` | 人生年表里程碑（每次现算，聚合很轻） |
