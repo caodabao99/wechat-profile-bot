@@ -393,6 +393,46 @@
 
       <!-- ============ 关系驾驶舱（Phase 8） ============ -->
       <div v-if="contact && detailTab==='cockpit'" class="cockpit-panel">
+        <!-- v4.8.0 对话质量评分：四维 0-100 + 手绘内联 SVG 雷达（纯本地、零 LLM） -->
+        <div class="card quality-card">
+          <div class="tl-head">
+            <h2>对话质量 <span class="chip st-blue">本地评分</span></h2>
+            <div class="q-ctrl">
+              <select class="text-input sm" v-model.number="ck.qualityDays" @change="reloadQuality">
+                <option :value="30">近 30 天</option>
+                <option :value="90">近 90 天</option>
+                <option :value="180">近 180 天</option>
+                <option :value="365">近 1 年</option>
+              </select>
+              <button class="btn ghost sm" @click="loadQuality" :disabled="ck.qualityBusy">{{ ck.qualityBusy ? '评分中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="empty" v-if="ck.qualityBusy && !ck.quality">正在量化回复及时性、对话深度、话题多样性与情绪正向度…</p>
+          <p class="empty" v-else-if="ck.qualityFailed && !ck.quality">{{ ck.qualityError }}</p>
+          <div v-else-if="ck.quality" class="q-body">
+            <div class="q-radar-wrap">
+              <svg class="q-radar" viewBox="0 0 200 200" role="img" aria-label="对话质量雷达图">
+                <polygon v-for="(r,i) in qualityRadar.rings" :key="'ring'+i" :points="r" class="q-ring" />
+                <line v-for="(a,i) in qualityRadar.axes" :key="'ax'+i" :x1="qualityRadar.cx" :y1="qualityRadar.cy" :x2="a.x2" :y2="a.y2" class="q-axis" />
+                <polygon :points="qualityRadar.poly" class="q-poly" />
+                <text v-for="(a,i) in qualityRadar.axes" :key="'lb'+i" :x="a.lx" :y="a.ly" class="q-axis-label" text-anchor="middle" dominant-baseline="middle">{{ a.label }}<tspan v-if="a.value!=null" class="q-axis-val"> {{ a.value }}</tspan><tspan v-else class="q-axis-val"> —</tspan></text>
+              </svg>
+              <div class="q-score-cap"><span class="q-score-big" :class="qScoreCls(ck.quality.score)">{{ ck.quality.score }}</span> 综合分</div>
+            </div>
+            <div class="q-dims">
+              <div class="q-dim" v-for="d in ck.quality.dims" :key="d.key">
+                <div class="q-dim-head">
+                  <span class="q-dim-label">{{ d.label }}</span>
+                  <span class="q-dim-val" :class="qScoreCls(d.value)">{{ d.value >= 0 ? d.value : '—' }}</span>
+                </div>
+                <div class="q-bar"><i :class="qScoreCls(d.value)" :style="{width: (d.value>=0?d.value:0)+'%'}"></i></div>
+                <p class="q-dim-detail">{{ d.detail }}</p>
+              </div>
+            </div>
+          </div>
+          <p class="hint" v-if="ck.quality">全部在本地根据消息与画像计算，不调用模型；可随时刷新，结果稳定可复现。</p>
+        </div>
+
         <div class="card">
           <div class="tl-head">
             <h2>关系趋势</h2>

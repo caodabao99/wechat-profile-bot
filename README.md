@@ -29,6 +29,7 @@
 - **数据可携与遗忘**（v4.5.0）：新增一键全量开放 JSON 导出（可选脱敏：姓名→伪名、正文抹除、保留结构与计数），并把“彻底删除联系人”的级联补齐隐私残留（互动指标/画像事实与证据/关系连线/建议回测）——纯本地、只读、零费用，给你的敏感关系数据真正的掌控感
 - **关系知识图谱可视化**（v4.6.0，洞察页社交网络）：把已有图算法算出的完整拓扑（节点/连线及权重、圈簇归属、割点、介数重要度）导出到前端，用自研内联 SVG 力导向图交互呈现——节点=联系人、连线粗细=互动强度、颜色=所属圈子、红环=桥梁人物、红填充=桥梁且高风险，支持缩放/平移/拖拽微调/悬停详情/点击跳转联系人，把数据洞察升级为视觉洞察。零第三方库（不引 D3/Cytoscape）、确定性布局（不用随机数）、不新增端点
 - **关系维护日历**（v4.7.0，关系助手页）：新增只读聚合端点 `GET /api/assistant/calendar/events`，把生日/纪念日（年度重复逐年展开、含 2/29 平年回退 2/28）、手动大事记、带截止日的待跟进聚合成统一事件流，前端用自研 7 列月历网格呈现（按 kind 着色、点事件直达联系人）。待跟进新增可选 `due_date` 列（懒建表走幂等 ALTER、不 bump user_version、不改 backup.go）。零第三方库（不引 FullCalendar）、确定性排序、只读端点
+- **对话质量评分**（v4.8.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/quality?days=90`，对单个联系人从**回复及时性 / 对话深度 / 话题多样性 / 情绪正向度**四维各给 0-100 分并加权出综合分，前端用手写内联 SVG 雷达图 + 维度条呈现。全部在本地按消息与画像确定性计算、不调模型（情绪为增值表，缺失则该维不计入综合、按比例归一，诚实标注“无数据”）；可随时刷新、结果稳定可复现。零第三方库（不引 Chart.js/ECharts）、只读、不新增表
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -46,7 +47,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.7.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.8.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -63,7 +64,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.7.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.8.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -281,7 +282,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.7.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.7.0.tar.gz`，得到 `wechat-profile-bot:v4.7.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.8.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.8.0.tar.gz`，得到 `wechat-profile-bot:v4.8.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -507,6 +508,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET / POST | `/api/assistant/weekly-plan` | 本周维护计划看板数据（排行+开场白+近90天反馈统计）/ 立即重算（调模型，后台执行） |
 | GET | `/api/relationships/connections` | 关系图谱全量连线（表为空时自动重建，上限 500） |
 | GET | `/api/contacts/{id}/connections` | 某联系人的关联（上限 100，按可信度降序） |
+| GET | `/api/contacts/{id}/quality?days=90` | 对话质量四维评分（回复及时性/深度/话题多样性/情绪正向度，各 0-100 + 综合分；纯本地确定性、不调模型） |
 | POST | `/api/relationships/connections/rebuild` | 手动全量重建关系连线（纯 SQL，不调模型） |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
@@ -580,6 +582,22 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.8.0（2026-10-05）
+
+给单个联系人一个量化的“对话质量”视图：从回复及时性、对话深度、话题多样性、情绪正向度四个维度各打 0-100 分并加权出综合分，前端用手写内联 SVG 雷达图 + 维度条呈现。严格延续本仓铁律——go:embed 单文件 Vue3、无构建工具、不引入任何重型第三方 JS（无 Chart.js/ECharts）、纯确定性。新增一个只读端点，不新增数据库表、不依赖模型。
+
+新增功能
+
+- **对话质量评分端点**：`GET /api/contacts/{id}/quality?days=90`（默认 90 天、上限 3650、非法/越界自动夹回），返回 `{contactId,name,score,dims:[{key,label,value,detail}],windowDays,generatedAt}`。四维均在本地按 `messages` 时间线与画像确定性计算：回复及时性取「对方→我」回复间隔中位数（口径同社交大盘，超 6 小时不计为回复，样本 <3 向中性值收敛并标注仅供参考）；对话深度按活跃天数/消息量/对方均长加权（沿用亲密度 clamp 范式）；话题多样性取画像里兴趣/性格/重要事实/口头禅去重概念数；情绪正向度取 `assistant_emotions` 窗口内均分
+- **情绪为增值表、缺失优雅降级**：`assistant_emotions` 表不存在或窗口内无记录时，情绪正向度记 `value=-1` 并在 `detail` 诚实标注“未计入综合分”，综合分只由其余三维按固定权重加权后再按比例归一；主流程绝不因缺表而 500
+- **自研雷达图**：联系人“驾驶舱”页顶部新增“对话质量”卡片。四轴（及时/深度/多样/正向）手写内联 SVG：25/50/75/100% 网格环 + 数据多边形 + 轴标签，大号综合分 + 四维进度条（按分数 good/mid/poor 着色）+ 维度明细说明；可切窗口（30/90/180/365 天）刷新，无数据维度半径归 0 塌向圆心诚实反映“缺项”
+
+工程与铁律
+
+- 严格单连接池：联系人+消息时间线一趟锁取尽、情绪一趟锁独立读取、画像在锁外解析，绝不嵌套锁；`dbMu` 外不做长计算
+- 确定性：同输入两次调用逐字段相等（`Score` 与 `Dims`）；不依赖 map 迭代顺序、不用随机数
+- 新增单测：四维确定性与逐字段可复现、取值落 0-100（情绪缺失记 -1）、缺 `assistant_emotions` 表静默跳过且综合分仍由三维归一、窗口 clamp、空数据联系人不 panic 且 dims 恒为 4 个、空切片非 nil；活体扫描新增 `/api/contacts/{id}/quality`（端点总数 60→61）
 
 ### v4.7.0（2026-10-05）
 

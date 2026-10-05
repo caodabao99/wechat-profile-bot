@@ -2367,6 +2367,8 @@ createApp({
       suggestions: [], sugBusy: false,
       draft: '', simBusy: false, simResult: null, simFailed: false, simError: '',
       askQ: '', askBusy: false, askResult: null, askFailed: false, askError: '',
+      // v4.8.0 对话质量评分：四维 0-100 + 综合分 + 手绘内联 SVG 雷达（纯确定性、零 LLM）
+      quality: null, qualityBusy: false, qualityFailed: false, qualityError: '', qualityDays: 90,
     });
     const ckTrendMeta = {
       warming: { label: '关系升温', cls: 'st-ok' },
@@ -2386,6 +2388,7 @@ createApp({
       loadFacts(false);
       loadTrend();
       loadSuggestions();
+      loadQuality();
     }
     async function loadFacts(force) {
       const my = detailSeq;
@@ -2501,7 +2504,66 @@ createApp({
       ck.suggestions = []; ck.sugBusy = false;
       ck.draft = ''; ck.simBusy = false; ck.simResult = null; ck.simFailed = false; ck.simError = '';
       ck.askQ = ''; ck.askBusy = false; ck.askResult = null; ck.askFailed = false; ck.askError = '';
+      ck.quality = null; ck.qualityBusy = false; ck.qualityFailed = false; ck.qualityError = '';
       Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
+    }
+
+    // ---------- v4.8.0 对话质量评分：四维 + 综合分 + 手绘内联 SVG 雷达（零第三方库、确定性） ----------
+    // 雷达四轴固定顺序（与服务端 dims 的 key 一致），角度从正上方起顺时针均布。
+    async function loadQuality() {
+      const my = detailSeq;
+      const cid = route.id;
+      if (ck.qualityBusy) return;
+      ck.qualityBusy = true;
+      ck.qualityFailed = false;
+      ck.qualityError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/quality?days=' + ck.qualityDays);
+        if (my !== detailSeq || route.id !== cid) return;
+        out.dims = out.dims || [];
+        ck.quality = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.qualityFailed = true; ck.qualityError = e.message || '评分失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.qualityBusy = false; }
+    }
+    function reloadQuality() { ck.quality = null; loadQuality(); }
+
+    // 四维轴：角度（度）-90(上)/0(右)/90(下)/180(左)，与 dims 顺序对齐。
+    const Q_AXES = [
+      { key: 'responsiveness', label: '及时', deg: -90 },
+      { key: 'depth', label: '深度', deg: 0 },
+      { key: 'diversity', label: '多样', deg: 90 },
+      { key: 'positivity', label: '正向', deg: 180 },
+    ];
+    const Q_R = 70, Q_C = 100; // 雷达半径与中心（viewBox 200×200 坐标系）
+    function qPt(frac, deg) {
+      const rad = deg * Math.PI / 180;
+      return [Q_C + Q_R * frac * Math.cos(rad), Q_C + Q_R * frac * Math.sin(rad)];
+    }
+    // qualityRadar：把 ck.quality.dims 转成 SVG 多边形/网格/轴/标签坐标（纯函数、确定性）。
+    const qualityRadar = computed(() => {
+      const dims = (ck.quality && ck.quality.dims) || [];
+      const byKey = {};
+      for (const d of dims) byKey[d.key] = d;
+      // value<0 视为无数据，半径按 0 处理（塌向圆心，诚实反映“缺项”）
+      const norm = (k) => { const d = byKey[k]; return d && d.value >= 0 ? Math.max(0, Math.min(100, d.value)) / 100 : 0; };
+      const dataPts = Q_AXES.map(a => qPt(norm(a.key), a.deg));
+      const rings = [0.25, 0.5, 0.75, 1].map(f => Q_AXES.map(a => qPt(f, a.deg).map(n => n.toFixed(1)).join(',')).join(' '));
+      const axes = Q_AXES.map(a => {
+        const [x2, y2] = qPt(1, a.deg);
+        const [lx, ly] = qPt(1.24, a.deg);
+        const d = byKey[a.key];
+        return { label: a.label, x2: x2.toFixed(1), y2: y2.toFixed(1), lx: lx.toFixed(1), ly: ly.toFixed(1), value: d && d.value >= 0 ? d.value : null };
+      });
+      const poly = dataPts.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+      return { rings, axes, poly, cx: Q_C, cy: Q_C };
+    });
+    // 分数着色：>=75 好 / >=50 中 / 其余 需关注 / 无数据 灰。
+    function qScoreCls(v) {
+      if (v == null || v < 0) return 'q-na';
+      if (v >= 75) return 'q-good';
+      if (v >= 50) return 'q-mid';
+      return 'q-poor';
     }
 
     // ---------- 待跟进事项 ----------
@@ -2881,6 +2943,8 @@ createApp({
       ck, ckTrendMeta, ckKindLabel, ckExpanded, ckToggleFact, ckPct,
       loadCockpit, loadFacts, loadTrend, genSuggestions, setSuggestionStatus, runSimulate,
       askContact, jumpToAskSource,
+      // v4.8.0 对话质量评分 + 雷达
+      loadQuality, reloadQuality, qualityRadar, qScoreCls,
       // 待跟进 / 日历订阅 / 祝福草稿
       followups, followupFilter, followupBusy, showFollowupModal, followupForm,
       pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,

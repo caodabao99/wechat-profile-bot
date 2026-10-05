@@ -99,6 +99,27 @@ func (s *apiServer) routeContactTrend(w http.ResponseWriter, r *http.Request, id
 	writeJSON(w, http.StatusOK, trend)
 }
 
+// routeContactQuality GET /api/contacts/{id}/quality?days=90
+// 对话质量四维评分（纯确定性、零 LLM）。days 缺省/非法回落默认值并夹到上限。
+func (s *apiServer) routeContactQuality(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	if _, err := GetContactByID(s.db, id); err != nil {
+		writeErr(w, http.StatusNotFound, "联系人不存在")
+		return
+	}
+	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+	q, err := ComputeContactQuality(s.db, id, days)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "计算对话质量失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, q)
+}
+
 // routeContactAsk POST /api/contacts/{id}/ask  body {"question":"..."}
 // “问 TA 的历史”：先检索相关原文，再让模型带出处作答。未配置模型返回 503。
 func (s *apiServer) routeContactAsk(w http.ResponseWriter, r *http.Request, id int64) {

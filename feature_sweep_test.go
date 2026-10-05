@@ -113,6 +113,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"联系人历史", "GET", "/api/contacts/" + cid + "/history", "", true, true},
 		{"事实证据", "GET", "/api/contacts/" + cid + "/facts", "", true, true},
 		{"关系趋势", "GET", "/api/contacts/" + cid + "/trend", "", true, true},
+		{"对话质量评分", "GET", "/api/contacts/" + cid + "/quality", "", true, true},
 		{"时间线", "GET", "/api/contacts/" + cid + "/timeline", "", true, true},
 		{"联系人标签GET", "GET", "/api/contacts/" + cid + "/tags", "", true, true},
 		{"设置备注", "PUT", "/api/contacts/" + cid + "/remark", `{"remark":"体检备注"}`, true, true},
@@ -226,6 +227,23 @@ func TestZZFeatureSweepLive(t *testing.T) {
 			if !strings.Contains(body, k) {
 				t.Errorf("[日历事件] /api/assistant/calendar/events 响应缺 %s 键: %s", k, truncate(body))
 			}
+		}
+	}
+
+	// v4.8.0：/api/contacts/{id}/quality 须返回 {score,dims,windowDays,generatedAt}，且四维齐备。
+	if code, body, err := do("GET", "/api/contacts/"+cid+"/quality", ""); err != nil {
+		t.Errorf("[对话质量] /quality 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[对话质量] /quality → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"score"`, `"dims"`, `"windowDays"`, `"generatedAt"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[对话质量] /quality 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+		var q ContactQuality
+		if json.Unmarshal([]byte(body), &q) != nil || len(q.Dims) != 4 {
+			t.Errorf("[对话质量] /quality dims 应为 4 个: %s", truncate(body))
 		}
 	}
 }
