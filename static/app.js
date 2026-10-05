@@ -83,6 +83,12 @@ createApp({
     const contact = ref(null);
     const loadingDetail = ref(false);
     const detailTab = ref('profile');
+    // —— OS 2.0 Phase 8：关系状态 / 重新认识 TA / 今天值得做（Decision） ——
+    const relState = ref(null);        // /api/contacts/{id}/state 结果
+    const showReplay = ref(false);     // 回放弹层开关
+    const replayText = ref('');        // 回放渲染文本（markdown 源，纯文本展示）
+    const todayList = ref([]);         // /api/decision/today 结果
+    const todayLoading = ref(false);
     const messages = ref([]);
     const messagesLoading = ref(false);
     const messagesHasMore = ref(false);
@@ -821,7 +827,7 @@ createApp({
     function onRouteEnter() {
       stopStatusTimer();
       if (!authed.value) return;
-      if (route.view === 'contacts') { loadContacts(); loadTags(); }
+      if (route.view === 'contacts') { loadContacts(); loadTags(); loadTodayDecisions(); }
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
@@ -956,6 +962,8 @@ createApp({
         const c = await api('/api/contacts/' + route.id);
         if (my !== detailSeq) return;   // 已经切到别的联系人了，这份数据作废
         contact.value = c;
+        relState.value = null;
+        loadContactState(route.id);
         if (detailTab.value === 'messages' && !messages.value.length) loadMessages(false);
         if (detailTab.value === 'history') loadHistory();
         if (detailTab.value === 'stats') loadStats();
@@ -968,6 +976,33 @@ createApp({
         if (my === detailSeq) loadingDetail.value = false;
       }
     }
+
+    // ---------- OS 2.0 Phase 8：关系状态 / 重新认识 TA / 今天值得做 ----------
+    async function loadContactState(id) {
+      try {
+        const r = await api('/api/contacts/' + id + '/state');
+        if (route.view === 'detail' && route.id === id) relState.value = r.state || r || null;
+      } catch (e) { /* 静默：状态加载失败不打断详情浏览 */ }
+    }
+    async function openReplay(id) {
+      showReplay.value = true;
+      replayText.value = '加载中…';
+      try {
+        const r = await api('/api/contacts/' + id + '/replay');
+        replayText.value = r.rendered || '（暂无足够的可回溯数据形成回放）';
+      } catch (e) { replayText.value = '加载失败：' + e.message; }
+    }
+    function closeReplay() { showReplay.value = false; replayText.value = ''; }
+    async function loadTodayDecisions() {
+      todayLoading.value = true;
+      try {
+        const r = await api('/api/decision/today?top=3');
+        todayList.value = r.decisions || [];
+      } catch (e) { todayList.value = []; }
+      finally { todayLoading.value = false; }
+    }
+    function decisionReasonText(codes) { return (codes || []).join('、'); }
+    function gotoContact(id) { location.hash = '#/contact/' + id; }
 
     function switchTab(tab) {
       detailTab.value = tab;
@@ -3656,6 +3691,8 @@ createApp({
       contactGoals, openGoalForm, closeGoalForm, addGoal, completeGoal, deleteGoal,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
+      relState, showReplay, replayText, todayList, todayLoading,
+      openReplay, closeReplay, loadTodayDecisions, decisionReasonText, gotoContact,
       toasts,
       loadContacts, gotoDetail, displayName, loadDetail, switchTab, loadMessages,
       toggleHistory, historySections, rollback,

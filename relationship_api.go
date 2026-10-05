@@ -255,6 +255,34 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 	}
 }
 
+// routeDecision /api/decision/... 子路由（规格二十推荐路径别名）：
+//
+//	GET  /api/decision/today?top=3   今天最值得做的关系行动 Top N
+//	POST /api/decision/refresh        强制重算关系状态（仅跨阈值写变迁）后返回概览
+func (s *apiServer) routeDecision(w http.ResponseWriter, r *http.Request, sub []string) {
+	if len(sub) == 0 {
+		writeErr(w, http.StatusNotFound, "未知接口: /api/decision")
+		return
+	}
+	switch sub[0] {
+	case "today":
+		s.routeTodayDecisions(w, r)
+	case "refresh":
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		changed, total, err := RefreshRelationshipStates(s.db, time.Now(), 0)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "重算失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "changed": changed, "total": total})
+	default:
+		writeErr(w, http.StatusNotFound, "未知接口: /api/decision/"+sub[0])
+	}
+}
+
 // routeContactReplay GET /api/contacts/{id}/replay：Memory Replay「重新认识 TA」（Phase 7）。
 // 确定性拼装关系回放（首次认识/阶段/转折/兴趣职业/升降温/主题/当前/目标/未完成），
 // 每条结论带来源证据；不依赖 LLM，返回结构化 `replay` + `rendered` 文本。

@@ -179,3 +179,119 @@ func derefOrEmpty(p *string) string {
 	}
 	return *p
 }
+
+// routeContactProjects 联系人作用域别名（规格二十）：
+//
+//	GET/POST   /api/contacts/{id}/projects
+//	GET/PATCH|PUT/DELETE /api/contacts/{id}/projects/{pid}
+//
+// 与全局 /api/relationships/projects 同构，但强制按路由里的联系人 ID 作用域，跨主校验。
+func (s *apiServer) routeContactProjects(w http.ResponseWriter, r *http.Request, id int64, sub []string) {
+	if len(sub) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			list, err := ListProjects(s.db, id, r.URL.Query().Get("status"))
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "读取关系项目失败: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(list), "projects": list})
+		case http.MethodPost:
+			var body projectBody
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRehearsalBodyBytes)).Decode(&body); err != nil {
+				writeErr(w, http.StatusBadRequest, "请求体解析失败")
+				return
+			}
+			title := derefOrEmpty(body.Title)
+			in := CreateProjectInput{
+				ContactID: id, Title: title, Description: derefOrEmpty(body.Description),
+				Status: derefOrEmpty(body.Status), Stage: derefOrEmpty(body.Stage),
+				StartDate: derefOrEmpty(body.StartDate), TargetDate: derefOrEmpty(body.TargetDate),
+				NextAction: derefOrEmpty(body.NextAction), NextActionDue: derefOrEmpty(body.NextActionDue),
+				BlockedReason: derefOrEmpty(body.BlockedReason),
+			}
+			if body.Priority != nil {
+				in.Priority = *body.Priority
+			}
+			pid, err := CreateProject(s.db, in, time.Now())
+			if err != nil {
+				s.writeProjectErr(w, err)
+				return
+			}
+			v, _ := GetProject(s.db, pid)
+			writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "createdId": pid, "project": v})
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		}
+		return
+	}
+	pid, err := strconv.ParseInt(sub[0], 10, 64)
+	if err != nil || pid <= 0 {
+		writeErr(w, http.StatusBadRequest, "无效的项目ID")
+		return
+	}
+	if len(sub) > 1 {
+		writeErr(w, http.StatusNotFound, "未知接口")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	// 作用域校验：项目必须属于该联系人。
+	cur, err := GetProject(s.db, pid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "项目不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if cur.ContactID != id {
+		writeErr(w, http.StatusForbidden, "该项目不属于此联系人")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "project": cur})
+	case http.MethodDelete:
+		deleted, err := DeleteProject(s.db, pid)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "删除项目失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "id": pid})
+	default: // PUT/PATCH
+		var body projectBody
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRehearsalBodyBytes)).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败")
+			return
+		}
+		in := UpdateProjectInput{
+			Title: body.Title, Description: body.Description, Status: body.Status, Stage: body.Stage,
+			Priority: body.Priority, StartDate: body.StartDate, TargetDate: body.TargetDate,
+			NextAction: body.NextAction, NextActionDue: body.NextActionDue, BlockedReason: body.BlockedReason,
+		}
+		v, err := UpdateProject(s.db, pid, in, time.Now())
+		if err != nil {
+			s.writeProjectErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "project": v})
+	}
+}
+
+// writeProjectErr 把服务层错误映射为 HTTP 状态码。
+func (s *apiServer) writeProjectErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errProjectBadInput):
+		writeErr(w, http.StatusBadRequest, "项目参数不合法（标题必填；status/stage 取值非法）")
+	case errors.Is(err, sql.ErrNoRows):
+		writeErr(w, http.StatusNotFound, "联系人或项目不存在")
+	default:
+		writeErr(w, http.StatusInternalServerError, err.Error())
+	}
+}

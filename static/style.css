@@ -1199,3 +1199,17 @@ textarea.text-input { resize: vertical; }
 .cg-bar { position: relative; height: 8px; border-radius: 6px; background: var(--line); margin: 6px 0; overflow: hidden; }
 .cg-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
 .cg-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- OS 2.0 Phase 8：Decision / Relationship State / Replay ---------- */
+.today-decisions h2 { font-size: 15px; margin: 0 0 10px; }
+.decision-list { list-style: none; margin: 0; padding: 0; }
+.decision-item { padding: 10px 0; border-bottom: 1px dashed var(--line); display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.decision-item:last-child { border-bottom: none; }
+.decision-who { font-weight: 600; color: var(--accent2); text-decoration: none; }
+.decision-why { font-size: 12.5px; color: var(--muted); }
+.decision-action { font-size: 13px; color: var(--ink); flex-basis: 100%; }
+.chip.st-orange { background: #fff7ed; color: #c2410c; }
+.rel-state { margin-top: 8px; }
+.rel-state .hint.inline { color: var(--muted); font-size: 12px; }
+.replay-modal { max-width: 680px; }
+.replay-body { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13px; line-height: 1.8; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; max-height: 60vh; overflow-y: auto; margin: 10px 0 0; }

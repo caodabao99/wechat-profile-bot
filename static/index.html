@@ -71,6 +71,21 @@
 
     <!-- ============ 联系人列表 ============ -->
     <section v-if="route.view==='contacts'">
+      <!-- OS 2.0 Phase 8：今天值得做（Decision Engine，确定性打分 Top-3） -->
+      <div class="card today-decisions" v-if="todayList.length || todayLoading">
+        <h2>今天值得做</h2>
+        <p class="empty" v-if="todayLoading">计算中…</p>
+        <ul class="decision-list" v-else>
+          <li v-for="d in todayList" :key="d.contact_id" class="decision-item">
+            <a class="decision-who" :href="'#/contact/' + d.contact_id">{{ d.name }}</a>
+            <span class="chip st-gray">{{ d.state }}</span>
+            <span class="chip st-orange" v-if="d.risk>0">风险</span>
+            <span class="decision-why">{{ decisionReasonText(d.reason_codes) }}</span>
+            <span class="decision-action" v-if="d.action">建议：{{ d.action }}</span>
+            <span class="hint inline" v-if="d.best_time">· {{ d.best_time }}</span>
+          </li>
+        </ul>
+      </div>
       <div class="card">
         <div class="search-row">
           <input class="text-input grow" type="search" v-model="search"
@@ -155,6 +170,14 @@
           <span class="chip st-gray" v-if="contact.mergedInto">已并入 #{{ contact.mergedInto }}</span>
           <span class="tag-chip mini" v-for="t in (contact.tags || [])" :key="t.id">{{ t.name }}</span>
         </div>
+        <!-- OS 2.0 Phase 8：关系状态（Relationship State Machine 实时快照） -->
+        <div class="c-meta rel-state" v-if="relState">
+          <span class="chip st-blue">状态：{{ relState.baseState }} / {{ relState.dynamicState }}</span>
+          <span class="chip st-gray" v-if="relState.intimacy!=null">亲密度 {{ relState.intimacy }}</span>
+          <span class="chip st-gray" v-if="relState.trendState">趋势 {{ relState.trendState }}</span>
+          <span class="chip st-orange" v-if="relState.alert && relState.alert!=='none'">预警 {{ relState.alert }}</span>
+          <span class="hint inline" v-if="relState.reason">{{ relState.reason }}</span>
+        </div>
         <!-- 标签编辑：勾选即改，点保存生效 -->
         <div class="tag-bar" v-if="tagEditOpen && tags.length">
           <button type="button" class="tag-chip" v-for="t in tags" :key="t.id"
@@ -164,6 +187,7 @@
         </div>
         <p class="hint block" v-else-if="tagEditOpen">还没有标签，先在<a href="#/">联系人列表</a>页点「新建标签」</p>
         <div class="dh-actions">
+          <button class="btn sm" @click="openReplay(contact.id)">重新认识 TA</button>
           <button class="btn sm" @click="startRemark">改备注</button>
           <button class="btn sm" @click="openTagEdit">{{ tagEditOpen ? '收起标签' : '标签' }}</button>
           <button class="btn sm" @click="openFollowupModal(contact.id)" :disabled="!!contact.mergedInto">记一笔待跟进</button>
@@ -2583,6 +2607,17 @@
       <div class="modal-actions">
         <button class="btn" @click="showDelete = false">取消</button>
         <button class="btn danger solid" @click="confirmDelete" :disabled="busy">{{ busy ? '删除中…' : '确认删除' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 弹层：重新认识 TA（Memory Replay，确定性关系回放） ============ -->
+  <div class="mask" v-if="showReplay" @click.self="closeReplay()">
+    <div class="card modal replay-modal">
+      <h2>重新认识 TA</h2>
+      <pre class="replay-body">{{ replayText }}</pre>
+      <div class="modal-actions">
+        <button class="btn" @click="closeReplay()">关闭</button>
       </div>
     </div>
   </div>

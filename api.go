@@ -336,6 +336,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeData(w, r, parts[1:])
 	case parts[0] == "system":
 		s.routeSystem(w, r, parts[1:])
+	case parts[0] == "decision":
+		// 规格二十推荐路径别名：/api/decision/today、/api/decision/refresh
+		s.routeDecision(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
@@ -387,6 +390,9 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactFacts(w, r, id, sub[1:])
 	case "state":
 		s.routeContactState(w, r, id)
+	case "projects":
+		// 规格二十推荐：联系人作用域 /api/contacts/{id}/projects[/PID]
+		s.routeContactProjects(w, r, id, sub[1:])
 	case "context":
 		s.routeContactContext(w, r, id)
 	case "replay":
