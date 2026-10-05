@@ -88,6 +88,7 @@ func (s *apiServer) hSearchMessages(w http.ResponseWriter, r *http.Request) {
 		IncludeArchive: q.Get("archive") == "1",
 		Offset:         offset,
 		Limit:          limit,
+		Cursor:         q.Get("cursor"),
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

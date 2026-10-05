@@ -2239,10 +2239,11 @@ createApp({
     const srchRes = ref(null);
     const srchBusy = ref(false);
     const srchContacts = ref([]);
-    function buildSearchQuery(offset) {
+    function buildSearchQuery(cursor) {
       const p = new URLSearchParams();
       p.set('q', srch.q.trim());
-      p.set('offset', String(offset));
+      // 首屏用 offset=0；加载更多改传服务端回带的游标（keyset，深翻页成本恒定）。
+      if (cursor) p.set('cursor', cursor); else p.set('offset', '0');
       if (srch.contactId) p.set('contactId', String(srch.contactId));
       if (srch.from) p.set('from', srch.from);
       if (srch.to) p.set('to', srch.to);
@@ -2254,23 +2255,23 @@ createApp({
       srchBusy.value = true;
       try {
         if (!srchContacts.value.length) srchContacts.value = (await api('/api/contacts')) || [];
-        srchRes.value = await api('/api/search/messages' + buildSearchQuery(0));
+        srchRes.value = await api('/api/search/messages' + buildSearchQuery(''));
       } catch (e) { toast(e.message, 'error'); }
       finally { srchBusy.value = false; }
     }
     async function searchMore() {
       const r = srchRes.value;
-      if (!r || srchBusy.value || (r.list || []).length >= (r.total || 0)) return;
+      if (!r || srchBusy.value || !r.hasMore || !r.nextCursor) return;
       srchBusy.value = true;
       try {
-        const out = await api('/api/search/messages' + buildSearchQuery(r.list.length));
-        srchRes.value = Object.assign({}, out, { list: r.list.concat(out.list || []) });
+        const out = await api('/api/search/messages' + buildSearchQuery(r.nextCursor));
+        srchRes.value = Object.assign({}, out, { list: (r.list || []).concat(out.list || []) });
       } catch (e) { toast(e.message, 'error'); }
       finally { srchBusy.value = false; }
     }
     const srchHasMore = computed(() => {
       const r = srchRes.value;
-      return !!r && (r.list || []).length < (r.total || 0);
+      return !!r && !!r.hasMore;
     });
 
     // 疑似重复联系人

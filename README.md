@@ -506,7 +506,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | POST | `/api/merge/undo` | 撤销合并，body `{"logId"}` |
 | GET | `/api/merge/logs?limit=&targetId=` | 合并记录 |
 | POST | `/api/ingest` | 提交聊天记录识别，body `{"text","analyze"}` |
-| GET | `/api/search/messages?q=&contactId=&from=&to=&archive=1&offset=&limit=` | 全文搜索消息（`archive=1` 一并搜归档） |
+| GET | `/api/search/messages?q=&contactId=&from=&to=&archive=1&offset=&limit=&cursor=` | 全文搜索消息（`archive=1` 一并搜归档）；返回 `nextCursor`/`hasMore`，传 `cursor` 走 keyset 深分页（旧 `offset/limit` 仍兼容） |
 | GET / POST | `/api/tags` | 标签列表 / 新建标签，body `{"name"}` |
 | POST | `/api/tags/batch` | 批量打标，body `{"contactIds":[],"tagIds":[],"remove":false}` |
 | PUT / DELETE | `/api/tags/{id}` | 重命名（body `{"name"}`）/ 删除标签 |

@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -32,6 +34,7 @@ type SearchOptions struct {
 	IncludeArchive bool   // 是否一并搜索归档表
 	Offset         int
 	Limit          int
+	Cursor         string // keyset 游标（安全编码，非空时优先于 Offset，翻页成本恒定）
 }
 
 // SearchHit 单条命中
@@ -57,6 +60,9 @@ type SearchResult struct {
 	TookMs int64       `json:"tookMs"`
 	// ArchiveSkipped 为 true 表示请求了搜归档但归档表不可用，结果只含活跃消息
 	ArchiveSkipped bool `json:"archiveSkipped"`
+	// NextCursor/HasMore 供 keyset 翻页：客户端把 NextCursor 回传即可取下一页。
+	NextCursor string `json:"nextCursor,omitempty"`
+	HasMore    bool   `json:"hasMore"`
 }
 
 // searchKeywords 拆分并规范化关键词
@@ -143,6 +149,35 @@ func clampSearchOptions(opt SearchOptions) SearchOptions {
 	return opt
 }
 
+// searchCursor 是 keyset 游标载荷：按 (msg_unix, id, archived) 全序定位「下一页」。
+// archived 纳入是为了在 messages 与 messages_archive 之间消除 id 跨表重号的歧义
+// （两表各自 AUTOINCREMENT，同一 id 可能各有一条）。
+type searchCursor struct {
+	Mu int64 `json:"m"`
+	ID int64 `json:"i"`
+	Ar int   `json:"a"`
+}
+
+// encodeSearchCursor 把游标安全编码成不透明 base64url 串（规格 11.3：不得直传客户端任意 SQL 字段）。
+func encodeSearchCursor(c searchCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+// decodeSearchCursor 解析并校验游标；非法输入返回错误 → 上层转 400，绝不据此拼 SQL。
+// 解出的三个值一律以占位符参数化绑定，游标内容不可能成为 SQL 结构。
+func decodeSearchCursor(s string) (searchCursor, error) {
+	raw, err := base64.URLEncoding.DecodeString(s)
+	if err != nil {
+		return searchCursor{}, fmt.Errorf("cursor 无效")
+	}
+	var c searchCursor
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return searchCursor{}, fmt.Errorf("cursor 无效")
+	}
+	return c, nil
+}
+
 // SearchMessages 执行搜索：优先走 FTS5（含 ≥3 字的关键词），否则/失败自动降级为 LIKE 全表扫。
 // 所有 rows 迭代都在 dbMu 锁内完成（单连接 + WAL 的硬约束）。
 func SearchMessages(db *sql.DB, opt SearchOptions) (*SearchResult, error) {
@@ -195,7 +230,7 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 			args = append(args, to)
 		}
 		sel := `SELECT m.id, m.contact_id, m.sender, m.content, COALESCE(m.msg_time,'') AS msg_time, ` +
-			fmt.Sprintf("%d AS archived, ", archivedFlag) + fts + `.rank AS rk
+			fmt.Sprintf("%d AS archived, ", archivedFlag) + fts + `.rank AS rk, COALESCE(m.msg_unix,0) AS mu
 			FROM ` + fts + `
 			JOIN ` + base + ` m ON m.id = ` + fts + `.rowid
 			WHERE ` + strings.Join(where, " AND ")
@@ -218,32 +253,51 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 	defer dbMu.Unlock()
 
 	// 归档表在检查之后被删/损坏时，报错降级为只搜活跃表重试一次（同锁内不可递归，必须内联）。
-	runQuery := func(withArchive bool) (int, []SearchHit, error) {
+	runQuery := func(withArchive bool) (int, []SearchHit, string, bool, error) {
 		union, args := buildUnion(withArchive)
 		var total int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
-			return 0, nil, err
+			return 0, nil, "", false, err
 		}
-		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, u.msg_time, u.archived, u.rk,
+		// 排序键改用 msg_unix（避免每行 strftime 计算）；跨 messages+archive 用 (mu,id,archived)
+		// 作全序，游标据此定位下一页。无 cursor 时保留旧 offset 语义向后兼容。
+		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, u.msg_time, u.archived, u.rk, u.mu,
 				COALESCE(c.remark,''), COALESCE(c.name,'')
 			FROM (` + union + `) u
-			LEFT JOIN contacts c ON c.id = u.contact_id
-			ORDER BY strftime('%s', u.msg_time) DESC, u.id DESC
-			LIMIT ? OFFSET ?`
-		pageArgs := append(append([]interface{}{}, args...), opt.Limit, opt.Offset)
+			LEFT JOIN contacts c ON c.id = u.contact_id`
+		pageArgs := append([]interface{}{}, args...)
+		hasCursor := opt.Cursor != ""
+		if hasCursor {
+			cu, cerr := decodeSearchCursor(opt.Cursor)
+			if cerr != nil {
+				return 0, nil, "", false, cerr
+			}
+			pageSQL += ` WHERE (u.mu < ?) OR (u.mu = ? AND u.id < ?) OR (u.mu = ? AND u.id = ? AND u.archived < ?)`
+			pageArgs = append(pageArgs, cu.Mu, cu.Mu, cu.ID, cu.Mu, cu.ID, cu.Ar)
+		}
+		pageSQL += ` ORDER BY u.mu DESC, u.id DESC, u.archived DESC`
+		if hasCursor {
+			pageSQL += ` LIMIT ?`
+			pageArgs = append(pageArgs, opt.Limit+1) // 多取一条以判定 hasMore
+		} else {
+			pageSQL += ` LIMIT ? OFFSET ?`
+			pageArgs = append(pageArgs, opt.Limit, opt.Offset)
+		}
 		rows, err := db.Query(pageSQL, pageArgs...)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, "", false, err
 		}
 		defer rows.Close()
 		list := []SearchHit{}
+		var cursors []searchCursor
 		for rows.Next() {
 			var h SearchHit
 			var remark string
 			var archived int
 			var rk float64
-			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &rk, &remark, &h.ContactName); err != nil {
-				return 0, nil, err
+			var mu int64
+			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &rk, &mu, &remark, &h.ContactName); err != nil {
+				return 0, nil, "", false, err
 			}
 			h.Archived = archived == 1
 			h.Relevance = roundRelevance(rk)
@@ -252,15 +306,33 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 			}
 			h.Snippet = buildSnippet(h.Content, keywords)
 			list = append(list, h)
+			cursors = append(cursors, searchCursor{Mu: mu, ID: h.ID, Ar: archived})
 		}
-		return total, list, rows.Err()
+		if err := rows.Err(); err != nil {
+			return 0, nil, "", false, err
+		}
+		nextCursor, hasMore := "", false
+		if hasCursor {
+			if len(list) > opt.Limit {
+				hasMore = true
+				list = list[:opt.Limit]
+				nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
+			}
+		} else {
+			hasMore = opt.Offset+len(list) < total
+			if len(list) > 0 {
+				// offset 首页也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
+				nextCursor = encodeSearchCursor(cursors[len(list)-1])
+			}
+		}
+		return total, list, nextCursor, hasMore, nil
 	}
 
 	wantArchive := opt.IncludeArchive && !archiveSkipped
-	total, list, err := runQuery(wantArchive)
+	total, list, nextCursor, hasMore, err := runQuery(wantArchive)
 	if err != nil && wantArchive {
 		archiveSkipped = true
-		if total, list, err = runQuery(false); err != nil {
+		if total, list, nextCursor, hasMore, err = runQuery(false); err != nil {
 			return nil, err
 		}
 	}
@@ -275,6 +347,8 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 		List:           list,
 		TookMs:         time.Since(start).Milliseconds(),
 		ArchiveSkipped: archiveSkipped,
+		NextCursor:     nextCursor,
+		HasMore:        hasMore,
 	}, nil
 }
 
@@ -318,12 +392,12 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 	// messages 与 messages_archive 同构，条件构造逻辑复用 buildCond。
 	buildUnion := func(withArchive bool) (string, []interface{}) {
 		activeCond, activeArgs := buildCond("m")
-		union := `SELECT m.id, m.contact_id, m.sender, m.content, m.msg_time, 0 AS archived
+		union := `SELECT m.id, m.contact_id, m.sender, m.content, m.msg_time, 0 AS archived, COALESCE(m.msg_unix,0) AS mu
 			FROM messages m WHERE ` + activeCond
 		args := append([]interface{}{}, activeArgs...)
 		if withArchive {
 			archCond, archArgs := buildCond("a")
-			union += ` UNION ALL SELECT a.id, a.contact_id, a.sender, a.content, a.msg_time, 1 AS archived
+			union += ` UNION ALL SELECT a.id, a.contact_id, a.sender, a.content, a.msg_time, 1 AS archived, COALESCE(a.msg_unix,0) AS mu
 				FROM messages_archive a WHERE ` + archCond
 			args = append(args, archArgs...)
 		}
@@ -337,31 +411,49 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 
 	// 极端情况下归档表在检查之后被删掉：查询报错时降级为只搜活跃表重试一次。
 	// 注意必须在本函数内重试（不能递归调用自己），dbMu 不可重入，递归会死锁。
-	runQuery := func(withArchive bool) (int, []SearchHit, error) {
+	runQuery := func(withArchive bool) (int, []SearchHit, string, bool, error) {
 		union, args := buildUnion(withArchive)
 		var total int
 		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
-			return 0, nil, err
+			return 0, nil, "", false, err
 		}
-		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, COALESCE(u.msg_time,''), u.archived,
+		// 与 FTS 路径一致：排序键用 msg_unix，跨双表用 (mu,id,archived) 全序；有 cursor 走 keyset。
+		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, COALESCE(u.msg_time,''), u.archived, u.mu,
 				COALESCE(c.remark,''), COALESCE(c.name,'')
 			FROM (` + union + `) u
-			LEFT JOIN contacts c ON c.id = u.contact_id
-			ORDER BY strftime('%s', u.msg_time) DESC, u.id DESC
-			LIMIT ? OFFSET ?`
-		pageArgs := append(append([]interface{}{}, args...), opt.Limit, opt.Offset)
+			LEFT JOIN contacts c ON c.id = u.contact_id`
+		pageArgs := append([]interface{}{}, args...)
+		hasCursor := opt.Cursor != ""
+		if hasCursor {
+			cu, cerr := decodeSearchCursor(opt.Cursor)
+			if cerr != nil {
+				return 0, nil, "", false, cerr
+			}
+			pageSQL += ` WHERE (u.mu < ?) OR (u.mu = ? AND u.id < ?) OR (u.mu = ? AND u.id = ? AND u.archived < ?)`
+			pageArgs = append(pageArgs, cu.Mu, cu.Mu, cu.ID, cu.Mu, cu.ID, cu.Ar)
+		}
+		pageSQL += ` ORDER BY u.mu DESC, u.id DESC, u.archived DESC`
+		if hasCursor {
+			pageSQL += ` LIMIT ?`
+			pageArgs = append(pageArgs, opt.Limit+1) // 多取一条以判定 hasMore
+		} else {
+			pageSQL += ` LIMIT ? OFFSET ?`
+			pageArgs = append(pageArgs, opt.Limit, opt.Offset)
+		}
 		rows, err := db.Query(pageSQL, pageArgs...)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, "", false, err
 		}
 		defer rows.Close()
 		list := []SearchHit{}
+		var cursors []searchCursor
 		for rows.Next() {
 			var h SearchHit
 			var remark string
 			var archived int
-			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &remark, &h.ContactName); err != nil {
-				return 0, nil, err
+			var mu int64
+			if err := rows.Scan(&h.ID, &h.ContactID, &h.Sender, &h.Content, &h.MsgTime, &archived, &mu, &remark, &h.ContactName); err != nil {
+				return 0, nil, "", false, err
 			}
 			h.Archived = archived == 1
 			if strings.TrimSpace(remark) != "" {
@@ -369,15 +461,33 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 			}
 			h.Snippet = buildSnippet(h.Content, keywords)
 			list = append(list, h)
+			cursors = append(cursors, searchCursor{Mu: mu, ID: h.ID, Ar: archived})
 		}
-		return total, list, rows.Err()
+		if err := rows.Err(); err != nil {
+			return 0, nil, "", false, err
+		}
+		nextCursor, hasMore := "", false
+		if hasCursor {
+			if len(list) > opt.Limit {
+				hasMore = true
+				list = list[:opt.Limit]
+				nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
+			}
+		} else {
+			hasMore = opt.Offset+len(list) < total
+			if len(list) > 0 {
+				// offset 首页也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
+				nextCursor = encodeSearchCursor(cursors[len(list)-1])
+			}
+		}
+		return total, list, nextCursor, hasMore, nil
 	}
 
 	wantArchive := opt.IncludeArchive && !archiveSkipped
-	total, list, err := runQuery(wantArchive)
+	total, list, nextCursor, hasMore, err := runQuery(wantArchive)
 	if err != nil && wantArchive {
 		archiveSkipped = true
-		if total, list, err = runQuery(false); err != nil {
+		if total, list, nextCursor, hasMore, err = runQuery(false); err != nil {
 			return nil, err
 		}
 	}
@@ -393,6 +503,8 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 		List:           list,
 		TookMs:         time.Since(start).Milliseconds(),
 		ArchiveSkipped: archiveSkipped,
+		NextCursor:     nextCursor,
+		HasMore:        hasMore,
 	}, nil
 }
 
