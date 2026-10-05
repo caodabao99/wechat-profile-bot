@@ -32,7 +32,7 @@
 - **对话质量评分**（v4.8.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/quality?days=90`，对单个联系人从**回复及时性 / 对话深度 / 话题多样性 / 情绪正向度**四维各给 0-100 分并加权出综合分，前端用手写内联 SVG 雷达图 + 维度条呈现。全部在本地按消息与画像确定性计算、不调模型（情绪为增值表，缺失则该维不计入综合、按比例归一，诚实标注“无数据”）；可随时刷新、结果稳定可复现。零第三方库（不引 Chart.js/ECharts）、只读、不新增表
 - **智能回顾摘要**（v4.9.0，联系人驾驶舱）：新增 `POST /api/contacts/{id}/summary` body `{days}`，选定时间窗口后基于窗口内真实聊天原文调模型产一份结构化回顾——overview一段话总结 + topics 话题 chips + todos 待办列表（每条标 [n] 出处可跳转原文、可一键转跟进）。复用 ask.go 两段式检索与降级：未配模型 503、不编造；窗口内原文不足 4 条时如实返回空摘要 + note；模型返回坏 JSON 回退为原文摘录。摘要一次性返回不落库。
 - **插件化分析引擎·提示词模板外置**（v5.1.0，关系助手）：把全部 13 个 LLM 提示词模板从硬编码外置为可编辑「分析插件」——内置默认经 `go:embed` 逐字内嵌、可被 SQLite `prompt_templates` 覆盖并**运行时热加载**（改完即生效、无需重启）。变量用**字面占位符 `{{key}}`**、渲染为单趟精确字符串替换（非 text/template，杜绝模板注入、结果确定）；保存时强制校验必填变量齐备、拒绝未知/游离占位符、限 8KB；坏覆盖或读取失败一律**回退内置默认、绝不因模板问题 500 阻断业务**。默认渲染与迁移前 `fmt.Sprintf` **逐字节一致**（golden 测试锁死，纯重构零行为变化）。新增 `/api/assistant/prompts*` 一组端点支持列表/取详情/保存/重置/试渲染，覆盖表自动纳入备份恢复。
-- **分析插件（提示词）网页管理界面**（v5.2.0，关系助手页）：把上述提示词端点做成可视化面板「🧩 分析插件（提示词）」——列出 14 个模板（标题/所属功能/是否已自定义徽标/更新时间），行内展开即可编辑当前生效正文、点变量 chips 在光标处插入 `{{key}}`、实时字节计数（8KB 上限提示）、与内置默认对照、一键预览（用样本变量字面渲染、不调模型）、保存自定义 / 恢复默认。纯前端复用既有 Vue + `api()` 范式，**零第三方依赖**、无新增后端端点。
+- **分析插件（提示词）网页管理界面**（v5.2.0，关系助手页）：把上述提示词端点做成可视化面板「🧩 分析插件（提示词）」——列出 15 个模板（标题/所属功能/是否已自定义徽标/更新时间），行内展开即可编辑当前生效正文、点变量 chips 在光标处插入 `{{key}}`、实时字节计数（8KB 上限提示）、与内置默认对照、一键预览（用样本变量字面渲染、不调模型）、保存自定义 / 恢复默认。纯前端复用既有 Vue + `api()` 范式，**零第三方依赖**、无新增后端端点。
 - **对话质量历史趋势**（v5.2.1，联系人驾驶舱）：在既有四维雷达图旁新增一条「综合分历史趋势」折线——每次查看质量评分时按 ISO 周幂等留存综合分快照到新派生表 `contact_quality_history`（每联系人仅留近约 104 周），前端复用既有零依赖 `sparkPoints` 内联 SVG 折线呈现、附最新值与较上期环比。全程本地确定性计算、不调模型、惰性采集不新增后台任务；best-effort 写历史失败不影响评分响应。零第三方库，`GET /api/contacts/{id}/quality` 响应新增 `history` 字段。
 - **关系成就 / 里程碑系统**（v5.2.1，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/achievements`，从聊天记录**确定性自动派生**关系里程碑——累计消息（100/500/1000/5000 条）、连续互动天数（7/30/100 天，messages ∪ archive 活跃自然日最长连续段）、相识周年（1/3/5 年，起点=首条消息时间）。前端用成就卡片网格呈现（达成亮徽章+解锁日期、未达成进度条）。首次跨越某档位即写 `contact_achievements` 去重表 + 一条 `kind="milestone"` 的 `contact_events`，于是「时间线」标签自动留下解锁历史；重复检测幂等、不重复写。全程本地计算、不调模型、可离线单测；去重表按持久化用户数据纳入备份恢复。零第三方库。
 - **关系健康度综合仪表盘**（v5.3.0，洞察页）：新增只读端点 `GET /api/relationships/health?window=90`，为每位联系人融合亲密度基座 + 趋势（升温/持平/降温/沉睡）+ 情绪均值 + 沉默衰减 + 单向惩罚，算出一个 0-100 的**关系活力分**（与驾驶舱「对话质量分」不同口径），按优秀/良好/一般/需关注/危险五档分布。前端洞察页新子标签展示汇总均值 + band 直方条 + 全局热力图网格（绿→红着色、点格直达联系人）+ 最需关注榜。全程纯本地确定性、计算即读不落库、不调模型；`fuseHealth` 为可脱库单测纯函数，联系人上限护栏 300。零第三方库。
@@ -47,6 +47,8 @@
 - **对话风格镜像**（v5.4.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/mirror`，`lexicalRichness`/`avgLen`/`markerShare`/`emojiShare` 等纯函数按 rune 统计你发给某联系人的消息，并与你的全局均值对比，产「你在 TA 面前的样子」标签（话痨型/简洁型/表情党/问询型/热情型…）；前端「风格镜像」卡以维度条 + delta 徽标呈现。零第三方依赖、纯本地文本统计、不新增表。
 - **关系能量流桑基图**（v5.4.0，洞察页新子标签「能量流」）：纯前端手绘 SVG 桑基——「我」→ 四层圈带 → 每层 Top-N 联系人，连线宽度∝亲密度 score、节点按圈层/score 确定性排序（无随机数），数据源直接复用 `GET /api/relationships/circles`。零后端改动、零第三方库、点叶子直达联系人。
 - **数据健康自检报告**（v5.4.0，状态页）：新增只读端点 `GET /api/system/data-report`，一趟锁纯 SQL 聚合 DB 体积 / 消息总数与近30天增速 / 联系人·画像·标签·时间线计数与覆盖率 / 各派生缓存表行数与存在性 / 最近成功备份，前端「数据健康自检」面板以指标卡 + 覆盖率条呈现。纯本地只读、不新增表、不调模型。
+- **关系叙事生成**（v5.5.0，联系人驾驶舱）：新增 `POST /api/contacts/{id}/narrative`（`body {days}`），复用 summary 管道（`computeAchMetrics`/`loadSummaryInputs`/`numberMessagesForSummary`/`latestTopicsBefore`/`RenderPrompt`）把相识年数、首次互动、近期主题、往来条数 + 编号原文喂给模型，写一段温暖的关系故事；**双重降级**：无 LLM / 调用失败 / 产物空或短于阈值时回落为 `buildDeterministicNarrative` 纯事实拼成的确定性叙事，**永不 503、不编造**（`source` 标记 `llm`/`deterministic`）。新增第 15 个提示词模板 `relationship_narrative`（提示词注册表 14→15，同步更新 `prompts_test.go`/`prompts_api_test.go`/`feature_sweep_test.go` 与本文档）。不落库、计算即返回。前端「关系故事」卡展示叙事 + 来源徽标 + 近期主题 chips，并可一键 canvas 手绘导出为精美分享图（纯前端、零第三方库）。
+- **关系目标追踪**（v5.5.0，关系助手页 + 联系人详情）：新增持久表 `relationship_goals`（懒 `ensureGoals`、不 bump user_version、不入 `derivedTables`、依动态 `listRestoreTables` 自动纳入备份/恢复）与 CRUD 端点 `GET/POST /api/assistant/goals`、`POST /api/assistant/goals/{id}/complete`、`DELETE /api/assistant/goals/{id}`。用户为某联系人自设可量化目标（如「本周主动发 5 条」），系统按窗口读 `relationship_daily_metrics` 的 `me_count` 自动判定达标：达成即置 `done`、`+XP`、升级（与 v5.3.0 挑战共用 `gamification_state`/`levelForXP`）并写一条 `kind="milestone"` 事件。与「维护挑战」语义划清（挑战=系统建议、目标=用户自设）；达标判定/手动完成均幂等（仅处理 `active` 行）。`goalProgressPct`/`goalDateWindow`/`normalizeGoalMetric` 为可脱库单测纯函数。单连接池三趟锁（读候选/写库/锁外补事件）绝不嵌套。前端助手页「关系目标」面板（进度条 + 完成勾选 + 新建表单）与联系人详情「TA 的目标」子列表。
 - **智能联系人自动分组**（v5.0.0，标签管理）：新增只读端点 `GET /api/assistant/tags/suggest?ids=1,2,3`，基于联系人画像（地域/职业/兴趣）与互动指标（亲密度分层、情绪告警、往来待跟进）用**确定性规则**批量产标签建议（含命中理由与置信度），前端一键/勾选批量采纳经 `POST /api/assistant/tags/apply` 走 `CreateTag`（幂等）+ `INSERT OR IGNORE` 落库。全程本地计算、不调模型、结果可复现（同数据同参跑两次逐字段相等）；情绪/待跟进为增值表，缺失则静默跳过对应规则不报错。零第三方库、采纳幂等（重复采纳不产生重复链接）。
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
@@ -65,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.4.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -82,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -300,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.4.0.tar.gz`，得到 `wechat-profile-bot:v5.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.0.tar.gz`，得到 `wechat-profile-bot:v5.5.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -541,9 +543,14 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/contacts/{id}/mirror` | 对话风格镜像（v5.4.0）：统计你发给某联系人的句长/用词丰富度/表情/提问/感叹，与其全局均值对比；返回 `{dimensions,traits,note}`；纯本地文本统计、不调模型 |
 | GET | `/api/assistant/tags/conflicts` | 标签冲突检测（v5.4.0）：按内置互斥标签组报出同一联系人身上的矛盾标签；返回 `{conflicts,total,note}`；只读不写库、零模型 |
 | GET | `/api/system/data-report` | 数据健康自检（v5.4.0）：DB 体积/消息增速/画像·标签·时间线覆盖率/各派生缓存表行数/最近备份；返回 `{dbSizeBytes,messagesTotal,profileCoverage,cacheTables,...}`；纯本地只读、不调模型 |
+| POST | `/api/contacts/{id}/narrative` | 关系叙事生成（v5.5.0，`body {days}` 缺省 90）：有 LLM 写一段关系故事，无 LLM/失败双重降级为确定性叙事，**永不 503**；返回 `{contactId,name,years,msgCount,firstDate,recentTopics,narrative,source:llm|deterministic,note,generatedAt}`；不落库 |
+| GET | `/api/assistant/goals` | 关系目标列表（v5.5.0）：先跑一次达标检测再返回 `{generatedAt,weekStart,goals:[{id,contactId,name,title,metric,targetCount,periodStart,periodEnd,status,current,progressPct,createdAt,doneAt}],done,active,total,xp,level,nextLevelAt,note}` |
+| POST | `/api/assistant/goals` | 新建目标（v5.5.0，body `{contactId,title,metric,targetCount,periodStart,periodEnd}`）：返回 `201 {createdId,goals}`；标题必填、达标数 1~999；联系人不存在 404、参数非法 400 |
+| POST | `/api/assistant/goals/{id}/complete` | 手动达成目标（v5.5.0）：置 done、+XP、写里程碑；幂等（已达成/不存在返回 `{ok:false}`） |
+| DELETE | `/api/assistant/goals/{id}` | 删除目标（v5.5.0）：返回 `{deleted,id}` |
 | GET | `/api/assistant/tags/suggest?ids=1,2,3` | 智能标签建议（ids 缺省=全部活跃联系人，带上限护栏），返回 `{suggestions:[{contactId,name,tagName,reason,confidence}],total}`；纯本地确定性、不调模型 |
 | POST | `/api/assistant/tags/apply` | 批量采纳标签建议，body `{"items":[{contactId,tagName}]}`，走 `CreateTag`幂等 + `INSERT OR IGNORE`，返回 `{affected}`；重复采纳不产生重复链接 |
-| GET | `/api/assistant/prompts` | 提示词模板列表，返回 `{items:[{key,title,feature,vars,isCustom,updatedAt}],total}`（共 14 个） |
+| GET | `/api/assistant/prompts` | 提示词模板列表，返回 `{items:[{key,title,feature,vars,isCustom,updatedAt}],total}`（共 15 个） |
 | GET | `/api/assistant/prompts/{key}` | 单个模板详情：`{default,effective,isCustom,override,vars,...}` |
 | PUT | `/api/assistant/prompts/{key}` | 保存覆盖，body `{"content":"...含 {{key}} 占位符"}`；非法/缺必填变量/超 8KB → 400，未知 key → 404；下次 LLM 调用即热加载生效 |
 | DELETE | `/api/assistant/prompts/{key}` | 重置为内置默认（删除覆盖行） |
@@ -621,6 +628,13 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v5.5.0（2026-10-12）
+
+LLM 叙事 + 关系目标追踪（均为增量复用，不重写既有模块）：
+
+- **关系叙事生成**（`narrative.go`，新建；`prompts/relationship_narrative.txt`）：`GenerateNarrative` 复用 summary 管道（`computeAchMetrics` 取相识年数/累计条数/首互动、`loadSummaryInputs` 取展示名/近期原文、`topNarrativeTopics` 取最新主题快照、`RenderPrompt`+`llm.CallContext`）写一段关系故事；**双重降级**——`!llm.configured()`/原文不足 `summaryMinMsgs`/渲染或调用失败/`cleanNarrativeText` 产物短于阈值时，回落为 `buildDeterministicNarrative`（纯函数、依事实拼成、不编造），**永不返回 ErrLLMNotConfigured/503**。`clampNarrativeDays`/`topNarrativeTopics`/`buildDeterministicNarrative`/`cleanNarrativeText` 均为可脱库单测纯函数。新增 `POST /api/contacts/{id}/narrative`（`routeContact` 加 `case "narrative"`）。提示词注册表 14→15（新增 `relationship_narrative`），计数连锁同步 `prompts_test.go`/`prompts_api_test.go`/`feature_sweep_test.go` 与本文档。前端驾驶舱新增「关系故事」卡（叙事正文 + 来源徽标 + 主题 chips + note）与一键 canvas 手绘分享图（`downloadNarrativeCard`/`wrapCanvasText` 逐字 measureText 换行、`toDataURL` 下载，纯前端零库）。
+- **关系目标追踪**（`goals.go`/`goals_api.go`，新建）：持久表 `relationship_goals` 懒 `ensureGoals`（`CREATE TABLE IF NOT EXISTS`、不 bump user_version、不入 `derivedTables`→自动纳入备份/恢复）。`goalProgressPct`/`goalDateWindow`/`normalizeGoalMetric` 纯函数；`autoDetectGoalCompletions` 按窗口读 `relationship_daily_metrics` 的 `me_count` 自动判定达标，首次达成置 done、+XP、升级（复用 `gamification_state`/`challengeXPPerDone`/`levelForXP`）并锁外 `RecordContactEvent(...,"milestone",...)`；`CreateGoal`/`CompleteGoal`/`DeleteGoal`/`BuildGoals` 完整 CRUD、均幂等。单连接池三趟锁（读候选后 `rows.Close()` 再补算进度/写库/锁外补事件）绝不嵌套。新增 `GET/POST /api/assistant/goals`、`POST /api/assistant/goals/{id}/complete`、`DELETE /api/assistant/goals/{id}`（`routeAssistant` 加 `case "goals"` 子分发）。与「维护挑战」语义划清（挑战=系统建议、目标=用户自设）。前端助手页新增「关系目标」面板（进度条 + 完成勾选 + 新建表单），联系人详情新增「TA 的目标」子列表。
 
 ### v5.4.0（2026-10-05）
 

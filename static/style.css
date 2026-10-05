@@ -1148,3 +1148,54 @@ textarea.text-input { resize: vertical; }
 .dr-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
 .dr-cache { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .dr-cache-item { font-size: 12px; }
+
+/* ================= v5.5.0 关系叙事 + 关系目标前端样式 ================= */
+/* #6 关系故事卡 */
+.narr-body { margin-top: 6px; }
+.narr-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.narr-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; flex: none; }
+.narr-badge.is-llm { background: rgba(124,92,255,.14); color: var(--accent); }
+.narr-badge.is-det { background: rgba(52,181,111,.16); color: var(--ok); }
+.narr-stat { font-size: 12px; color: var(--muted); }
+.narr-text { font-size: 15px; line-height: 1.9; color: var(--ink); white-space: pre-wrap; word-break: break-word; margin: 6px 0 10px; }
+.narr-topics { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.narr-topic { font-size: 12px; }
+.narr-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* #7 关系目标（助手页面板 + 联系人详情子列表）*/
+.gl-head { display: flex; gap: 20px; flex-wrap: wrap; margin: 12px 0 4px; }
+.gl-stat { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.gl-level { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.gw-label { color: var(--muted); flex: none; }
+.gw-num { font-weight: 600; color: var(--ink); flex: none; }
+.gw-bar { flex: 1; height: 8px; background: var(--line); border-radius: 5px; overflow: hidden; min-width: 60px; }
+.gw-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 5px; transition: width .3s; }
+.gl-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.gl-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.gl-item:last-child { border-bottom: none; }
+.gl-item.done { opacity: .72; }
+.gl-item.done .gi-title { text-decoration: line-through; color: var(--muted); }
+.gi-check { font-size: 16px; color: var(--muted); flex: none; width: 20px; text-align: center; }
+.gl-item.done .gi-check { color: var(--ok); }
+.gi-body { flex: 1; min-width: 0; }
+.gi-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+.gi-meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; margin-top: 2px; }
+.gi-meta a { text-decoration: none; word-break: break-all; }
+.gi-meta a:hover { color: var(--accent); }
+.gi-bar { position: relative; height: 8px; border-radius: 6px; background: var(--line); margin-top: 6px; overflow: hidden; }
+.gi-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.gi-acts { display: flex; gap: 6px; flex: none; }
+.gi-done { flex: none; }
+
+/* 联系人详情：TA 的目标 */
+.cg-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.cg-item { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.cg-item:last-child { border-bottom: none; }
+.cg-item.done { opacity: .72; }
+.cg-item.done .cg-title { text-decoration: line-through; color: var(--muted); }
+.cg-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.cg-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+.cg-cur { font-size: 12px; color: var(--accent); font-weight: 700; flex: none; }
+.cg-bar { position: relative; height: 8px; border-radius: 6px; background: var(--line); margin: 6px 0; overflow: hidden; }
+.cg-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.cg-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

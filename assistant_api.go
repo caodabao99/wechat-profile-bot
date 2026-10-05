@@ -111,6 +111,8 @@ func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub [
 			return
 		}
 		s.hChallenges(w, r)
+	case "goals":
+		s.routeGoals(w, r, sub[1:])
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+sub[0])
 	}

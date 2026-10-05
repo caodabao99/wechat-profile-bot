@@ -407,6 +407,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactAsk(w, r, id)
 	case "summary":
 		s.routeContactSummary(w, r, id)
+	case "narrative":
+		s.hContactNarrative(w, r, id)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}

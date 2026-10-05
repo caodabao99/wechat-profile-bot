@@ -263,8 +263,8 @@ func assertGolden(t *testing.T, key, expected, got string) {
 // TestPromptRegistryConsistency 校验注册表与内嵌默认模板自洽：
 // 每个声明变量都在默认模板出现，且默认模板只含声明过的占位符（无游离/未声明）。
 func TestPromptRegistryConsistency(t *testing.T) {
-	if len(promptRegistry) != 14 {
-		t.Fatalf("注册表应有 14 个模板, got %d", len(promptRegistry))
+	if len(promptRegistry) != 15 {
+		t.Fatalf("注册表应有 15 个模板, got %d", len(promptRegistry))
 	}
 	for _, spec := range promptRegistry {
 		spec := spec

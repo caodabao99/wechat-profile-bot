@@ -227,6 +227,7 @@ createApp({
         loadCalEvents();
         loadCoach();
         loadChallenges();
+        loadGoals();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -304,6 +305,89 @@ createApp({
       const base = (chals.level - 1) * 100, span = chals.nextLevelAt - base;
       if (span <= 0) return 0;
       return Math.max(0, Math.min(100, Math.round(((chals.xp - base) / span) * 100)));
+    }
+
+    // ---------- v5.5.0 #7 关系目标追踪（用户自设可量化目标 + 自动达标加 XP；与“维护挑战”语义划清）----------
+    const goals = reactive({ generatedAt: '', weekStart: '', goals: [], done: 0, active: 0, total: 0, xp: 0, level: 1, nextLevelAt: 100, note: '' });
+    const goalsBusy = ref(false);
+    const showGoalForm = ref(false);
+    const goalForm = reactive({ contactId: 0, title: '', metric: 'weekly_me_messages', targetCount: 5, periodStart: '', periodEnd: '' });
+    const goalPickContacts = ref([]);
+    const goalMetricLabels = { weekly_me_messages: '本周主动发消息数', period_me_messages: '指定周期内主动发消息数' };
+    async function loadGoals() {
+      if (goalsBusy.value) return;
+      goalsBusy.value = true;
+      try {
+        const data = await api('/api/assistant/goals');
+        goals.generatedAt = (data.generatedAt || '').slice(0, 16);
+        goals.weekStart = data.weekStart || '';
+        goals.goals = data.goals || [];
+        goals.done = data.done || 0;
+        goals.active = data.active || 0;
+        goals.total = data.total || 0;
+        goals.xp = data.xp || 0;
+        goals.level = data.level || 1;
+        goals.nextLevelAt = data.nextLevelAt || 100;
+        goals.note = data.note || '';
+      } catch (e) { /* 静默：目标面板加载失败不打断助手看板 */ }
+      finally { goalsBusy.value = false; }
+    }
+    function goalPct(g) { return Math.max(0, Math.min(100, g && g.progressPct || 0)); }
+    function goalMetricLabel(m) { return goalMetricLabels[m] || m; }
+    // 联系人详情页：只取当前联系人的目标（共享 goals 反应态，route.id 为数字）。
+    const contactGoals = computed(() => {
+      const cid = route.id;
+      return (goals.goals || []).filter(g => g.contactId === cid);
+    });
+    async function openGoalForm(cid) {
+      try {
+        if (!goalPickContacts.value.length) goalPickContacts.value = (await api('/api/contacts')) || [];
+      } catch (e) { toast(e.message, 'error'); return; }
+      goalForm.contactId = cid || (contact.value ? contact.value.id : 0);
+      goalForm.title = '';
+      goalForm.metric = 'weekly_me_messages';
+      goalForm.targetCount = 5;
+      goalForm.periodStart = '';
+      goalForm.periodEnd = '';
+      showGoalForm.value = true;
+    }
+    function closeGoalForm() { showGoalForm.value = false; }
+    async function addGoal() {
+      if (!goalForm.contactId) { toast('请选择联系人', 'error'); return; }
+      if (!goalForm.title.trim()) { toast('请填写目标标题', 'error'); return; }
+      if (goalForm.metric === 'period_me_messages' && (!goalForm.periodStart || !goalForm.periodEnd)) {
+        toast('周期口径需选择完整的起止日期', 'error'); return;
+      }
+      goalsBusy.value = true;
+      try {
+        await api('/api/assistant/goals', { method: 'POST', body: {
+          contactId: goalForm.contactId, title: goalForm.title.trim(), metric: goalForm.metric,
+          targetCount: goalForm.targetCount || 1, periodStart: goalForm.periodStart, periodEnd: goalForm.periodEnd,
+        } });
+        toast('目标已创建');
+        showGoalForm.value = false;
+        await loadGoals();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { goalsBusy.value = false; }
+    }
+    async function completeGoal(g) {
+      goalsBusy.value = true;
+      try {
+        await api('/api/assistant/goals/' + g.id + '/complete', { method: 'POST' });
+        toast('目标已达成，+' + 20 + ' XP');
+        await loadGoals();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { goalsBusy.value = false; }
+    }
+    async function deleteGoal(g) {
+      if (!confirm('删除这个目标？\n' + g.title)) return;
+      goalsBusy.value = true;
+      try {
+        await api('/api/assistant/goals/' + g.id, { method: 'DELETE' });
+        toast('已删除');
+        await loadGoals();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { goalsBusy.value = false; }
     }
 
     // numField 校验 type=number + v-model.number 的输入框。
@@ -2630,6 +2714,8 @@ createApp({
       rhythm: null, rhBusy: false, rhFailed: false, rhError: '',
       // v5.4.0 #5 对话风格镜像（你在 TA 面前的样子，纯本地文本统计）
       mirror: null, miBusy: false, miFailed: false, miError: '',
+      // v5.5.0 #6 关系叙事（LLM + 双重降级：无 LLM/调用失败回落确定性叙事，永不 503、不编造）
+      narrDays: 90, narrBusy: false, narr: null, narrFailed: false, narrError: '',
     });
     const ckTrendMeta = {
       warming: { label: '关系升温', cls: 'st-ok' },
@@ -2654,6 +2740,7 @@ createApp({
       loadHeatmap();
       loadRhythm();
       loadMirror();
+      loadGoals();
     }
     async function loadFacts(force) {
       const my = detailSeq;
@@ -2782,6 +2869,118 @@ createApp({
       } finally { if (my === detailSeq && route.id === cid) ck.summaryBusy = false; }
     }
     function reloadSummary() { ck.summaryResult = null; genSummary(); }
+
+    // ---------- v5.5.0 #6 关系叙事（LLM + 双重降级，永不 503；可导出为精美卡片）----------
+    async function genNarrative() {
+      if (ck.narrBusy) return;
+      const my = detailSeq;
+      const cid = route.id;
+      ck.narrBusy = true;
+      ck.narrFailed = false;
+      ck.narrError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/narrative', { method: 'POST', body: { days: ck.narrDays } });
+        if (my !== detailSeq || route.id !== cid) return;
+        out.recentTopics = out.recentTopics || [];
+        ck.narr = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.narrFailed = true; ck.narrError = e.message || '叙事生成失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.narrBusy = false; }
+    }
+    function reloadNarrative() { ck.narr = null; genNarrative(); }
+    // canvas 手绘分享卡：逐字 measureText 换行（中文无空格），全在 JS 侧算，零第三方库、确定性。
+    function wrapCanvasText(ctx, text, maxW) {
+      const paras = String(text).split('\n');
+      const out = [];
+      for (const para of paras) {
+        if (para === '') { out.push(''); continue; }
+        let line = '';
+        for (const ch of para) {
+          const test = line + ch;
+          if (ctx.measureText(test).width > maxW && line) { out.push(line); line = ch; }
+          else { line = test; }
+        }
+        if (line) out.push(line);
+      }
+      return out;
+    }
+    function downloadNarrativeCard() {
+      const n = ck.narr;
+      if (!n || !n.narrative) { toast('请先生成关系叙事', 'error'); return; }
+      const dpr = 2, W = 760, pad = 60;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const fontFamily = '"PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif';
+      const bodyFont = '400 22px ' + fontFamily;
+      const maxW = W - pad * 2;
+      ctx.font = bodyFont;
+      const lines = wrapCanvasText(ctx, n.narrative, maxW);
+      const lineH = 40, headH = 168, footH = 96;
+      const H = headH + lines.length * lineH + footH;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.scale(dpr, dpr);
+      // 背景渐变
+      const bg = ctx.createLinearGradient(0, 0, W, H);
+      bg.addColorStop(0, '#1f2540'); bg.addColorStop(1, '#3a2b52');
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+      // 顶部装饰细线
+      ctx.fillStyle = '#8b7bd8'; ctx.fillRect(pad, 48, 64, 4);
+      // 标题
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '600 30px ' + fontFamily;
+      ctx.textBaseline = 'alphabetic';
+      const title = (n.name ? n.name + ' · ' : '') + '我们的关系故事';
+      ctx.fillText(title, pad, 100);
+      // 元信息（年数 / 往来条数 / 相识起点）
+      ctx.font = '400 16px ' + fontFamily;
+      ctx.fillStyle = '#b9b3d6';
+      const metaBits = [];
+      if (n.years >= 1) metaBits.push('相识 ' + n.years + ' 年');
+      if (n.msgCount > 0) metaBits.push('往来 ' + n.msgCount + ' 条');
+      if (n.firstDate) metaBits.push('始于 ' + n.firstDate);
+      ctx.fillText(metaBits.join('　·　'), pad, 132);
+      // 叙事正文
+      ctx.font = bodyFont;
+      ctx.fillStyle = '#f2f0fa';
+      let y = headH;
+      for (const ln of lines) { ctx.fillText(ln, pad, y); y += lineH; }
+      // 近期主题 chips
+      let footY = headH + lines.length * lineH + 24;
+      if (n.recentTopics && n.recentTopics.length) {
+        ctx.font = '400 15px ' + fontFamily;
+        let cx = pad;
+        for (const t of n.recentTopics) {
+          const label = '# ' + t;
+          const tw = ctx.measureText(label).width + 20;
+          if (cx + tw > W - pad) { cx = pad; footY += 30; }
+          ctx.fillStyle = 'rgba(139,123,216,0.22)';
+          roundRect(ctx, cx, footY - 16, tw, 26, 13); ctx.fill();
+          ctx.fillStyle = '#cfc7f0';
+          ctx.fillText(label, cx + 10, footY + 2);
+          cx += tw + 10;
+        }
+      }
+      // 页脚
+      ctx.font = '400 14px ' + fontFamily;
+      ctx.fillStyle = '#7f7aa0';
+      const srcTxt = n.source === 'llm' ? '由 AI 依据往来事实生成' : '基于往来事实自动生成';
+      ctx.fillText(srcTxt + '　·　' + (n.generatedAt || ''), pad, H - 34);
+      const url = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '关系故事-' + (n.name || 'contact') + '.png';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      toast('关系故事卡片已下载');
+    }
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
     // 摘要里 todo 行上的 [n] → 反查 sources 里同编号的原文→复用 jumpToAskSource 高亮定位
     function jumpToSummarySource(td) {
       if (!td || !td.ref || !ck.summaryResult || !ck.summaryResult.sources) return;
@@ -2817,6 +3016,7 @@ createApp({
       ck.heatmap = null; ck.hmBusy = false; ck.hmFailed = false; ck.hmError = '';
       ck.rhythm = null; ck.rhBusy = false; ck.rhFailed = false; ck.rhError = '';
       ck.mirror = null; ck.miBusy = false; ck.miFailed = false; ck.miError = '';
+      ck.narr = null; ck.narrBusy = false; ck.narrFailed = false; ck.narrError = '';
       ck.summaryBusy = false; ck.summaryResult = null; ck.summaryFailed = false; ck.summaryError = '';
       Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
     }
@@ -3450,6 +3650,9 @@ createApp({
       // v5.3.0 关系教练 + 维护挑战（助手页）
       coach, loadCoach, fmtTimingHours,
       chals, chalsBusy, loadChallenges, chalWeekPct, chalLevelPct,
+      // v5.5.0 #7 关系目标（助手页面板 + 联系人详情子列表）
+      goals, goalsBusy, showGoalForm, goalForm, goalPickContacts, loadGoals, goalPct, goalMetricLabel,
+      contactGoals, openGoalForm, closeGoalForm, addGoal, completeGoal, deleteGoal,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,
@@ -3523,6 +3726,8 @@ createApp({
       loadMirror, mirrorValPct, mirrorBasePct, mirrorValText, mirrorDeltaCls,
       // v4.9.0 智能回顾摘要 + 待办一键转跟进
       genSummary, reloadSummary, todoToFollowup, jumpToSummarySource,
+      // v5.5.0 #6 关系叙事（LLM + 双重降级）+ canvas 分享卡
+      genNarrative, reloadNarrative, downloadNarrativeCard,
       // 待跟进 / 日历订阅 / 祝福草稿
       followups, followupFilter, followupBusy, showFollowupModal, followupForm,
       pickContacts, followupKinds, loadFollowups, switchFollowup, setFollowupStatus,

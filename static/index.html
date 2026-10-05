@@ -702,6 +702,66 @@
             <p class="hint" v-if="ck.summaryResult.note">{{ ck.summaryResult.note }}</p>
           </div>
         </div>
+
+        <!-- v5.5.0 #6 关系叙事：LLM + 双重降级（无模型回落确定性叙事，永不 503），可导出精美卡片 -->
+        <div class="card narr-card">
+          <div class="tl-head">
+            <h2>关系故事 <span class="chip st-purple">AI · 双重降级</span></h2>
+            <div class="q-ctrl">
+              <select class="text-input sm" v-model.number="ck.narrDays" :disabled="ck.narrBusy">
+                <option :value="30">近 30 天</option>
+                <option :value="90">近 90 天</option>
+                <option :value="180">近 180 天</option>
+                <option :value="365">近 1 年</option>
+              </select>
+              <button class="btn" @click="genNarrative" :disabled="ck.narrBusy">{{ ck.narrBusy ? '书写中…' : (ck.narr ? '重新书写' : '写下我们的故事') }}</button>
+            </div>
+          </div>
+          <p class="hint block">基于你们的往来事实（相识年数、首次互动、近期主题、消息量）写一段温暖的关系叙事；未配置模型时自动回落为「确定性叙事」，不编造、不报 503。可一键导出为精美卡片分享。</p>
+          <p class="empty" v-if="ck.narrBusy && !ck.narr">正在为你和 TA 书写这段关系的故事…</p>
+          <p class="empty" v-else-if="ck.narrFailed && !ck.narr">{{ ck.narrError }}</p>
+          <div v-else-if="ck.narr" class="narr-body">
+            <div class="narr-meta">
+              <span class="narr-badge" :class="ck.narr.source==='llm' ? 'is-llm':'is-det'">{{ ck.narr.source==='llm' ? 'AI 生成' : '事实叙事' }}</span>
+              <span class="narr-stat" v-if="ck.narr.years>=1">相识 {{ ck.narr.years }} 年</span>
+              <span class="narr-stat" v-if="ck.narr.msgCount>0">往来 {{ ck.narr.msgCount }} 条</span>
+              <span class="narr-stat" v-if="ck.narr.firstDate">始于 {{ ck.narr.firstDate }}</span>
+            </div>
+            <p class="narr-text">{{ ck.narr.narrative }}</p>
+            <div class="narr-topics" v-if="ck.narr.recentTopics && ck.narr.recentTopics.length">
+              <span class="chip st-blue narr-topic" v-for="(t,i) in ck.narr.recentTopics" :key="i">{{ t }}</span>
+            </div>
+            <p class="hint" v-if="ck.narr.note">{{ ck.narr.note }}</p>
+            <div class="narr-actions">
+              <button class="btn ghost sm" @click="downloadNarrativeCard" :disabled="!ck.narr.narrative">下载分享卡片</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- v5.5.0 #7 关系目标（联系人详情：仅显示该联系人的目标）-->
+        <div class="card cg-card" v-if="contactGoals.length">
+          <div class="tl-head">
+            <h2>TA 的目标 <span class="chip st-blue">{{ contactGoals.length }}</span></h2>
+            <button class="btn ghost sm" @click="openGoalForm(contact.id)">＋ 新目标</button>
+          </div>
+          <ul class="cg-list">
+            <li class="cg-item" :class="{done: g.status==='done'}" v-for="g in contactGoals" :key="g.id">
+              <div class="cg-top">
+                <span class="cg-title">{{ g.title }}</span>
+                <span class="cg-cur">{{ g.current }} / {{ g.targetCount }}</span>
+              </div>
+              <div class="cg-bar"><i :style="{width: goalPct(g) + '%'}"></i></div>
+              <div class="cg-foot">
+                <span class="hint">{{ goalMetricLabel(g.metric) }}</span>
+                <template v-if="g.status==='active'">
+                  <button class="btn ghost xs" @click="completeGoal(g)">标记达成</button>
+                  <button class="btn ghost xs" @click="deleteGoal(g)">删除</button>
+                </template>
+                <span class="chip st-ok" v-else>已达成</span>
+              </div>
+            </li>
+          </ul>
+        </div>
       </div>
     </section>
 
@@ -989,6 +1049,49 @@
           </ul>
           <p class="hint block" v-if="chals.badgesUnlocked">已解锁成就徽章 {{ chals.badgesUnlocked }} 枚 · 详见「洞察 · 成就」。</p>
           <p class="hint block" v-if="chals.weekStart">统计周起始：{{ chals.weekStart }}</p>
+        </div>
+
+        <!-- v5.5.0 #7 关系目标：用户自设可量化目标 + 自动达标加 XP（与上方“维护挑战=系统建议”语义划清）-->
+        <div class="card goal-card">
+          <div class="tl-head">
+            <h3 style="margin:0">🎯 关系目标</h3>
+            <div>
+              <button class="btn ghost sm" @click="openGoalForm(0)">＋ 新建目标</button>
+              <button class="btn ghost sm" @click="loadGoals" :disabled="goalsBusy">{{ goalsBusy ? '刷新中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="hint block">区别于上方的系统维护挑战：这里是你自己给自己定的小目标（如“本周主动发 5 条”）。你照常发消息，系统按窗口内我方发言条数自动判定达标并加经验值。</p>
+          <div class="gl-head" v-if="goals.total || goals.xp">
+            <div class="gl-stat">
+              <span class="gw-label">目标进度</span>
+              <span class="gw-num">{{ goals.done }} / {{ goals.total }}</span>
+              <span class="gw-bar"><i :style="{width: (goals.total ? Math.round(goals.done / goals.total * 100) : 0) + '%'}"></i></span>
+            </div>
+            <div class="gl-level">
+              <span class="cl-label">Lv.{{ goals.level }}</span>
+              <span class="cl-num">{{ goals.xp }} XP</span>
+            </div>
+          </div>
+          <p class="empty" v-if="!goals.goals.length">{{ goals.note || '还没有关系目标，给自己定一个可量化的小目标吧。' }}</p>
+          <ul class="gl-list" v-else>
+            <li class="gl-item" :class="{done: g.status==='done'}" v-for="g in goals.goals" :key="g.id">
+              <span class="gi-check">{{ g.status==='done' ? '✓' : '○' }}</span>
+              <div class="gi-body">
+                <div class="gi-title">{{ g.title }}</div>
+                <div class="gi-meta">
+                  <a class="hint" :href="'#/contact/' + g.contactId" v-if="g.contactId">{{ g.name }}</a>
+                  <span class="hint">{{ goalMetricLabel(g.metric) }} · {{ g.current }} / {{ g.targetCount }}</span>
+                </div>
+                <div class="gi-bar"><i :style="{width: goalPct(g) + '%'}"></i></div>
+              </div>
+              <div class="gi-acts" v-if="g.status==='active'">
+                <button class="btn ghost xs" @click="completeGoal(g)">达成</button>
+                <button class="btn ghost xs" @click="deleteGoal(g)">删除</button>
+              </div>
+              <span class="chip st-ok gi-done" v-else>已达成</span>
+            </li>
+          </ul>
+          <p class="hint block" v-if="goals.weekStart">统计周起始：{{ goals.weekStart }}</p>
         </div>
 
         <!-- 设置 -->
@@ -2624,6 +2727,35 @@
         <button class="btn" type="button" @click="showFollowupModal = false">取消</button>
         <button class="btn primary" type="submit"
                 :disabled="followupBusy || !followupForm.contactId || !followupForm.content">{{ followupBusy ? '保存中…' : '添加' }}</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ============ 弹层：新建关系目标 ============ -->
+  <div class="mask" v-if="showGoalForm" @click.self="closeGoalForm">
+    <form class="card modal" @submit.prevent="addGoal">
+      <h2>定一个关系目标</h2>
+      <select class="text-input" v-model.number="goalForm.contactId">
+        <option :value="0" disabled>选择联系人</option>
+        <option v-for="c in goalPickContacts" :key="c.id" :value="c.id">{{ displayName(c) }}</option>
+      </select>
+      <input class="text-input" v-model.trim="goalForm.title" maxlength="40" style="margin-top:10px"
+             placeholder="目标标题，如：本周主动发 5 条"> 
+      <select class="text-input" v-model="goalForm.metric" style="margin-top:10px">
+        <option value="weekly_me_messages">本周主动发消息数</option>
+        <option value="period_me_messages">指定周期内主动发消息数</option>
+      </select>
+      <input class="text-input" type="number" min="1" max="999" v-model.number="goalForm.targetCount" style="margin-top:10px"
+             placeholder="达标条数（1~999）">
+      <div class="asst-row" v-if="goalForm.metric === 'period_me_messages'" style="margin-top:10px">
+        <label class="check-row inline">起始<input class="text-input" type="date" v-model="goalForm.periodStart"></label>
+        <label class="check-row inline">结束<input class="text-input" type="date" v-model="goalForm.periodEnd"></label>
+      </div>
+      <p class="hint block" style="margin-top:8px">系统按窗口内你主动发给 TA 的消息条数自动判定达标；达成即 +XP 并写入时间线。</p>
+      <div class="modal-actions">
+        <button class="btn" type="button" @click="closeGoalForm">取消</button>
+        <button class="btn primary" type="submit"
+                :disabled="goalsBusy || !goalForm.contactId || !goalForm.title">{{ goalsBusy ? '保存中…' : '创建目标' }}</button>
       </div>
     </form>
   </div>

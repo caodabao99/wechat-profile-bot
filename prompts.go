@@ -37,7 +37,7 @@ type PromptSpec struct {
 	Default string   // 内嵌默认文案（init 从 prompts/<Key>.txt 装配，逐字迁移自现硬编码）
 }
 
-// promptSpecMeta 声明全部 14 个模板的元信息；Default 由 init() 从内嵌文件装配。
+// promptSpecMeta 声明全部 15 个模板的元信息；Default 由 init() 从内嵌文件装配。
 var promptSpecMeta = []PromptSpec{
 	{Key: "profile_update", Title: "画像更新", Feature: "画像生成", Vars: []string{"contactName", "oldJSON", "messages"}},
 	{Key: "profile_supplement", Title: "手动补充画像", Feature: "画像生成", Vars: []string{"contactName", "oldJSON", "userNote"}},
@@ -53,6 +53,7 @@ var promptSpecMeta = []PromptSpec{
 	{Key: "simulate_reply", Title: "回复推演", Feature: "对话演练", Vars: []string{"name", "summary", "convo", "draft"}},
 	{Key: "calendar_blessing", Title: "节日祝福语", Feature: "日历祝福", Vars: []string{"name", "kind", "dateLabel", "when", "hintBlock", "styleHint", "maxCount"}},
 	{Key: "topic_evolution", Title: "主题演化聚类", Feature: "主题演化", Vars: []string{"name", "days", "captioned", "prevTopics"}},
+	{Key: "relationship_narrative", Title: "关系叙事生成", Feature: "关系叙事", Vars: []string{"name", "years", "firstTopic", "recentTopics", "msgCount", "captioned"}},
 }
 
 // promptRegistry 是 key → 完整 PromptSpec（含 Default）的索引，作为唯一事实源。

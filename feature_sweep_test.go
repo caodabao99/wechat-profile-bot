@@ -176,6 +176,10 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"标签冲突检测", "GET", "/api/assistant/tags/conflicts", "", true, true},
 		{"数据健康自检", "GET", "/api/system/data-report", "", true, true},
 
+		// —— v5.5.0 新增确定性端点（零 LLM / 双重降级必回 2xx）——
+		{"关系叙事(无LLM降级)", "POST", "/api/contacts/" + cid + "/narrative", `{"days":90}`, true, true},
+		{"关系目标列表", "GET", "/api/assistant/goals", "", true, true},
+
 		// —— 依赖 LLM / 副作用：仅要求路由命中(非 404) 且不崩溃 ——
 		{"改写(需LLM)", "POST", "/api/contacts/" + cid + "/rewrite", `{}`, false, false},
 		{"草稿检查(需LLM)", "POST", "/api/contacts/" + cid + "/review-draft", `{}`, false, false},
@@ -285,7 +289,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		}
 	}
 
-	// v5.1.0：/api/assistant/prompts 须返回 {items, total}，每项含 key/isCustom/vars；列表应恰好 14 个模板。
+	// v5.1.0：/api/assistant/prompts 须返回 {items, total}，每项含 key/isCustom/vars；列表应恰好 15 个模板。
 	if code, body, err := do("GET", "/api/assistant/prompts", ""); err != nil {
 		t.Errorf("[提示词模板] /assistant/prompts 崩溃: %v", err)
 	} else if code < 200 || code >= 300 {
@@ -300,8 +304,8 @@ func TestZZFeatureSweepLive(t *testing.T) {
 			Items []PromptTemplateInfo `json:"items"`
 			Total int                  `json:"total"`
 		}
-		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 14 {
-			t.Errorf("[提示词模板] items/total 应齐备且为 14 项: %s", truncate(body))
+		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 15 {
+			t.Errorf("[提示词模板] items/total 应齐备且为 15 项: %s", truncate(body))
 		}
 	}
 
@@ -366,6 +370,54 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		for _, k := range []string{`"dbSizeBytes"`, `"messagesTotal"`, `"contactsTotal"`, `"profileCoverage"`, `"cacheTables"`} {
 			if !strings.Contains(body, k) {
 				t.Errorf("[数据自检] /system/data-report 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+	}
+
+	// v5.5.0 #6：POST /api/contacts/{id}/narrative 无 LLM 时降级为确定性叙事，须回 200 且含核心键。
+	if code, body, err := do("POST", "/api/contacts/"+cid+"/narrative", `{"days":90}`); err != nil {
+		t.Errorf("[关系叙事] /narrative 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[关系叙事] /narrative → %d（无 LLM 应降级回 2xx、不 503）: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"narrative"`, `"source"`, `"recentTopics"`, `"years"`, `"msgCount"`, `"note"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[关系叙事] /narrative 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+		// 无模型时 source 必为 deterministic，且叙事正文非空。
+		if !strings.Contains(body, `"source":"deterministic"`) {
+			t.Errorf("[关系叙事] 无 LLM 应降级 source=deterministic: %s", truncate(body))
+		}
+	}
+
+	// v5.5.0 #7：关系目标全链路——新建(201)→手动完成(200)→删除(200)，验证端点接线 + 幂等 + 无崩溃。
+	createBody := fmt.Sprintf(`{"contactId":%d,"title":"体检目标","metric":"weekly_me_messages","targetCount":1}`, id)
+	if code, body, err := do("POST", "/api/assistant/goals", createBody); err != nil {
+		t.Errorf("[关系目标] POST /goals 崩溃: %v", err)
+	} else if code != http.StatusCreated {
+		t.Errorf("[关系目标] POST /goals 应 201 → %d: %s", code, truncate(body))
+	} else {
+		var created struct {
+			CreatedID int64 `json:"createdId"`
+		}
+		if json.Unmarshal([]byte(body), &created) != nil || created.CreatedID <= 0 {
+			t.Errorf("[关系目标] POST /goals 未回 createdId: %s", truncate(body))
+		} else {
+			gid := fmt.Sprintf("%d", created.CreatedID)
+			if c2, b2, e2 := do("POST", "/api/assistant/goals/"+gid+"/complete", ""); e2 != nil {
+				t.Errorf("[关系目标] complete 崩溃: %v", e2)
+			} else if c2 < 200 || c2 >= 300 {
+				t.Errorf("[关系目标] complete → %d: %s", c2, truncate(b2))
+			} else if !strings.Contains(b2, `"ok":true`) {
+				t.Errorf("[关系目标] complete 应 ok=true: %s", truncate(b2))
+			}
+			if c3, b3, e3 := do("DELETE", "/api/assistant/goals/"+gid, ""); e3 != nil {
+				t.Errorf("[关系目标] delete 崩溃: %v", e3)
+			} else if c3 < 200 || c3 >= 300 {
+				t.Errorf("[关系目标] delete → %d: %s", c3, truncate(b3))
+			} else if !strings.Contains(b3, `"deleted":true`) {
+				t.Errorf("[关系目标] delete 应 deleted=true: %s", truncate(b3))
 			}
 		}
 	}
