@@ -1052,10 +1052,15 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 func (s *apiServer) hStatus(w http.ResponseWriter, r *http.Request) {
 	contacts, _ := GetAllContacts(s.db, false)
 
+	// 消息计数从 metrics 聚合（归档感知，口径与 datareport 统一）。与 datareport 同纪律：
+	// 持锁内先自愈（刚升级指标未建时报 0 会与其他面板不一致），GetAllContacts 已取尽释锁，此处不嵌套。
 	var messages int64
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messages); err != nil {
+	dbMu.Lock()
+	ensureDailyMetricsSeededLocked(s.db)
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(me_count+other_count),0) FROM relationship_daily_metrics`).Scan(&messages); err != nil {
 		slog.Warn("状态接口统计消息数失败", "err", err)
 	}
+	dbMu.Unlock()
 
 	loggedIn, sessionExpired := false, false
 	if s.client != nil {

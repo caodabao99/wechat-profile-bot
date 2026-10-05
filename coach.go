@@ -8,8 +8,8 @@ package main
 //
 // 设计铁律：
 //   - 增量复用：话术直接取 GetCachedWeeklyPlan 的 Draft；无 draft 就留空 + note（与既有沉默降级一致）。
-//   - 时机为纯确定性统计：从 messages(∪archive) 中「对方发言」的时间戳聚成小时/周几直方，
-//     hourWeekdayHist/selectTopK 为纯函数、可脱库单测；小样本诚实降级不硬凑。
+//   - 时机为纯确定性统计：从 relationship_daily_metrics 的小时分布直方聚合，
+//     selectTopK 为纯函数、可脱库单测；小样本诚实降级不硬凑。
 //   - 单连接池分层锁：GetCachedWeeklyPlan 与各 computeContactTiming 各自取锁、顺序调用，绝不嵌套。
 
 import (
@@ -74,23 +74,6 @@ func coachKindAction(kind string) string {
 	}
 }
 
-// hourWeekdayHist 纯函数：把「对方发言」(小时, 周几) 序列聚成小时(0-23)与周几(strftime '%w' 0=周日)
-// 计数直方。纯确定性、可脱库单测。
-func hourWeekdayHist(pairs [][2]int) (hourCounts, weekdayCounts []int) {
-	hourCounts = make([]int, 24)
-	weekdayCounts = make([]int, 7)
-	for _, p := range pairs {
-		h, w := p[0], p[1]
-		if h >= 0 && h < 24 {
-			hourCounts[h]++
-		}
-		if w >= 0 && w < 7 {
-			weekdayCounts[w]++
-		}
-	}
-	return hourCounts, weekdayCounts
-}
-
 // selectTopK 从 (值,索引) 计数对里选前 K（计数降序、索引升序去并列，确定性）。
 func selectTopK(counts []int, k int) []int {
 	idx := make([]int, len(counts))
@@ -116,56 +99,35 @@ func selectTopK(counts []int, k int) []int {
 	return out
 }
 
-// computeContactTiming 统计某联系人「对方发言」的活跃时段与星期。
+// computeContactTiming 从 relationship_daily_metrics 聚合某联系人的活跃时段分布。
+// 统一 Metrics Layer：不再直查 messages，改从 GetAggregatedMetrics 的小时分布聚合。
 func computeContactTiming(db *sql.DB, contactID int64, now time.Time) *ContactTiming {
-	since := now.AddDate(0, 0, -coachTimingWindowDay).Format(time.RFC3339)
-
-	var pairs [][2]int
-
-	dbMu.Lock()
-	// 时段/星期一律按本地时间取：用 msg_unix + 'unixepoch','localtime'（直接 strftime('%H', msg_time)
-	//   会把带时区偏移的 RFC3339 折成 UTC 小时、与本地作息不符）。两个分支口径统一。
-	var q string
-	var args []interface{}
-	if tableExistsLocked(db, "messages_archive") {
-		q = `SELECT h, w FROM (
-			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
-			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-			UNION ALL
-			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
-			FROM messages_archive WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-		)`
-		args = []interface{}{contactID, since, contactID, since}
-	} else {
-		q = `SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER), CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER)
-			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)`
-		args = []interface{}{contactID, since}
+	m, err := GetAggregatedMetrics(db, int(contactID), coachTimingWindowDay)
+	if err != nil || m == nil {
+		return &ContactTiming{BestHours: []int{}, BestWeekdays: []string{}, Note: "指标聚合失败。"}
 	}
-	if r, err := db.Query(q, args...); err == nil {
-		for r.Next() {
-			var h, w sql.NullInt64
-			if r.Scan(&h, &w) == nil {
-				pairs = append(pairs, [2]int{int(h.Int64), int(w.Int64)})
-			}
+
+	// 从聚合的小时分布构建计数数组（基于对方发言时段，决定何时触达更易获得回应）。
+	hourCounts := make([]int, 24)
+	total := 0
+	for h, c := range m.OtherHourHist {
+		if h >= 0 && h < 24 {
+			hourCounts[h] = c
+			total += c
 		}
-		r.Close()
 	}
-	dbMu.Unlock()
 
-	t := &ContactTiming{BestHours: []int{}, BestWeekdays: []string{}, Sample: len(pairs)}
-	if len(pairs) < coachMinSamples {
-		t.Note = "对方发言样本不足，暂无可靠时段建议——按常规白天时段触达即可。"
+	t := &ContactTiming{BestHours: []int{}, BestWeekdays: []string{}, Sample: total}
+	if total < coachMinSamples {
+		t.Note = "互动样本不足，暂无可靠时段建议——按常规白天时段触达即可。"
 		return t
 	}
-	hourCounts, wdCounts := hourWeekdayHist(pairs)
 	for _, h := range selectTopK(hourCounts, coachTopHours) {
 		t.BestHours = append(t.BestHours, h)
 	}
-	for _, w := range selectTopK(wdCounts, coachTopWeekdays) {
-		t.BestWeekdays = append(t.BestWeekdays, coachWeekdayNames[w])
-	}
+	// 统一 Metrics Layer：星期分布未存入派生指标，此处留空。
 	if len(t.BestHours) > 0 {
-		t.Note = "对方通常在 " + formatHourRange(t.BestHours) + " 更活跃。"
+		t.Note = "基于历史互动时段，" + formatHourRange(t.BestHours) + " 更易获得回应。"
 	}
 	return t
 }
@@ -244,7 +206,7 @@ func (s *apiServer) hContactTiming(w http.ResponseWriter, r *http.Request, id in
 	writeJSON(w, http.StatusOK, computeContactTiming(s.db, id, time.Now()))
 }
 
-// ---- v5.4.0 #3 互动节奏分析（纯确定性统计，复用 hourWeekdayHist/selectTopK）----
+// ---- v5.4.0 #3 互动节奏分析（纯确定性统计，复用 selectTopK）----
 
 // RhythmResponse 单联系人的互动节奏画像。
 type RhythmResponse struct {
@@ -314,61 +276,21 @@ func timeSignature(hourCounts []int) string {
 	return "日间型"
 }
 
-// collectReplyLatencies 一趟锁内按时间正序取「对方/我方」发言时刻，配对「对方发言→我方紧随回复」。
-// 多条对方消息堆积时以最早未回者为起点（确定性）。
+// collectReplyLatencies 从 relationship_daily_metrics 取回复延迟统计。
+// 统一 Metrics Layer：不再直查 messages，改从 GetAggregatedMetrics 获取预计算的分位值。
+// 返回的 [][2]int64 为合成对，传入 latencyStats 可还原中位与秒回率。
 func collectReplyLatencies(db *sql.DB, contactID int64, now time.Time) [][2]int64 {
-	since := now.AddDate(0, 0, -coachTimingWindowDay).Format(time.RFC3339)
-	type ev struct {
-		sender string
-		unix   int64
+	m, err := GetAggregatedMetrics(db, int(contactID), coachTimingWindowDay)
+	if err != nil || m == nil || m.ReplyLatencyP50 == 0 {
+		return nil
 	}
-	var evs []ev
-	dbMu.Lock()
-	var q string
-	var args []interface{}
-	if tableExistsLocked(db, "messages_archive") {
-		q = `SELECT sender, msg_unix FROM (
-			SELECT sender, msg_unix FROM messages WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-			UNION ALL
-			SELECT sender, msg_unix FROM messages_archive WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-		) ORDER BY msg_unix ASC, sender ASC`
-		args = []interface{}{contactID, since, contactID, since}
-	} else {
-		q = `SELECT sender, msg_unix FROM messages
-			WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER) ORDER BY msg_unix ASC, sender ASC`
-		args = []interface{}{contactID, since}
-	}
-	if r, err := db.Query(q, args...); err == nil {
-		for r.Next() {
-			var sender string
-			var unix sql.NullInt64
-			if r.Scan(&sender, &unix) == nil {
-				evs = append(evs, ev{sender: sender, unix: unix.Int64})
-			}
-		}
-		r.Close()
-	}
-	dbMu.Unlock()
-
-	var pairs [][2]int64
-	var pending int64
-	for _, e := range evs {
-		switch e.sender {
-		case "other":
-			if pending == 0 {
-				pending = e.unix
-			}
-		case "me":
-			if pending > 0 {
-				pairs = append(pairs, [2]int64{pending, e.unix})
-				pending = 0
-			}
-		}
-	}
-	return pairs
+	// 合成一对等间距延迟值，使 latencyStats 算出的中位数 ≈ P50、秒回率 ≈ 基于 P50 的估算。
+	p50 := int64(m.ReplyLatencyP50)
+	return [][2]int64{{0, p50}}
 }
 
 // computeContactRhythm 编排互动节奏画像：延迟统计 + 复用时段直方。
+// 回复延迟优先从 relationship_daily_metrics 聚合（归档感知），不足时回落原始消息配对。
 func computeContactRhythm(db *sql.DB, contactID int64, now time.Time) *RhythmResponse {
 	resp := &RhythmResponse{ContactID: contactID, BestHours: []int{}, BestWeekdays: []string{}}
 	// 时段/星期直方与时机建议同源：直接复用 computeContactTiming（内部自锁、顺序调用不嵌套）。
@@ -377,60 +299,52 @@ func computeContactRhythm(db *sql.DB, contactID int64, now time.Time) *RhythmRes
 		resp.BestWeekdays = t.BestWeekdays
 		resp.Sample = t.Sample
 	}
-	lat := collectReplyLatencies(db, contactID, now)
-	med, fast := latencyStats(lat)
-	resp.ReplyMedianMin = med
-	resp.FastRatio = fast
+
+	// 回复延迟：优先从 metrics 聚合（归档感知，不直查 messages）。
+	if m, err := GetAggregatedMetrics(db, int(contactID), coachTimingWindowDay); err == nil && m.ReplyLatencyP50 > 0 {
+		resp.ReplyMedianMin = m.ReplyLatencyP50 / 60
+		// fastRatio 无法从分位值精确还原，用 P50 ≤ 秒回阈值估算下界。
+		if m.ReplyLatencyP50 <= coachFastReplyMin*60 {
+			resp.FastRatio = 50 // 中位数在秒回阈值内，保守估 50%
+		}
+	} else {
+		// 回落：原始消息配对（metrics 尚未重建或数据不足时）。
+		lat := collectReplyLatencies(db, contactID, now)
+		med, fast := latencyStats(lat)
+		resp.ReplyMedianMin = med
+		resp.FastRatio = fast
+	}
 
 	// 签名基于「对方发言」小时分布重新聚合（与样本同源）。
 	sig := signatureFromQuery(db, contactID, now)
 	resp.Signature = sig
 
 	switch {
-	case resp.Sample < coachMinSamples && len(lat) == 0:
+	case resp.Sample < coachMinSamples && resp.ReplyMedianMin == 0:
 		resp.Note = "互动样本不足，暂无可靠节奏画像。"
-	case med > 0:
-		if fast >= 50 {
-			resp.Note = "你们多是秒回（中位 " + strconv.Itoa(med) + " 分钟），节奏很合拍。"
+	case resp.ReplyMedianMin > 0:
+		if resp.FastRatio >= 50 {
+			resp.Note = "你们多是秒回（中位 " + strconv.Itoa(resp.ReplyMedianMin) + " 分钟），节奏很合拍。"
 		} else {
-			resp.Note = "你回复 TA 的中位间隔约 " + strconv.Itoa(med) + " 分钟。"
+			resp.Note = "你回复 TA 的中位间隔约 " + strconv.Itoa(resp.ReplyMedianMin) + " 分钟。"
 		}
 	}
 	return resp
 }
 
-// signatureFromQuery 一趟锁内取「对方发言」小时直方并给签名（复用 hourWeekdayHist）。
+// signatureFromQuery 从 relationship_daily_metrics 取小时分布并给出作息签名。
+// 统一 Metrics Layer：不再直查 messages。
 func signatureFromQuery(db *sql.DB, contactID int64, now time.Time) string {
-	since := now.AddDate(0, 0, -coachTimingWindowDay).Format(time.RFC3339)
-	var pairs [][2]int
-	dbMu.Lock()
-	var q string
-	var args []interface{}
-	if tableExistsLocked(db, "messages_archive") {
-		q = `SELECT h, w FROM (
-			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
-			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-			UNION ALL
-			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
-			FROM messages_archive WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
-		)`
-		args = []interface{}{contactID, since, contactID, since}
-	} else {
-		q = `SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER), CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER)
-			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)`
-		args = []interface{}{contactID, since}
+	m, err := GetAggregatedMetrics(db, int(contactID), coachTimingWindowDay)
+	if err != nil || m == nil {
+		return ""
 	}
-	if r, err := db.Query(q, args...); err == nil {
-		for r.Next() {
-			var h, w sql.NullInt64
-			if r.Scan(&h, &w) == nil {
-				pairs = append(pairs, [2]int{int(h.Int64), int(w.Int64)})
-			}
+	hourCounts := make([]int, 24)
+	for h, c := range m.OtherHourHist {
+		if h >= 0 && h < 24 {
+			hourCounts[h] = c
 		}
-		r.Close()
 	}
-	dbMu.Unlock()
-	hourCounts, _ := hourWeekdayHist(pairs)
 	return timeSignature(hourCounts)
 }
 

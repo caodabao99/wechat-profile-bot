@@ -56,11 +56,13 @@ func buildDataReport(db *sql.DB, now time.Time) *DataReport {
 		r.DBSizeMB = round2(float64(fi.Size()) / 1024 / 1024)
 	}
 
-	since30 := now.AddDate(0, 0, -30).Unix()
+	since30 := now.AddDate(0, 0, -30).Format("2006-01-02")
 	dbMu.Lock()
-	// 消息总量 + 近30天。
-	db.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&r.MessagesTotal)
-	db.QueryRow(`SELECT COUNT(*) FROM messages WHERE msg_unix IS NOT NULL AND msg_unix >= ?`, since30).Scan(&r.MessagesLast30d)
+	// 自愈：刚升级/指标尚未建立时先全量重建，避免下面从 metrics 聚合计数的口径报 0。
+	ensureDailyMetricsSeededLocked(db)
+	// 消息总量 + 近30天：从 relationship_daily_metrics 聚合（归档感知，口径统一）。
+	db.QueryRow(`SELECT COALESCE(SUM(me_count+other_count),0) FROM relationship_daily_metrics`).Scan(&r.MessagesTotal)
+	db.QueryRow(`SELECT COALESCE(SUM(me_count+other_count),0) FROM relationship_daily_metrics WHERE day>=?`, since30).Scan(&r.MessagesLast30d)
 	r.MessagesGrowthPerDay = round2(float64(r.MessagesLast30d) / 30)
 
 	// 联系人与画像覆盖。
@@ -116,7 +118,18 @@ func (s *apiServer) routeSystem(w http.ResponseWriter, r *http.Request, sub []st
 	switch sub[0] {
 	case "data-report":
 		s.hStatusDataReport(w, r)
+	case "table-registry":
+		s.hTableRegistry(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/system/"+sub[0])
 	}
+}
+
+// hTableRegistry GET /api/system/table-registry：返回所有表的元数据 JSON 数组，供运维调试。
+func (s *apiServer) hTableRegistry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	writeJSON(w, http.StatusOK, TableRegistry())
 }

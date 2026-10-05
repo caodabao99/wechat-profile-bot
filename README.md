@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.1.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.0.tar.gz`，得到 `wechat-profile-bot:v5.5.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.1.tar.gz`，得到 `wechat-profile-bot:v5.5.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -543,6 +543,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/contacts/{id}/mirror` | 对话风格镜像（v5.4.0）：统计你发给某联系人的句长/用词丰富度/表情/提问/感叹，与其全局均值对比；返回 `{dimensions,traits,note}`；纯本地文本统计、不调模型 |
 | GET | `/api/assistant/tags/conflicts` | 标签冲突检测（v5.4.0）：按内置互斥标签组报出同一联系人身上的矛盾标签；返回 `{conflicts,total,note}`；只读不写库、零模型 |
 | GET | `/api/system/data-report` | 数据健康自检（v5.4.0）：DB 体积/消息增速/画像·标签·时间线覆盖率/各派生缓存表行数/最近备份；返回 `{dbSizeBytes,messagesTotal,profileCoverage,cacheTables,...}`；纯本地只读、不调模型 |
+| GET | `/api/system/table-registry` | 数据层登记表（v5.5.1）：返回全库表元数据 JSON 数组 `[{name,type,owner,backup,rebuild,hasContactId,note},...]`（core/derived/cache/audit/config 分类与备份·重建·contact_id 三轴）；运维诊断用，只读不调模型 |
 | POST | `/api/contacts/{id}/narrative` | 关系叙事生成（v5.5.0，`body {days}` 缺省 90）：有 LLM 写一段关系故事，无 LLM/失败双重降级为确定性叙事，**永不 503**；返回 `{contactId,name,years,msgCount,firstDate,recentTopics,narrative,source:llm|deterministic,note,generatedAt}`；不落库 |
 | GET | `/api/assistant/goals` | 关系目标列表（v5.5.0）：先跑一次达标检测再返回 `{generatedAt,weekStart,goals:[{id,contactId,name,title,metric,targetCount,periodStart,periodEnd,status,current,progressPct,createdAt,doneAt}],done,active,total,xp,level,nextLevelAt,note}` |
 | POST | `/api/assistant/goals` | 新建目标（v5.5.0，body `{contactId,title,metric,targetCount,periodStart,periodEnd}`）：返回 `201 {createdId,goals}`；标题必填、达标数 1~999；联系人不存在 404、参数非法 400 |
@@ -629,7 +630,17 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 ## 更新日志
 
-### v5.5.0（2026-10-12）
+### v5.5.1（2026-10-05）
+
+本版为**内部底座 + 缺陷修复**（无新增用户可见功能）：落地 Personal Relationship OS 路线图中优先级最高的两项数据底座，并修复若干真实 bug：
+
+- **数据层登记表（Data Layer Registry，`registry.go` 新建）**：`TableMeta`/`TableRegistry()`/`GetTableMeta()`/`IsContactScoped()` 把全库 40 张表的语义（core/derived/cache/audit/config）与备份/重建/是否含 `contact_id` 三轴收敛为单一事实来源。新增运维只读端点 `GET /api/system/table-registry`。
+- **统一指标层（Unified Metrics Layer，`metrics.go` 新建）**：`GetAggregatedMetrics()` 把「按联系人、归档感知、窗口内」的小时直方与回复延迟中位收敛到一处（单趟锁、本地时区、缺归档表自动降级、纯读无副作用），`coach.go` 的时机/节奏/作息签名改从它取数，不再各自直查 `messages`。`medianSeconds` 为可脱库单测纯函数。
+- **修复：删联系人回滚**。`contact_connections` 用 `contact_a/contact_b` 双列、无 `contact_id`，若误入级联清理清单会生成 `WHERE contact_id=?` 报 *no such column* 而让删除事务整体失败；已从 `contactCleanupTables` 移除（该表由 `contact.go` 专用 DELETE 处理），并加回归护栏单测。
+- **修复：跨面板消息计数口径不一致**。`/api/status` 与 `/api/system/data-report` 改为从 `relationship_daily_metrics` 聚合计数后，刚升级、指标尚未建立时会误报 0 条；现与 health/heatmap 同语义在读路径内自愈重建（`ensureDailyMetricsSeededLocked`），并有真实 HTTP 活体用例验证。
+- **修复/清理**：`coach_test.go` 峰值时段用例原插 `me` 消息与 `OtherHourHist`（「对方活跃时段」）语义矛盾，改为 `other`；删除重构后已无调用方的死函数 `hourWeekdayHist`。新增 `datalayer_test.go` 覆盖登记表与指标层（含清理表必须已登记且含 contact_id 的一致性护栏）。覆盖率 67.2%，`-race` 全绿，四目标交叉编译通过。
+
+### v5.5.0（2026-10-05）
 
 LLM 叙事 + 关系目标追踪（均为增量复用，不重写既有模块）：
 

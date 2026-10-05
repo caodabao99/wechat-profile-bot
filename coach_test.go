@@ -1,36 +1,12 @@
 package main
 
-// v5.3.0 #5 关系教练：纯函数 hourWeekdayHist/selectTopK/formatHourRange 众数与并列确定性；
+// v5.3.0 #5 关系教练：纯函数 selectTopK/formatHourRange 众数与并列确定性；
 //   computeContactTiming 小样本诚实降级；BuildCoach 无周计划缓存时回退 note。
 
 import (
 	"testing"
 	"time"
 )
-
-func TestHourWeekdayHist(t *testing.T) {
-	pairs := [][2]int{
-		{9, 1}, {9, 1}, {20, 3}, {20, 3}, {20, 3}, {25, 9}, // 越界项应被忽略
-	}
-	hours, wdays := hourWeekdayHist(pairs)
-	if len(hours) != 24 || len(wdays) != 7 {
-		t.Fatalf("长度应为 24/7, got %d/%d", len(hours), len(wdays))
-	}
-	if hours[9] != 2 || hours[20] != 3 {
-		t.Errorf("小时直方错: h9=%d h20=%d", hours[9], hours[20])
-	}
-	if wdays[1] != 2 || wdays[3] != 3 {
-		t.Errorf("周几直方错: w1=%d w3=%d", wdays[1], wdays[3])
-	}
-	// 越界 (25,9) 不计入任何桶：小时有效计数和应等于样本内合法项 5。
-	total := 0
-	for _, v := range hours {
-		total += v
-	}
-	if total != 5 {
-		t.Errorf("越界样本不应计入, 有效计数和应为 5, got %d", total)
-	}
-}
 
 func TestSelectTopKDeterministic(t *testing.T) {
 	counts := []int{0, 5, 3, 5, 0, 9} // 索引 5 最大(9)，其次 1、3 并列(5)，再 2(3)
@@ -63,13 +39,17 @@ func TestFormatHourRange(t *testing.T) {
 
 func TestComputeContactTimingSmallSample(t *testing.T) {
 	db := regressionAssistantDB(t)
-	now := time.Date(2025, 6, 20, 12, 0, 0, 0, time.Local)
+	now := time.Now()
 	id := regressionContact(t, db, "样本不足")
 	// 只塞 2 条对方消息，远低于 coachMinSamples。
 	for i := 0; i < 2; i++ {
 		if _, err := SaveMessages(db, id, []Message{{Sender: "other", Content: "在", Timestamp: now.AddDate(0, 0, -i)}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// 统一 Metrics Layer：消息入库后需重建日聚合指标。
+	if _, err := RebuildDailyMetrics(db, id); err != nil {
+		t.Fatal(err)
 	}
 	tt := computeContactTiming(db, id, now)
 	if tt.Sample >= coachMinSamples {
@@ -85,14 +65,22 @@ func TestComputeContactTimingSmallSample(t *testing.T) {
 
 func TestComputeContactTimingFindsPeakHour(t *testing.T) {
 	db := regressionAssistantDB(t)
-	now := time.Date(2025, 6, 20, 12, 0, 0, 0, time.Local)
+	now := time.Now()
 	id := regressionContact(t, db, "夜猫子")
-	// 对方多在 21 点发言，覆盖 coachMinSamples 以上。
+	// 统一 Metrics Layer：computeContactTiming 读 other_hour_hist（「对方」发言小时分布——
+	// 何时触达更易获得回应取决于对方何时活跃）。插入 other 消息以填充直方。
+	// 时间戳须在近 180 天窗口内，否则 GetAggregatedMetrics 不会统计到。
+	// 每条消息内容须不同，避免 msg_hash 去重。
 	for i := 0; i < 10; i++ {
-		ts := time.Date(2025, 6, 1+(i%9), 21, 5, 0, 0, time.Local)
-		if _, err := SaveMessages(db, id, []Message{{Sender: "other", Content: "聊几句", Timestamp: ts}}); err != nil {
+		ts := now.AddDate(0, 0, -i)
+		ts = time.Date(ts.Year(), ts.Month(), ts.Day(), 21, 5, 0, 0, ts.Location())
+		if _, err := SaveMessages(db, id, []Message{{Sender: "other", Content: "聊几句" + string(rune('a'+i)), Timestamp: ts}}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// 统一 Metrics Layer：消息入库后需重建日聚合指标，computeContactTiming 从 metrics 读取。
+	if _, err := RebuildDailyMetrics(db, id); err != nil {
+		t.Fatal(err)
 	}
 	tt := computeContactTiming(db, id, now)
 	if tt.Sample < coachMinSamples {
