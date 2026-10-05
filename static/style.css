@@ -796,3 +796,33 @@ textarea.text-input { resize: vertical; }
 .net-lg { display: inline-flex; align-items: center; gap: 5px; }
 .net-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 1px solid #fff; box-shadow: 0 0 0 1px var(--line); }
 .net-ring { width: 12px; height: 12px; border-radius: 50%; display: inline-block; background: transparent; border: 3px solid var(--net-fragile); }
+
+/* ---------- v4.7.0 关系维护日历（自研 7 列月历网格，无第三方库） ---------- */
+.cal-card { --cal-birthday: #ec4899; --cal-anniversary: #8b5cf6; --cal-timeline: #0ea5e9; --cal-followup: #f59e0b; }
+.cal-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 6px; }
+.cal-toolbar .cal-month { font-size: 15px; min-width: 110px; text-align: center; }
+.cal-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 10px; font-size: 12.5px; color: var(--muted); }
+.cal-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.cal-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.cal-dot.cal-birthday { background: var(--cal-birthday); }
+.cal-dot.cal-anniversary { background: var(--cal-anniversary); }
+.cal-dot.cal-timeline { background: var(--cal-timeline); }
+.cal-dot.cal-followup { background: var(--cal-followup); }
+.cal-weekhead, .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+.cal-weekhead { gap: 4px; margin-bottom: 4px; }
+.cal-weekcell { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
+.cal-grid { gap: 4px; }
+.cal-cell { min-height: 76px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 5px; background: #fff; overflow: hidden; display: flex; flex-direction: column; }
+.cal-cell.out { background: #f7f8fa; opacity: .6; }
+.cal-cell.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cal-daynum { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 3px; }
+.cal-cell.today .cal-daynum { color: var(--accent); }
+.cal-chips { display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
+.cal-chip { display: block; text-align: left; border: none; cursor: pointer; font-size: 11px; line-height: 1.3; padding: 2px 6px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #fff; max-width: 100%; }
+.cal-chip.cal-birthday { background: var(--cal-birthday); }
+.cal-chip.cal-anniversary { background: var(--cal-anniversary); }
+.cal-chip.cal-timeline { background: var(--cal-timeline); }
+.cal-chip.cal-followup { background: var(--cal-followup); }
+.cal-chip.cal-other { background: #9ca3af; }
+.cal-due-label { display: block; margin-top: 10px; font-size: 13px; color: var(--muted); }
+@media (max-width: 720px) { .cal-cell { min-height: 60px; } .cal-chip { font-size: 10px; } }

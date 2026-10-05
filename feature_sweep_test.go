@@ -135,6 +135,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"助手待跟进列表", "GET", "/api/assistant/followups", "", true, true},
 		{"助手待跟进新增", "POST", "/api/assistant/followups", fmt.Sprintf(`{"contactId":%d,"kind":"other","content":"体检跟进"}`, id), true, true},
 		{"日历订阅密钥", "GET", "/api/assistant/calendar/key", "", true, true},
+		{"日历事件聚合", "GET", "/api/assistant/calendar/events", "", true, true},
 		{"周计划看板", "GET", "/api/assistant/weekly-plan", "", true, true},
 		{"关系图谱全量", "GET", "/api/relationships/connections", "", true, true},
 		{"关系图谱单联系人", "GET", "/api/contacts/" + cid + "/connections", "", true, true},
@@ -213,6 +214,19 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		t.Errorf("[网络拓扑] /api/insight/network → %d: %s", code, truncate(body))
 	} else if !strings.Contains(body, `"nodes"`) || !strings.Contains(body, `"edges"`) {
 		t.Errorf("[网络拓扑] /api/insight/network 响应缺 nodes/edges 键: %s", truncate(body))
+	}
+
+	// v4.7.0：/api/assistant/calendar/events 须返回 {from,to,total,events} 四键。
+	if code, body, err := do("GET", "/api/assistant/calendar/events", ""); err != nil {
+		t.Errorf("[日历事件] /api/assistant/calendar/events 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[日历事件] /api/assistant/calendar/events → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"from"`, `"to"`, `"total"`, `"events"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[日历事件] /api/assistant/calendar/events 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
 	}
 }
 

@@ -28,6 +28,7 @@
 - **图计算规模护栏**（v4.5.0）：联系人增长后，网络图算法进 Brandes/Tarjan 前对节点数封顶（按亲密度取最亲密的 250 人核心圈，tie-break 按 id 保确定性），防周一重算拖慢单连接池，并在洞察里诚实说明“已聚焦核心圈”
 - **数据可携与遗忘**（v4.5.0）：新增一键全量开放 JSON 导出（可选脱敏：姓名→伪名、正文抹除、保留结构与计数），并把“彻底删除联系人”的级联补齐隐私残留（互动指标/画像事实与证据/关系连线/建议回测）——纯本地、只读、零费用，给你的敏感关系数据真正的掌控感
 - **关系知识图谱可视化**（v4.6.0，洞察页社交网络）：把已有图算法算出的完整拓扑（节点/连线及权重、圈簇归属、割点、介数重要度）导出到前端，用自研内联 SVG 力导向图交互呈现——节点=联系人、连线粗细=互动强度、颜色=所属圈子、红环=桥梁人物、红填充=桥梁且高风险，支持缩放/平移/拖拽微调/悬停详情/点击跳转联系人，把数据洞察升级为视觉洞察。零第三方库（不引 D3/Cytoscape）、确定性布局（不用随机数）、不新增端点
+- **关系维护日历**（v4.7.0，关系助手页）：新增只读聚合端点 `GET /api/assistant/calendar/events`，把生日/纪念日（年度重复逐年展开、含 2/29 平年回退 2/28）、手动大事记、带截止日的待跟进聚合成统一事件流，前端用自研 7 列月历网格呈现（按 kind 着色、点事件直达联系人）。待跟进新增可选 `due_date` 列（懒建表走幂等 ALTER、不 bump user_version、不改 backup.go）。零第三方库（不引 FullCalendar）、确定性排序、只读端点
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -45,7 +46,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.6.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.7.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -62,7 +63,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.6.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.7.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -280,7 +281,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.6.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.6.0.tar.gz`，得到 `wechat-profile-bot:v4.6.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.7.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.7.0.tar.gz`，得到 `wechat-profile-bot:v4.7.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -579,6 +580,21 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.7.0（2026-10-05）
+
+把已有日期数据（生日/纪念日、手动大事记、待跟进）聚合成一个统一的“关系维护日历”视图。严格延续本仓铁律——go:embed 单文件 Vue3、无构建工具、不引入任何重型第三方 JS（无 FullCalendar）、纯确定性。新增一个只读端点、`followup_items` 走懒建表的幂等 ALTER（不 bump user_version、不改 backup.go）。
+
+新增功能
+
+- **关系维护日历端点**：`GET /api/assistant/calendar/events?from=&to=`（默认当前自然月，Bearer+IP 白名单、只读）把三类已带日期事件聚合为统一的 `[]CalendarEvent{date,kind,title,contactId,name,meta}`，按 date 升序、tie 按 contactId 确定排序。生日/纪念日取自画像 ImportantDates、在窗口内逐年展开（2/29 在平年回退 2/28）；大事记取 `contact_events`（按 event_time 前缀日期）；跟进取 `followup_items` 中 `status='open'` 且 `due_date` 落窗口内。三个数据源各自取一次连接锁、绝不嵌套，value-added 表缺失时该源静默跳过
+- **待跟进截止日期**：`followup_items` 新增 `due_date` 列（懒建表幂等 ALTER：先 `PRAGMA table_info` 判列、缺则 `ADD COLUMN`、容忍 duplicate column）；`AddFollowup`/`ListFollowups` 读写该列，POST body 接可选 `dueDate`（严格 YYYY-MM-DD 校验）；前端待跟进表单新增 `<input type="date">`、列表项展示截止徽章
+- **自研月历网格**：关系助手页“日历订阅”下方新增“关系维护日历”卡片。固定 7 列网格、补齐邻月整周（置灰不可点）、月切换/回到本月、每日格内按 kind 着色事件 chip、点 chip 跳转联系人详情。高亮今日、本月事件计数与图例
+
+内部改进
+
+- 日历聚合严格单连接池：生日源锁内取尽 contacts 再解锁逐年展开，大事/跟进源各自取锁顺序完成；窗口护栏最多 730 天防逐年展开循环被越界参数拉大
+- 新增单测：due_date 往返/格式校验/幂等 ALTER 补列且重复 ensure 不报错；calendar/events 三源聚合、窗口边界外不出现、kind/date 正确、确定性排序与逐字段可复现、2/29 平年回退 2/28、已完成跟进不入历；活体扫描新增 `/api/assistant/calendar/events`（端点总数 59→60）
 
 ### v4.6.0（2026-10-05）
 

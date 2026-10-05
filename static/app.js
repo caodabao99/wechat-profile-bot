@@ -224,6 +224,7 @@ createApp({
         loadFollowups();
         loadCalendarKey();
         loadWeeklyPlan();
+        loadCalEvents();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -2508,7 +2509,7 @@ createApp({
     const followupFilter = ref('open');
     const followupBusy = ref(false);
     const showFollowupModal = ref(false);
-    const followupForm = reactive({ contactId: 0, kind: 'custom', content: '', amount: '' });
+    const followupForm = reactive({ contactId: 0, kind: 'custom', content: '', amount: '', dueDate: '' });
     const pickContacts = ref([]);
     const followupKinds = { question: '待回复', promise: '我答应的事', money: '钱款往来', custom: '手动记录' };
     async function loadFollowups() {
@@ -2561,6 +2562,7 @@ createApp({
       followupForm.kind = 'custom';
       followupForm.content = '';
       followupForm.amount = '';
+      followupForm.dueDate = '';
       showFollowupModal.value = true;
     }
     async function addFollowup() {
@@ -2576,6 +2578,8 @@ createApp({
             content: followupForm.content.trim(),
             // 只有钱款往来才带金额，切换类型后不要把残留值提交上去
             amount: followupForm.kind === 'money' ? followupForm.amount.trim() : '',
+            // 截止日期（可选 YYYY-MM-DD，input[type=date] 空时为 ''）
+            dueDate: (followupForm.dueDate || '').trim(),
           },
         });
         showFollowupModal.value = false;
@@ -2633,6 +2637,84 @@ createApp({
       try { await navigator.clipboard.writeText(t); toast('已复制'); }
       catch (e) { toast('复制失败，请选中文字手动复制', 'error'); }
     }
+
+    // ---------- v4.7.0 关系维护日历（自研月历网格，无第三方库） ----------
+    // 数据来自 /api/assistant/calendar/events；固定 7 列网格，按 date 落格、按 kind 着色。
+    const calGrid = reactive({ year: 0, month: 0 });   // month 1-12
+    const calEvents = ref([]);
+    const calMonthBusy = ref(false);
+    const calWeekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+    const calKindLabels = { birthday: '生日', anniversary: '纪念日', timeline: '大事', followup: '跟进' };
+    function calPad2(n) { return String(n).padStart(2, '0'); }
+    function calYmd(y, m, d) { return y + '-' + calPad2(m) + '-' + calPad2(d); }
+    function calTodayStr() { const t = new Date(); return calYmd(t.getFullYear(), t.getMonth() + 1, t.getDate()); }
+    // date → 事件数组（事件已按 date 升序，落格后每天内顺序仍确定）
+    const calEventsByDate = computed(() => {
+      const map = {};
+      for (const e of calEvents.value) { (map[e.date] = map[e.date] || []).push(e); }
+      return map;
+    });
+    // 7×N 网格：补齐上月末/下月初的邻日（置灰、不可点），保证整周对齐
+    const calCells = computed(() => {
+      const y = calGrid.year, m = calGrid.month;
+      if (!y || !m) return [];
+      const startDow = new Date(y, m - 1, 1).getDay();          // 0=周日
+      const daysIn = new Date(y, m, 0).getDate();
+      const totalCells = Math.ceil((startDow + daysIn) / 7) * 7;
+      const byDate = calEventsByDate.value, today = calTodayStr();
+      const cells = [];
+      for (let idx = 0; idx < totalCells; idx++) {
+        const dayNum = idx - startDow + 1;
+        let cy = y, cm = m, cd = dayNum, inMonth = true;
+        if (dayNum < 1) {
+          cm = m - 1; if (cm < 1) { cm = 12; cy--; }
+          cd = new Date(cy, cm, 0).getDate() + dayNum; inMonth = false;
+        } else if (dayNum > daysIn) {
+          cm = m + 1; if (cm > 12) { cm = 1; cy++; }
+          cd = dayNum - daysIn; inMonth = false;
+        }
+        const ds = calYmd(cy, cm, cd);
+        cells.push({ date: ds, day: cd, inMonth, isToday: ds === today, events: byDate[ds] || [] });
+      }
+      return cells;
+    });
+    const calMonthLabel = computed(() => calGrid.year + ' 年 ' + calGrid.month + ' 月');
+    const calMonthCount = computed(() => calEvents.value.length);
+    async function loadCalEvents() {
+      calMonthBusy.value = true;
+      try {
+        const y = calGrid.year, m = calGrid.month;
+        const from = calYmd(y, m, 1);
+        const to = calYmd(y, m, new Date(y, m, 0).getDate());
+        const out = await api('/api/assistant/calendar/events?from=' + from + '&to=' + to);
+        calEvents.value = (out && out.events) || [];
+      } catch (e) {
+        calEvents.value = [];
+        if (route.view === 'assistant') toast(e.message, 'error');
+      } finally { calMonthBusy.value = false; }
+    }
+    function calShift(delta) {
+      let m = calGrid.month + delta, y = calGrid.year;
+      if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
+      calGrid.month = m; calGrid.year = y;
+      loadCalEvents();
+    }
+    function calGoToday() {
+      const t = new Date();
+      calGrid.year = t.getFullYear(); calGrid.month = t.getMonth() + 1;
+      loadCalEvents();
+    }
+    function calChipClass(kind) { return 'cal-chip cal-' + (kind || 'other'); }
+    function calChipTitle(e) {
+      const label = calKindLabels[e.kind] || e.kind;
+      return (e.name ? e.name + ' · ' : '') + label + '：' + e.title + (e.meta ? '（' + e.meta + '）' : '');
+    }
+    function calOpenEvent(e) { if (e && e.contactId) gotoDetail(e.contactId); }
+    // 初始化到当前自然月（setup 阶段一次性，避免网格首帧为空）
+    (function calInit() {
+      const t = new Date();
+      calGrid.year = t.getFullYear(); calGrid.month = t.getMonth() + 1;
+    })();
 
     // ---------- 重要日子祝福草稿 ----------
     const blessBusy = ref(0); // 正在生成的条目下标，0 表示空闲（数组下标从 1 记）
@@ -2805,6 +2887,10 @@ createApp({
       delFollowup, scanFollowups, openFollowupModal, addFollowup,
       cal, calBusy, loadCalendarKey, rotateCalendarKey, clearCalendarKey, copyText,
       blessBusy, genBlessing,
+      // v4.7.0 关系维护日历（自研月历网格）
+      calGrid, calEvents, calMonthBusy, calWeekdayNames, calKindLabels,
+      calCells, calMonthLabel, calMonthCount, loadCalEvents,
+      calShift, calGoToday, calChipClass, calChipTitle, calOpenEvent,
     };
   },
 }).mount('#app');

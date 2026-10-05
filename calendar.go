@@ -19,6 +19,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -66,19 +67,30 @@ func (s *apiServer) calendarSubscribeURL(r *http.Request, key string) string {
 
 // routeCalendar 处理 /api/assistant/calendar/*（已过认证）
 func (s *apiServer) routeCalendar(w http.ResponseWriter, r *http.Request, sub []string) {
-	if len(sub) == 0 || sub[0] != "key" {
+	if len(sub) == 0 {
 		writeErr(w, http.StatusNotFound, "未知日历接口")
 		return
 	}
-	switch r.Method {
-	case http.MethodGet:
-		s.hCalendarKeyGet(w, r)
-	case http.MethodPost, http.MethodPut:
-		s.hCalendarKeyRotate(w, r)
-	case http.MethodDelete:
-		s.hCalendarKeyClear(w, r)
+	switch sub[0] {
+	case "key":
+		switch r.Method {
+		case http.MethodGet:
+			s.hCalendarKeyGet(w, r)
+		case http.MethodPost, http.MethodPut:
+			s.hCalendarKeyRotate(w, r)
+		case http.MethodDelete:
+			s.hCalendarKeyClear(w, r)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		}
+	case "events":
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hCalendarEvents(w, r)
 	default:
-		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		writeErr(w, http.StatusNotFound, "未知日历接口")
 	}
 }
 
@@ -442,4 +454,222 @@ func buildBlessingEmailHTML(list []string) string {
 	}
 	b.WriteString(`</ol>`)
 	return b.String()
+}
+
+// ---------- v4.7.0 关系维护日历：聚合日期事件 ----------
+
+// CalendarEvent 维护日历上的一条事件（统一结构，供前端月历网格按 date 落格、按 kind 着色）。
+type CalendarEvent struct {
+	Date      string `json:"date"` // 实际落位日 YYYY-MM-DD
+	Kind      string `json:"kind"` // birthday / anniversary / timeline / followup
+	Title     string `json:"title"`
+	ContactID int64  `json:"contactId"`
+	Name      string `json:"name"`
+	Meta      string `json:"meta,omitempty"`
+}
+
+// calDisplayName 与 ListFollowups/collectUpcomingDates 同一口径：有备注则「备注（名字）」。
+func calDisplayName(name, remark string) string {
+	if strings.TrimSpace(remark) != "" {
+		return remark + "（" + name + "）"
+	}
+	return name
+}
+
+// dateOnly 取民用日（年/月/日，本地时区零时），比较与格式化只用日期部分。
+func dateOnly(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// occurrenceInYear 返回 month/day 在该年的落位日（2/29 平年回退 2/28），无有效日期返回 ok=false。
+func occurrenceInYear(year, month, day int) (time.Time, bool) {
+	t := time.Date(year, time.Month(month), day, 12, 0, 0, 0, time.Local)
+	if t.Month() == time.Month(month) && t.Day() == day {
+		return dateOnly(t), true
+	}
+	if month == 2 && day == 29 {
+		t2 := time.Date(year, 2, 28, 12, 0, 0, 0, time.Local)
+		if t2.Month() == 2 && t2.Day() == 28 {
+			return dateOnly(t2), true
+		}
+	}
+	return time.Time{}, false
+}
+
+// buildCalendarEvents 聚合 [from,to]（含端点）内的事件：生日/纪念日（年度重复逐年展开）
+// + 手动大事记（contact_events）+ 跟进截止（followup_items open 且 due_date 落窗口）。
+// 三个数据源各自取一次 dbMu（绝不嵌套）；value-added 表缺失时该源静默跳过。
+func buildCalendarEvents(db *sql.DB, from, to time.Time) ([]CalendarEvent, error) {
+	fromD, toD := dateOnly(from), dateOnly(to)
+	if toD.Before(fromD) {
+		fromD, toD = toD, fromD
+	}
+	fs, ts := fromD.Format("2006-01-02"), toD.Format("2006-01-02")
+	out := []CalendarEvent{}
+
+	// 1) 生日 / 纪念日：一次取尽 contacts 进内存后释放锁，再逐条逐年展开。
+	type impDate struct {
+		id   int64
+		name string
+		raw  string
+	}
+	var items []impDate
+	dbMu.Lock()
+	rows, err := db.Query(`SELECT id, COALESCE(name,''), COALESCE(remark,''), COALESCE(profile_json,'') FROM contacts WHERE merged_into IS NULL`)
+	if err == nil {
+		for rows.Next() {
+			var id int64
+			var name, remark, pj string
+			if rows.Scan(&id, &name, &remark, &pj) != nil || strings.TrimSpace(pj) == "" {
+				continue
+			}
+			var p Profile
+			if json.Unmarshal([]byte(pj), &p) != nil {
+				continue
+			}
+			dn := calDisplayName(name, remark)
+			for _, raw := range p.BasicInfo.ImportantDates {
+				if strings.TrimSpace(raw) != "" {
+					items = append(items, impDate{id, dn, raw})
+				}
+			}
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	dbMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		m, d, isBirthday, ok := parseImportantDate(it.raw)
+		if !ok {
+			continue
+		}
+		kind, label := "anniversary", "纪念日"
+		if isBirthday {
+			kind, label = "birthday", "生日"
+		}
+		for y := fromD.Year(); y <= toD.Year(); y++ {
+			occ, ok2 := occurrenceInYear(y, m, d)
+			if !ok2 || occ.Before(fromD) || occ.After(toD) {
+				continue
+			}
+			out = append(out, CalendarEvent{
+				Date: occ.Format("2006-01-02"), Kind: kind,
+				Title: it.name + " · " + label, ContactID: it.id, Name: it.name, Meta: it.raw,
+			})
+		}
+	}
+
+	// 2) 手动大事记（contact_events）；表缺失/出错则跳过该源。
+	if evs, terr := calTimelineEvents(db, fs, ts); terr == nil {
+		out = append(out, evs...)
+	}
+	// 3) 跟进截止（followup_items）；表缺失/出错则跳过该源。
+	if evs, ferr := calFollowupEvents(db, fs, ts); ferr == nil {
+		out = append(out, evs...)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Date != out[j].Date {
+			return out[i].Date < out[j].Date
+		}
+		if out[i].ContactID != out[j].ContactID {
+			return out[i].ContactID < out[j].ContactID
+		}
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out, nil
+}
+
+// calTimelineEvents 取窗口内的事件。按 event_time 前缀日期（RFC3339 固定宽度）比较，
+// 与展示同一口径、零时区歧义。
+func calTimelineEvents(db *sql.DB, fs, ts string) ([]CalendarEvent, error) {
+	out := []CalendarEvent{}
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	rows, err := db.Query(`
+		SELECT e.contact_id, COALESCE(c.name,''), COALESCE(c.remark,''), e.title, e.event_time
+		FROM contact_events e LEFT JOIN contacts c ON c.id = e.contact_id
+		WHERE substr(e.event_time,1,10) BETWEEN ? AND ? AND COALESCE(c.merged_into,0) = 0`, fs, ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name, remark, title, et string
+		if rows.Scan(&id, &name, &remark, &title, &et) != nil || len(et) < 10 {
+			continue
+		}
+		out = append(out, CalendarEvent{
+			Date: et[:10], Kind: "timeline", Title: title,
+			ContactID: id, Name: calDisplayName(name, remark),
+		})
+	}
+	return out, rows.Err()
+}
+
+// calFollowupEvents 取窗口内 open 且已设 due_date 的跟进截止。
+func calFollowupEvents(db *sql.DB, fs, ts string) ([]CalendarEvent, error) {
+	out := []CalendarEvent{}
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	rows, err := db.Query(`
+		SELECT f.contact_id, COALESCE(c.name,''), COALESCE(c.remark,''), f.content, f.due_date, f.kind
+		FROM followup_items f LEFT JOIN contacts c ON c.id = f.contact_id
+		WHERE f.status = 'open' AND f.due_date != '' AND f.due_date BETWEEN ? AND ? AND COALESCE(c.merged_into,0) = 0`, fs, ts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var name, remark, content, due, kind string
+		if rows.Scan(&id, &name, &remark, &content, &due, &kind) != nil {
+			continue
+		}
+		out = append(out, CalendarEvent{
+			Date: due, Kind: "followup", Title: content,
+			ContactID: id, Name: calDisplayName(name, remark), Meta: followupKindLabel(kind),
+		})
+	}
+	return out, rows.Err()
+}
+
+// hCalendarEvents GET /api/assistant/calendar/events?from=YYYY-MM-DD&to=YYYY-MM-DD（默认当前自然月）
+func (s *apiServer) hCalendarEvents(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	from, to := first, first.AddDate(0, 1, 0).AddDate(0, 0, -1) // 当月首/末日
+	q := r.URL.Query()
+	if v := strings.TrimSpace(q.Get("from")); v != "" && isValidYMD(v) {
+		if t, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
+			from = t
+		}
+	}
+	if v := strings.TrimSpace(q.Get("to")); v != "" && isValidYMD(v) {
+		if t, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
+			to = t
+		}
+	}
+	// 窗口护栏：最多展 730 天，防越界参数把逐年展开循环拉大。
+	if to.Sub(from) > 730*24*time.Hour {
+		to = from.AddDate(0, 0, 730)
+	}
+	events, err := buildCalendarEvents(s.db, from, to)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取日历事件失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"from":   dateOnly(from).Format("2006-01-02"),
+		"to":     dateOnly(to).Format("2006-01-02"),
+		"total":  len(events),
+		"events": events,
+	})
 }

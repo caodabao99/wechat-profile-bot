@@ -63,19 +63,20 @@ func (s *apiServer) hFollowupList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"list": items, "total": len(items)})
 }
 
-// POST /api/assistant/followups  {contactId, kind, content, amount}
+// POST /api/assistant/followups  {contactId, kind, content, amount, dueDate}
 func (s *apiServer) hFollowupAdd(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ContactID int64  `json:"contactId"`
 		Kind      string `json:"kind"`
 		Content   string `json:"content"`
 		Amount    string `json:"amount"`
+		DueDate   string `json:"dueDate"` // 可选截止日期 YYYY-MM-DD（空=无截止），格式校验在 AddFollowup
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFollowupBodyBytes)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求体解析失败")
 		return
 	}
-	id, err := AddFollowup(s.db, req.ContactID, req.Kind, req.Content, req.Amount)
+	id, err := AddFollowup(s.db, req.ContactID, req.Kind, req.Content, req.Amount, req.DueDate)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

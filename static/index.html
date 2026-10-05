@@ -906,6 +906,7 @@
                   <span class="tag" :class="{'tag-red': it.kind==='money', 'tag-green': it.kind==='promise'}">{{ it.kindLabel || followupKinds[it.kind] || it.kind }}</span>
                   <span class="chip" :class="it.status==='open' ? 'st-warn' : 'st-gray'">{{ {open:'待处理',done:'已完成',ignored:'已忽略'}[it.status] || it.status }}</span>
                   <span class="hint" v-if="it.amount">金额：{{ it.amount }}</span>
+                  <span class="chip st-warn" v-if="it.dueDate">截止 {{ it.dueDate }}</span>
                 </div>
                 <div class="fu-content">{{ it.content }}</div>
                 <div class="c-meta"><span v-if="it.sourceTime">来源消息：{{ fmtTime(it.sourceTime) }}</span><span>记录于 {{ fmtTime(it.createdAt) }}</span></div>
@@ -946,6 +947,38 @@
             订阅内容只包含未来一年内的重要日子，每条都是全天、按年重复的透明事件（不占用忙闲时间）。
             地址里的密钥等同于访问凭据，不要转发给别人；泄露了就点「重新生成密钥」。
           </p>
+        </div>
+
+        <!-- v4.7.0 关系维护日历（自研月历网格，无第三方库） -->
+        <div class="card cal-card" style="margin-top:14px">
+          <h3>🗓 关系维护日历</h3>
+          <p class="hint block">把生日/纪念日、手动大事记、带截止日的待跟进聚合成一个视图。点事件片可直达联系人。</p>
+          <div class="cal-toolbar">
+            <button class="btn ghost sm" @click="calShift(-1)" :disabled="calMonthBusy">← 上月</button>
+            <strong class="cal-month">{{ calMonthLabel }}</strong>
+            <button class="btn ghost sm" @click="calShift(1)" :disabled="calMonthBusy">下月 →</button>
+            <button class="btn sm" @click="calGoToday" :disabled="calMonthBusy">回到本月</button>
+            <span class="hint">{{ calMonthBusy ? '加载中…' : ('本月 ' + calMonthCount + ' 个事件') }}</span>
+          </div>
+          <div class="cal-legend">
+            <span class="cal-legend-item"><i class="cal-dot cal-birthday"></i>生日</span>
+            <span class="cal-legend-item"><i class="cal-dot cal-anniversary"></i>纪念日</span>
+            <span class="cal-legend-item"><i class="cal-dot cal-timeline"></i>大事记</span>
+            <span class="cal-legend-item"><i class="cal-dot cal-followup"></i>待跟进</span>
+          </div>
+          <div class="cal-weekhead">
+            <div class="cal-weekcell" v-for="w in calWeekdayNames" :key="w">周{{ w }}</div>
+          </div>
+          <div class="cal-grid">
+            <div class="cal-cell" :class="{out: !c.inMonth, today: c.isToday}" v-for="c in calCells" :key="c.date">
+              <div class="cal-daynum">{{ c.day }}</div>
+              <div class="cal-chips">
+                <button type="button" class="cal-chip" :class="'cal-' + e.kind"
+                        v-for="(e, i) in c.events" :key="i"
+                        :title="calChipTitle(e)" @click="calOpenEvent(e)">{{ e.title }}</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- 手动运行 + 日志 -->
@@ -2021,6 +2054,9 @@
                 style="margin-top:10px" placeholder="要跟进什么，如：答应了帮他改简历 / 他问的报价还没回"></textarea>
       <input class="text-input" v-model.trim="followupForm.amount" maxlength="40"
              v-if="followupForm.kind === 'money'" style="margin-top:10px" placeholder="金额，如：500 元（借出 / 欠我）">
+      <label class="cal-due-label">截止日期（可选，会在关系日历上高亮）
+        <input class="text-input" type="date" v-model="followupForm.dueDate" style="margin-top:4px">
+      </label>
       <div class="modal-actions">
         <button class="btn" type="button" @click="showFollowupModal = false">取消</button>
         <button class="btn primary" type="submit"

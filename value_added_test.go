@@ -465,15 +465,15 @@ func TestFollowupManualAndStatus(t *testing.T) {
 	db := vaDB(t)
 	a := regressionContact(t, db, "张三")
 
-	if _, err := AddFollowup(db, a, "promise", "   ", ""); err == nil {
+	if _, err := AddFollowup(db, a, "promise", "   ", "", ""); err == nil {
 		t.Fatal("空内容应报错")
 	}
-	if _, err := AddFollowup(db, 9999, "promise", "还钱", ""); err == nil {
+	if _, err := AddFollowup(db, 9999, "promise", "还钱", "", ""); err == nil {
 		t.Fatal("不存在的联系人应报错")
 	}
 
 	// 非法类型回落成 custom
-	id, err := AddFollowup(db, a, "瞎写的", "记得回他消息", "")
+	id, err := AddFollowup(db, a, "瞎写的", "记得回他消息", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func TestFollowupManualAndStatus(t *testing.T) {
 	}
 
 	// 同内容重复添加应去重复用同一条
-	id2, err := AddFollowup(db, a, "custom", "记得回他消息", "")
+	id2, err := AddFollowup(db, a, "custom", "记得回他消息", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestFollowupManualAndStatus(t *testing.T) {
 	}
 
 	// 带金额的钱款往来
-	money, err := AddFollowup(db, a, "money", "借了他两千", "2000 元")
+	money, err := AddFollowup(db, a, "money", "借了他两千", "2000 元", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestFollowupManualAndStatus(t *testing.T) {
 	}
 
 	// 超长内容截断
-	longID, err := AddFollowup(db, a, "custom", strings.Repeat("长", followupContentMax+20), "")
+	longID, err := AddFollowup(db, a, "custom", strings.Repeat("长", followupContentMax+20), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestFollowupManualAndStatus(t *testing.T) {
 		t.Fatalf("done 列表应只有刚勾掉那条，实际 %+v", done)
 	}
 	// 重新加回同一条内容应把状态复位成 open
-	if _, err = AddFollowup(db, a, "custom", "记得回他消息", ""); err != nil {
+	if _, err = AddFollowup(db, a, "custom", "记得回他消息", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	open, _ = ListFollowups(db, "open", 50)
@@ -595,6 +595,121 @@ func TestFollowupKindAndStatusValidators(t *testing.T) {
 	}
 	if validFollowupStatus("all") {
 		t.Fatal("all 是筛选值不是状态")
+	}
+}
+
+// v4.7.0：跟进截止日期 due_date 读写往返 + 格式校验
+func TestFollowupDueDateRoundTrip(t *testing.T) {
+	db := vaDB(t)
+	a := regressionContact(t, db, "张三")
+
+	// 带截止日期添加 → 回读应原样拿到
+	id, err := AddFollowup(db, a, "promise", "下周还书", "", "2026-10-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListFollowups(db, "open", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, it := range items {
+		if it.ID == id {
+			found = true
+			if it.DueDate != "2026-10-20" {
+				t.Fatalf("due_date 往返不符，期望 2026-10-20，实际 %q", it.DueDate)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("带截止日期添加的事项未出现在 open 列表")
+	}
+
+	// 空截止日期合法（无截止）
+	if _, err := AddFollowup(db, a, "custom", "无截止事项", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// 非法格式必须报错，且不落库
+	if _, err := AddFollowup(db, a, "custom", "非法日期", "", "2026-13-45"); err == nil {
+		t.Fatal("非法 YYYY-MM-DD 应报错")
+	}
+	if _, err := AddFollowup(db, a, "custom", "非法日期2", "", "20261020"); err == nil {
+		t.Fatal("无分隔符应报错")
+	}
+	if _, err := AddFollowup(db, a, "custom", "非法日期3", "", "10-20"); err == nil {
+		t.Fatal("缺年份应报错")
+	}
+
+	// 同内容重复添加应刷新 due_date（ON CONFLICT 分支）
+	if _, err := AddFollowup(db, a, "promise", "下周还书", "", "2026-11-01"); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = ListFollowups(db, "open", 50)
+	for _, it := range items {
+		if it.ID == id && it.DueDate != "2026-11-01" {
+			t.Fatalf("重复添加应刷新 due_date 到 2026-11-01，实际 %q", it.DueDate)
+		}
+	}
+}
+
+// v4.7.0：isValidYMD 严格校验（零填充、月/日合法、回式一致）
+func TestIsValidYMD(t *testing.T) {
+	for _, ok := range []string{"2026-01-01", "2026-10-20", "2024-02-29", "2026-12-31"} {
+		if !isValidYMD(ok) {
+			t.Errorf("%q 应为合法日期", ok)
+		}
+	}
+	for _, bad := range []string{"", "2026-1-2", "2026-13-01", "2026-02-30", "2025-02-29", "20261020", "10-20-2026", "2026-10-20 "} {
+		if isValidYMD(bad) {
+			t.Errorf("%q 应为非法日期", bad)
+		}
+	}
+}
+
+// v4.7.0：既有库缺 due_date 列时 ensureFollowupTables 幂等补列，且重复执行不报错
+func TestFollowupDueDateIdempotentAlter(t *testing.T) {
+	db := regressionDB(t)
+	// 手工造一张旧架构表（无 due_date 列），模拟升级前的库
+	if _, err := db.Exec(`CREATE TABLE followup_items (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		contact_id INTEGER NOT NULL,
+		kind TEXT NOT NULL DEFAULT 'custom',
+		content TEXT NOT NULL,
+		amount TEXT NOT NULL DEFAULT '',
+		source_msg_time TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'open',
+		dedup_key TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL DEFAULT '',
+		updated_at TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := followupHasDueDate(db); err != nil || has {
+		t.Fatalf("初始不应有 due_date 列，has=%v err=%v", has, err)
+	}
+	// 第一次 ensure：应补列
+	if err := ensureFollowupTables(db); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := followupHasDueDate(db); err != nil || !has {
+		t.Fatalf("ensure 后应有 due_date 列，has=%v err=%v", has, err)
+	}
+	// 第二次 ensure：幂等，不报错（不 bump user_version、不动 backup.go）
+	if err := ensureFollowupTables(db); err != nil {
+		t.Fatalf("重复 ensure 应幂等，实际报错: %v", err)
+	}
+	// 补列后可正常写入并回读 due_date
+	a := regressionContact(t, db, "补列后测试")
+	if _, err := AddFollowup(db, a, "custom", "升级后新增", "", "2026-12-25"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListFollowups(db, "open", 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].DueDate != "2026-12-25" {
+		t.Fatalf("补列后 due_date 往返异常: %+v", items)
 	}
 }
 
