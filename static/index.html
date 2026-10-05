@@ -429,8 +429,38 @@
                 <p class="q-dim-detail">{{ d.detail }}</p>
               </div>
             </div>
+            <div class="q-history" v-if="qualityHistory.count >= 2">
+              <div class="qh-head">
+                <span class="qh-label">综合分趋势 · 近 {{ qualityHistory.count }} 周</span>
+                <span class="qh-delta" :class="qualityHistory.deltaCls">{{ qualityHistory.deltaText }}</span>
+              </div>
+              <svg class="trend-spark qh-spark" width="220" height="40" viewBox="0 0 220 40" preserveAspectRatio="none">
+                <polyline fill="none" stroke="currentColor" stroke-width="1.5" :points="qualityHistory.points"/>
+              </svg>
+              <p class="qh-hint">每次刷新按周留存综合分快照，追踪关系变化的长期信号。</p>
+            </div>
           </div>
           <p class="hint" v-if="ck.quality">全部在本地根据消息与画像计算，不调用模型；可随时刷新，结果稳定可复现。</p>
+        </div>
+
+        <div class="card achieve-card">
+          <div class="tl-head">
+            <h2>关系成就 <span class="chip st-purple" v-if="ck.achievements">{{ ck.achievements.summary }}</span></h2>
+            <button class="btn ghost sm" @click="loadAchievements" :disabled="ck.achBusy">{{ ck.achBusy ? '检测中…' : '刷新' }}</button>
+          </div>
+          <p class="empty" v-if="ck.achBusy && !ck.achievements">正在自动检测聊天里程碑（累计消息、连续互动、相识周年）…</p>
+          <p class="empty" v-else-if="!ck.achievements || !ck.achievements.items || !ck.achievements.items.length">暂无成就数据</p>
+          <div class="ach-grid" v-else>
+            <div class="ach-item" :class="{ met: it.met }" v-for="(it,i) in ck.achievements.items" :key="i">
+              <div class="ach-top">
+                <span class="ach-title">{{ it.label }} {{ it.tier }} {{ it.unit }}</span>
+                <span class="ach-state" :class="it.met ? 'met' : 'todo'">{{ it.met ? '已达成' : '未达成' }}</span>
+              </div>
+              <div class="ach-bar"><i :style="{width: (it.pct>100?100:it.pct) + '%'}"></i></div>
+              <div class="ach-meta"><span class="ach-prog">{{ it.current }} / {{ it.target }}</span><span class="ach-date" v-if="it.met && it.achievedAt">{{ it.achievedAt.slice(0,10) }}</span></div>
+            </div>
+          </div>
+          <p class="hint" v-if="ck.achievements">里程碑由本地聊天记录自动派生、首次跨越即写入时间线；可在「时间线」标签查看解锁历史。</p>
         </div>
 
         <div class="card">

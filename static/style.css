@@ -859,6 +859,32 @@ textarea.text-input { resize: vertical; }
 .q-dim-detail { font-size: 12px; color: var(--muted); margin: 0; }
 @media (max-width: 560px) { .q-body { flex-direction: column; align-items: center; } .q-dims { width: 100%; } }
 
+/* v5.2.1 对话质量历史趋势折线（复用 .trend-spark）*/
+.q-history { flex: 1 1 100%; min-width: 0; border-top: 1px solid var(--line); padding-top: 10px; }
+.qh-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.qh-label { font-size: 13px; font-weight: 600; color: #374151; }
+.qh-delta { font-size: 12.5px; font-weight: 700; }
+.qh-delta.qh-up { color: var(--ok); }
+.qh-delta.qh-down { color: var(--bad); }
+.qh-delta.qh-flat { color: var(--muted); }
+.qh-spark { width: 100%; max-width: 220px; height: 40px; margin-top: 4px; color: var(--accent); }
+.qh-hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+
+/* v5.2.1 关系成就 / 里程碑卡片 */
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.ach-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fbfbfd; display: flex; flex-direction: column; gap: 8px; }
+.ach-item.met { border-color: var(--accent); background: #ecfdf5; }
+.ach-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ach-title { font-size: 13.5px; font-weight: 600; color: #374151; }
+.ach-state { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.ach-state.met { background: rgba(22, 163, 74, .14); color: var(--ok); }
+.ach-state.todo { background: rgba(107, 114, 128, .14); color: var(--muted); }
+.ach-bar { height: 8px; border-radius: 6px; background: var(--line); overflow: hidden; }
+.ach-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.ach-meta { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
+.ach-date { color: var(--accent2); font-weight: 600; }
+@media (max-width: 560px) { .ach-grid { grid-template-columns: 1fr; } }
+
 /* ============ v4.9.0 智能回顾摘要 ============ */
 .sum-card { --sum-me: var(--accent); --sum-other: var(--warn); }
 .sum-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }

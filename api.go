@@ -389,6 +389,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactTrend(w, r, id)
 	case "quality":
 		s.routeContactQuality(w, r, id)
+	case "achievements":
+		s.routeContactAchievements(w, r, id)
 	case "ask":
 		s.routeContactAsk(w, r, id)
 	case "summary":

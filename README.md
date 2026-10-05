@@ -33,6 +33,8 @@
 - **智能回顾摘要**（v4.9.0，联系人驾驶舱）：新增 `POST /api/contacts/{id}/summary` body `{days}`，选定时间窗口后基于窗口内真实聊天原文调模型产一份结构化回顾——overview一段话总结 + topics 话题 chips + todos 待办列表（每条标 [n] 出处可跳转原文、可一键转跟进）。复用 ask.go 两段式检索与降级：未配模型 503、不编造；窗口内原文不足 4 条时如实返回空摘要 + note；模型返回坏 JSON 回退为原文摘录。摘要一次性返回不落库。
 - **插件化分析引擎·提示词模板外置**（v5.1.0，关系助手）：把全部 13 个 LLM 提示词模板从硬编码外置为可编辑「分析插件」——内置默认经 `go:embed` 逐字内嵌、可被 SQLite `prompt_templates` 覆盖并**运行时热加载**（改完即生效、无需重启）。变量用**字面占位符 `{{key}}`**、渲染为单趟精确字符串替换（非 text/template，杜绝模板注入、结果确定）；保存时强制校验必填变量齐备、拒绝未知/游离占位符、限 8KB；坏覆盖或读取失败一律**回退内置默认、绝不因模板问题 500 阻断业务**。默认渲染与迁移前 `fmt.Sprintf` **逐字节一致**（golden 测试锁死，纯重构零行为变化）。新增 `/api/assistant/prompts*` 一组端点支持列表/取详情/保存/重置/试渲染，覆盖表自动纳入备份恢复。
 - **分析插件（提示词）网页管理界面**（v5.2.0，关系助手页）：把上述提示词端点做成可视化面板「🧩 分析插件（提示词）」——列出 13 个模板（标题/所属功能/是否已自定义徽标/更新时间），行内展开即可编辑当前生效正文、点变量 chips 在光标处插入 `{{key}}`、实时字节计数（8KB 上限提示）、与内置默认对照、一键预览（用样本变量字面渲染、不调模型）、保存自定义 / 恢复默认。纯前端复用既有 Vue + `api()` 范式，**零第三方依赖**、无新增后端端点。
+- **对话质量历史趋势**（v5.2.1，联系人驾驶舱）：在既有四维雷达图旁新增一条「综合分历史趋势」折线——每次查看质量评分时按 ISO 周幂等留存综合分快照到新派生表 `contact_quality_history`（每联系人仅留近约 104 周），前端复用既有零依赖 `sparkPoints` 内联 SVG 折线呈现、附最新值与较上期环比。全程本地确定性计算、不调模型、惰性采集不新增后台任务；best-effort 写历史失败不影响评分响应。零第三方库，`GET /api/contacts/{id}/quality` 响应新增 `history` 字段。
+- **关系成就 / 里程碑系统**（v5.2.1，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/achievements`，从聊天记录**确定性自动派生**关系里程碑——累计消息（100/500/1000/5000 条）、连续互动天数（7/30/100 天，messages ∪ archive 活跃自然日最长连续段）、相识周年（1/3/5 年，起点=首条消息时间）。前端用成就卡片网格呈现（达成亮徽章+解锁日期、未达成进度条）。首次跨越某档位即写 `contact_achievements` 去重表 + 一条 `kind="milestone"` 的 `contact_events`，于是「时间线」标签自动留下解锁历史；重复检测幂等、不重复写。全程本地计算、不调模型、可离线单测；去重表按持久化用户数据纳入备份恢复。零第三方库。
 - **智能联系人自动分组**（v5.0.0，标签管理）：新增只读端点 `GET /api/assistant/tags/suggest?ids=1,2,3`，基于联系人画像（地域/职业/兴趣）与互动指标（亲密度分层、情绪告警、往来待跟进）用**确定性规则**批量产标签建议（含命中理由与置信度），前端一键/勾选批量采纳经 `POST /api/assistant/tags/apply` 走 `CreateTag`（幂等）+ `INSERT OR IGNORE` 落库。全程本地计算、不调模型、结果可复现（同数据同参跑两次逐字段相等）；情绪/待跟进为增值表，缺失则静默跳过对应规则不报错。零第三方库、采纳幂等（重复采纳不产生重复链接）。
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
@@ -51,7 +53,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.2.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.2.1.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -68,7 +70,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.2.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -286,7 +288,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.2.0.tar.gz`，得到 `wechat-profile-bot:v5.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.2.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.2.1.tar.gz`，得到 `wechat-profile-bot:v5.2.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -595,6 +597,15 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v5.2.1（2026-10-05）
+
+- **对话质量评分可视化 → 历史趋势追踪**（联系人驾驶舱）：既有四维雷达图（v4.8.0）已上线，本次补上「追踪历史趋势」这一维度——新增派生表 `contact_quality_history`，每次访问 `GET /api/contacts/{id}/quality` 时按 ISO 周幂等留存当周综合分快照（复用 `weekStartOf`，仅留近约 104 周），响应新增 `history` 字段；前端复用既有零依赖 `sparkPoints` 内联 SVG 折线呈现综合分走势与较上期环比。全程本地确定性计算、惰性采集不新增后台任务、best-effort 写失败不影响评分响应。
+- **关系成就 / 里程碑系统**（联系人驾驶舱）：新增 `achievements.go` 与只读端点 `GET /api/contacts/{id}/achievements`，从聊天记录确定性自动派生三类里程碑——累计消息（100/500/1000/5000 条）、连续互动天数（messages ∪ archive 活跃自然日最长连续段，7/30/100 天）、相识周年（起点=首条消息时间，1/3/5 年）。首次跨越某档位即幂等写 `contact_achievements` 去重表 + 一条 `kind="milestone"` 的 `contact_events`，于是「时间线」标签自动呈现解锁历史；前端用成就卡片网格展示（达成高亮+解锁日期、未达成进度条）。`evaluateAchievements`/`longestStreak`/`wholeYearsSince` 均为纯函数、可脱离 DB 离线单测。
+- **零依赖 / 单连接池纪律**：两张新表按持久化用户数据纳入备份恢复（不入 `derivedTables`，避免恢复清空去重表导致里程碑重复）；全程分层取 `dbMu`、绝不嵌套锁（`RecordContactEvent` 在未持锁时调用）。无任何第三方依赖，`go:embed static/` 覆盖前端。
+- **核心模块补齐独立单测**（质量补强、无功能变更）：新增 `security_test.go`/`merge_test.go`/`ilink_test.go` 覆盖登录封禁与限流、联系人合并与撤销、iLink 客户端原子写与凭据往返。
+- **发布链路去漂移**：`deploy/package_release.sh` 改为从主仓实时交叉编译、版本自动解析、`config.json` 模板自动生成；新增 `deploy/sync_bot_docker.sh` 把 Docker 构建上下文精确镜像主仓受版本控制源。
+- **测试与门禁**：`quality_history_test.go`（按周幂等、升序、裁剪）+ `achievements_test.go`（streak 连续性、周年整年、成就检测幂等）。`go test -race -cover` 全绿、覆盖率 65.8%（不低于 v5.2.0）。
 
 ### v5.2.0（2026-10-05）
 

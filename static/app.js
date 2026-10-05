@@ -2409,6 +2409,8 @@ createApp({
       askQ: '', askBusy: false, askResult: null, askFailed: false, askError: '',
       // v4.8.0 对话质量评分：四维 0-100 + 综合分 + 手绘内联 SVG 雷达（纯确定性、零 LLM）
       quality: null, qualityBusy: false, qualityFailed: false, qualityError: '', qualityDays: 90,
+      // v5.2.1 关系成就 / 里程碑（本地自动派生 + 达成即写时间线）
+      achievements: null, achBusy: false,
       // v4.9.0 智能回顾摘要（LLM，同 ask 风格降级：未配模型 503 不编造）
       summaryDays: 30, summaryBusy: false, summaryResult: null, summaryFailed: false, summaryError: '',
     });
@@ -2431,6 +2433,7 @@ createApp({
       loadTrend();
       loadSuggestions();
       loadQuality();
+      loadAchievements();
     }
     async function loadFacts(force) {
       const my = detailSeq;
@@ -2590,6 +2593,7 @@ createApp({
       ck.draft = ''; ck.simBusy = false; ck.simResult = null; ck.simFailed = false; ck.simError = '';
       ck.askQ = ''; ck.askBusy = false; ck.askResult = null; ck.askFailed = false; ck.askError = '';
       ck.quality = null; ck.qualityBusy = false; ck.qualityFailed = false; ck.qualityError = '';
+      ck.achievements = null; ck.achBusy = false;
       ck.summaryBusy = false; ck.summaryResult = null; ck.summaryFailed = false; ck.summaryError = '';
       Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
     }
@@ -2613,6 +2617,21 @@ createApp({
       } finally { if (my === detailSeq && route.id === cid) ck.qualityBusy = false; }
     }
     function reloadQuality() { ck.quality = null; loadQuality(); }
+
+    // ---------- v5.2.1 关系成就 / 里程碑（本地自动派生，达成即写时间线） ----------
+    async function loadAchievements() {
+      const my = detailSeq;
+      const cid = route.id;
+      if (ck.achBusy) return;
+      ck.achBusy = true;
+      try {
+        const out = await api('/api/contacts/' + cid + '/achievements');
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.achievements = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) ck.achievements = null;
+      } finally { if (my === detailSeq && route.id === cid) ck.achBusy = false; }
+    }
 
     // 四维轴：角度（度）-90(上)/0(右)/90(下)/180(左)，与 dims 顺序对齐。
     const Q_AXES = [
@@ -2651,6 +2670,21 @@ createApp({
       if (v >= 50) return 'q-mid';
       return 'q-poor';
     }
+
+    // qualityHistory：把 ck.quality.history（近 N 周综合分快照）转为内联 SVG 折线 + 环比 delta。
+    // 复用既有零依赖 sparkPoints（<2 点返回空串 → 模板隐藏）。纯派生、确定性。
+    const qualityHistory = computed(() => {
+      const hist = (ck.quality && ck.quality.history) || [];
+      const values = hist.map(h => Number(h && h.score) || 0);
+      const points = sparkPoints(values, 220, 40);
+      let deltaText = '', deltaCls = '';
+      if (values.length >= 2) {
+        const d = values[values.length - 1] - values[values.length - 2];
+        deltaCls = d > 0 ? 'qh-up' : (d < 0 ? 'qh-down' : 'qh-flat');
+        deltaText = (d > 0 ? '+' : '') + d + ' 分';
+      }
+      return { count: values.length, points, deltaText, deltaCls };
+    });
 
     // ---------- 待跟进事项 ----------
     const followups = ref([]);
@@ -3147,6 +3181,8 @@ createApp({
       askContact, jumpToAskSource,
       // v4.8.0 对话质量评分 + 雷达
       loadQuality, reloadQuality, qualityRadar, qScoreCls,
+      // v5.2.1 质量历史趋势折线 + 关系成就
+      qualityHistory, loadAchievements,
       // v4.9.0 智能回顾摘要 + 待办一键转跟进
       genSummary, reloadSummary, todoToFollowup, jumpToSummarySource,
       // 待跟进 / 日历订阅 / 祝福草稿

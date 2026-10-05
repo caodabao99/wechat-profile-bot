@@ -50,12 +50,13 @@ type QualityDim struct {
 
 // ContactQuality 某联系人的对话质量评分
 type ContactQuality struct {
-	ContactID   int64        `json:"contactId"`
-	Name        string       `json:"name"`
-	Score       int          `json:"score"`
-	Dims        []QualityDim `json:"dims"`
-	WindowDays  int          `json:"windowDays"`
-	GeneratedAt string       `json:"generatedAt"`
+	ContactID   int64                 `json:"contactId"`
+	Name        string                `json:"name"`
+	Score       int                   `json:"score"`
+	Dims        []QualityDim          `json:"dims"`
+	WindowDays  int                   `json:"windowDays"`
+	GeneratedAt string                `json:"generatedAt"`
+	History     []QualityHistoryPoint `json:"history,omitempty"` // v5.2.1 综合分历史趋势（近 N 周，仅 HTTP 读取路径回填）
 }
 
 // clampPct 把 [0,1] 比例夹到 [0,100] 整数

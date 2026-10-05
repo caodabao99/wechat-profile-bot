@@ -117,6 +117,13 @@ func (s *apiServer) routeContactQuality(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, "计算对话质量失败: "+err.Error())
 		return
 	}
+	// v5.2.1：惰性追加当周综合分快照并回填历史趋势（best-effort，失败不影响评分响应）。
+	if err := ensureQualityHistory(s.db); err == nil {
+		upsertQualitySnapshot(s.db, q)
+		if hist, herr := getQualityHistory(s.db, id, qualityHistoryDefaultShow); herr == nil {
+			q.History = hist
+		}
+	}
 	writeJSON(w, http.StatusOK, q)
 }
 
