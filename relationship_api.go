@@ -255,6 +255,26 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 	}
 }
 
+// routeContactReplay GET /api/contacts/{id}/replay：Memory Replay「重新认识 TA」（Phase 7）。
+// 确定性拼装关系回放（首次认识/阶段/转折/兴趣职业/升降温/主题/当前/目标/未完成），
+// 每条结论带来源证据；不依赖 LLM，返回结构化 `replay` + `rendered` 文本。
+func (s *apiServer) routeContactReplay(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	rep, err := BuildRelationshipReplay(s.db, id, time.Now())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErr(w, http.StatusNotFound, "联系人不存在")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "回放生成失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "replay": rep, "rendered": RenderReplayText(rep)})
+}
+
 // routeContactContext GET /api/contacts/{id}/context?task=ask&q=关键词：AI Context Engine（Phase 6）。
 // 分层构造该联系人的认知快照（身份/状态/事实/证据/目标/项目/待办/主题/指标/消息/行动），
 // 并按任务预算渲染为提示词上下文块（只读，供新 AI 代码统一取数与可观测）。

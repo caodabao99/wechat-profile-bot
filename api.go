@@ -389,6 +389,8 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactState(w, r, id)
 	case "context":
 		s.routeContactContext(w, r, id)
+	case "replay":
+		s.routeContactReplay(w, r, id)
 	case "connections":
 		s.routeContactConnections(w, r, id)
 	case "trend":
