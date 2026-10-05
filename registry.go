@@ -64,6 +64,8 @@ func init() {
 		{Name: "profile_facts", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "可信画像事实，deriveFacts 产；含 FACT 生命周期（status/source_type/valid_from/valid_until/superseded_by/confidence_type/evidence_strength）"},
 		{Name: "profile_fact_evidence", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "事实证据，FK 依赖 profile_facts；含证据评估（match_type/support_strength/quote/is_direct_support）"},
 		{Name: "relationship_daily_metrics", Type: "derived", Owner: "metrics", Backup: false, Rebuild: true, HasContactID: true, Note: "日粒度互动聚合，RebuildDailyMetrics 产"},
+		{Name: "relationship_state", Type: "derived", Owner: "statemachine", Backup: false, Rebuild: true, HasContactID: true, Note: "关系状态机当前快照（base_state×dynamic_state），复用 ComputeHealth，RefreshRelationshipStates 产"},
+		{Name: "relationship_state_history", Type: "derived", Owner: "statemachine", Backup: false, Rebuild: true, HasContactID: true, Note: "关系状态变迁事件（仅跨阈值才写），供回放/趋势回看"},
 		{Name: "relationship_action_suggestions", Type: "derived", Owner: "relationship", Backup: false, Rebuild: true, HasContactID: true},
 		{Name: "suggestion_outcomes", Type: "derived", Owner: "relationship", Backup: false, Rebuild: true, HasContactID: true, Note: "建议回测结果，FK 依赖 suggestions"},
 		{Name: "contact_connections", Type: "derived", Owner: "network", Backup: false, Rebuild: true, HasContactID: false, Note: "关系连线（contact_a/contact_b 双列），不入 cleanup，由 contact.go 专用 DELETE"},

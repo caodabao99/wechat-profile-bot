@@ -15,11 +15,14 @@ import (
 //	GET  /api/contacts/{id}/facts          可信画像事实 + 证据链（空则自愈重建）
 //	POST /api/contacts/{id}/facts/rebuild  强制重建事实 + 证据
 //	POST /api/contacts/{id}/facts/confirm/{factId}  将事实提升为用户确认（最高可信来源，5.5）
+//	GET  /api/contacts/{id}/state          关系状态机单联系人视图（base_state×dynamic_state，?history=1 附变迁）
 //	GET  /api/contacts/{id}/trend          关系变化趋势（升温/降温/沉寂）
 //
 // 全局（route() 里 `case "relationships"`）：
 //
 //	GET  /api/relationships/suggestions            行动建议列表（默认只 open）
+//	GET  /api/relationships/state                   全局关系状态看板（缺则自愈刷新）
+//	POST /api/relationships/state/recompute          强制重算全体关系状态（仅跨阈值产变迁事件）
 //	POST /api/relationships/suggestions/generate   生成/刷新行动建议（body 可选 contactId）
 //	POST /api/relationships/suggestions/{sid}/status 置建议状态 open|done|dismissed
 //
@@ -238,6 +241,8 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 		s.routeConnections(w, r, sub[1:])
 	case "health":
 		s.hRelationshipHealth(w, r)
+	case "state":
+		s.routeRelationshipState(w, r, sub[1:])
 	case "circles":
 		s.hRelationshipCircles(w, r)
 	default:
@@ -277,6 +282,75 @@ func (s *apiServer) hRelationshipCircles(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, dash)
+}
+
+// routeContactState GET /api/contacts/{id}/state（?history=1 附带变迁历史）。
+// 关系状态机单联系人视图（只读；存量缺失时自愈刷新整板一次）。
+func (s *apiServer) routeContactState(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	if _, err := GetContactByID(s.db, id); err != nil {
+		writeErr(w, http.StatusNotFound, "联系人不存在")
+		return
+	}
+	v, err := GetRelationshipState(s.db, id)
+	if err == sql.ErrNoRows {
+		writeErr(w, http.StatusNotFound, "该联系人尚无状态快照")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取关系状态失败: "+err.Error())
+		return
+	}
+	resp := map[string]interface{}{"state": v}
+	if r.URL.Query().Get("history") == "1" {
+		hist, herr := GetRelationshipStateHistory(s.db, id, 50)
+		if herr == nil {
+			resp["history"] = hist
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// routeRelationshipState /api/relationships/state[/recompute]：全局关系状态看板。
+func (s *apiServer) routeRelationshipState(w http.ResponseWriter, r *http.Request, sub []string) {
+	if len(sub) == 1 && sub[0] == "recompute" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		changed, total, err := RefreshRelationshipStates(s.db, time.Now(), 0)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "重算关系状态失败: "+err.Error())
+			return
+		}
+		list, err := ListRelationshipStates(s.db)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取关系状态看板失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"changed": changed, "total": total, "states": list})
+		return
+	}
+	if len(sub) != 0 {
+		writeErr(w, http.StatusNotFound, "未知接口")
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	list, err := ListRelationshipStates(s.db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取关系状态看板失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"states": list})
 }
 
 func (s *apiServer) routeSuggestions(w http.ResponseWriter, r *http.Request, sub []string) {

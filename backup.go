@@ -79,6 +79,8 @@ var derivedTables = []string{
 	"profile_fact_evidence",
 	"profile_facts",
 	"relationship_daily_metrics",
+	"relationship_state_history",
+	"relationship_state",
 	"relationship_action_suggestions",
 	"weekly_plan_cache",
 	"suggestion_outcomes",

@@ -20,6 +20,8 @@ var contactCleanupTables = []string{
 	"profile_fact_evidence",
 	"profile_facts",
 	"relationship_daily_metrics",
+	"relationship_state_history",
+	"relationship_state",
 	"suggestion_outcomes",
 	"relationship_action_suggestions",
 	"assistant_emotions",

@@ -560,6 +560,9 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/contacts/{id}/facts` | 可信画像事实 + 证据链（`?includeRetired=1` 含历史；空则自愈重建）；每条事实附 FACT 生命周期字段（status/sourceType/validFrom/validUntil/supersededBy/confidenceType/evidenceStrength）与逐条证据评估（matchType/isDirectSupport/supportStrength/quote） |
 | POST | `/api/contacts/{id}/facts/rebuild` | 强制重建该联系人事实 + 证据 |
 | POST | `/api/contacts/{id}/facts/confirm/{factId}` | 将一条事实提升为「用户确认」（最高可信来源，confidence=1.0、sourceType=user，后续派生不再自动降级它）；越权/不属于该联系人 → 403 |
+| GET | `/api/contacts/{id}/state` | 关系状态机单联系人视图（`base_state`×`dynamic_state`+亲密度/趋势/预警/理由/转态时间；`?history=1` 附变迁历史）；存量缺失则自愈刷新整板 |
+| GET | `/api/relationships/state` | 全局关系状态看板（按健康度升序/亲密度降序） |
+| POST | `/api/relationships/state/recompute` | 强制重算全体关系状态（仅当状态真实跨越阈值才写变迁事件，返回 `{changed,total,states}`） |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
 | GET | `/api/life/timeline` | 人生年表里程碑（每次现算，聚合很轻） |
