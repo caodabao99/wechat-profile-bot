@@ -1101,6 +1101,67 @@
           </div>
         </div>
       </template>
+
+      <!-- ============ v5.2.0 分析插件（提示词模板）管理 ============ -->
+      <div class="card pmt-card">
+        <div class="tl-head">
+          <h3 style="margin:0">🧩 分析插件（提示词）</h3>
+          <button class="btn ghost sm" @click="loadPrompts" :disabled="prompts.busy">{{ prompts.busy ? '加载中…' : '刷新' }}</button>
+        </div>
+        <p class="hint block">全部 13 个 LLM 提示词模板集中在此编辑。内置默认逐字内嵌，你保存的修改作为「自定义覆盖」存进数据库并<strong>运行时热加载</strong>（改完即生效、无需重启），每个模板都可一键<strong>恢复默认</strong>。变量一律用字面占位符（形如 <code>{{ pmtToken('变量名') }}</code>），保存时后端会校验必填变量是否齐备、拒绝未知占位符、限 8KB。编辑提示词等价于编辑本工具的模型指令，仅影响送给模型的文本，不改变代码路径与降级语义。</p>
+
+        <div v-if="prompts.busy && !prompts.list.length" class="pmt-empty">正在加载提示词列表…</div>
+        <div v-else-if="prompts.failed" class="pmt-empty">{{ prompts.error }}　<button class="btn ghost xs" @click="loadPrompts">重试</button></div>
+        <div v-else-if="!prompts.list.length" class="pmt-empty">暂无提示词模板</div>
+
+        <ul class="pmt-list" v-else>
+          <li v-for="it in prompts.list" :key="it.key" class="pmt-item" :class="{open: prompts.openKey===it.key}">
+            <div class="pmt-row" @click="openPrompt(it.key)">
+              <span class="pmt-title">{{ it.title }}</span>
+              <span class="pmt-feature">{{ it.feature }}</span>
+              <span class="pmt-badge" :class="it.isCustom ? 'pmt-badge-custom' : 'pmt-badge-default'">{{ it.isCustom ? '已自定义' : '内置默认' }}</span>
+              <span class="hint pmt-meta">{{ (it.vars || []).length }} 个变量<span v-if="it.updatedAt"> · {{ fmtTime(it.updatedAt).slice(0,16) }}</span></span>
+              <span class="pmt-caret">{{ prompts.openKey===it.key ? '收起' : '编辑' }}</span>
+            </div>
+
+            <div class="pmt-editor" v-if="prompts.openKey===it.key">
+              <div v-if="prompts.detailBusy" class="pmt-empty">加载模板详情…</div>
+              <template v-else-if="prompts.detail && prompts.detail.key===it.key">
+                <!-- 可用变量 chips -->
+                <div class="pmt-vars">
+                  <span class="pmt-vars-label">可用变量（点击插入到光标处）：</span>
+                  <button type="button" class="pmt-var" v-for="v in (prompts.detail.vars || [])" :key="v" @click="insertPromptVar(v)">{{ pmtToken(v) }}</button>
+                </div>
+
+                <!-- 编辑区 -->
+                <textarea ref="promptTA" class="pmt-textarea" rows="10" spellcheck="false" v-model="prompts.editContent"></textarea>
+                <div class="pmt-tools">
+                  <span class="hint">{{ byteLen(prompts.editContent) }} / {{ PROMPT_MAX_BYTES }} 字节</span>
+                  <span class="pmt-ovr" v-if="byteLen(prompts.editContent) > PROMPT_MAX_BYTES">超过上限，无法保存</span>
+                  <span class="pmt-dirty" v-else-if="prompts.detail.isCustom && prompts.editContent!==prompts.detail.override">有未保存修改</span>
+                </div>
+
+                <!-- 默认内容对照（只读） -->
+                <details class="pmt-default">
+                  <summary>查看内置默认（对照用，只读）</summary>
+                  <pre class="pmt-pre">{{ prompts.detail.default }}</pre>
+                </details>
+
+                <div class="pmt-actions">
+                  <button class="btn primary sm" @click="savePrompt" :disabled="prompts.saving || byteLen(prompts.editContent) > PROMPT_MAX_BYTES || byteLen(prompts.editContent)===0">{{ prompts.saving ? '保存中…' : '保存自定义' }}</button>
+                  <button class="btn sm" @click="previewPrompt" :disabled="prompts.previewBusy">{{ prompts.previewBusy ? '渲染中…' : '预览' }}</button>
+                  <button class="btn ghost sm" @click="resetPrompt" :disabled="prompts.resetting || !prompts.detail.isCustom">{{ prompts.resetting ? '恢复中…' : '恢复默认' }}</button>
+                </div>
+
+                <div class="pmt-preview" v-if="prompts.previewText">
+                  <div class="pmt-preview-head">预览（用样本变量字面渲染，不调模型）</div>
+                  <pre class="pmt-pre">{{ prompts.previewText }}</pre>
+                </div>
+              </template>
+            </div>
+          </li>
+        </ul>
+      </div>
     </section>
 
     <!-- ============ 洞察 ============ -->

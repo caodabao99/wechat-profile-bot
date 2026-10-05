@@ -906,3 +906,39 @@ textarea.text-input { resize: vertical; }
 .sug-bar > i { display: block; height: 100%; background: var(--accent); }
 .sug-conf-n { font-size: 11px; color: var(--muted); }
 .sug-reason { color: var(--muted); font-size: 12px; }
+
+/* ---------- v5.2.0 分析插件（提示词模板）管理 ---------- */
+.pmt-card h3 { letter-spacing: .2px; }
+.pmt-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.pmt-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.pmt-item { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; overflow: hidden; background: var(--card); }
+.pmt-item.open { box-shadow: var(--shadow); border-color: rgba(5,150,105,.35); }
+.pmt-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; flex-wrap: wrap; }
+.pmt-row:hover { background: var(--bg); }
+.pmt-title { font-weight: 600; color: var(--ink); font-size: 14px; }
+.pmt-feature { font-size: 12px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+.pmt-badge { font-size: 11px; border-radius: 999px; padding: 1px 8px; font-weight: 600; }
+.pmt-badge-custom { background: #dcfce7; color: #15803d; }
+.pmt-badge-default { background: rgba(107,114,128,.12); color: var(--muted); }
+.pmt-meta { margin-left: auto; }
+.pmt-caret { font-size: 12px; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.pmt-editor { border-top: 1px solid var(--line); padding: 12px 14px; background: var(--bg); }
+.pmt-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+.pmt-vars-label { font-size: 12px; color: var(--muted); }
+.pmt-var { font-family: ui-monospace, Consolas, monospace; font-size: 12px; border: 1px solid rgba(5,150,105,.3); background: #fff; color: var(--accent2); border-radius: 6px; padding: 2px 7px; cursor: pointer; }
+.pmt-var:hover { background: rgba(5,150,105,.08); }
+.pmt-textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; line-height: 1.6; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; resize: vertical; }
+.pmt-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(5,150,105,.12); }
+.pmt-tools { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 12px; }
+.pmt-ovr { color: var(--bad); font-weight: 600; }
+.pmt-dirty { color: var(--warn); font-weight: 600; }
+.pmt-default { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.pmt-default summary { cursor: pointer; }
+.pmt-pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.6; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 6px 0 0; max-height: 320px; overflow: auto; color: var(--ink); }
+.pmt-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.pmt-preview { margin-top: 12px; }
+.pmt-preview-head { font-size: 12px; color: var(--muted); font-weight: 600; }
+@media (max-width: 640px) {
+  .pmt-meta { width: 100%; margin-left: 0; order: 5; }
+  .pmt-row { gap: 6px; }
+}

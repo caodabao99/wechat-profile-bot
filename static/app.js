@@ -694,7 +694,7 @@ createApp({
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
-      if (route.view === 'assistant') loadAssistant();
+      if (route.view === 'assistant') { loadAssistant(); loadPrompts(); }
       if (route.view === 'insights') switchInsight(insightTab.value);
       if (route.view === 'status') {
         loadStatus();
@@ -2961,6 +2961,120 @@ createApp({
     });
     onUnmounted(() => { window.removeEventListener('hashchange', parseRoute); stopStatusTimer(); });
 
+    // ---------- v5.2.0 分析插件（提示词模板）管理 ----------
+    // 13 个 LLM 提示词模板：内置默认 + SQLite 覆盖热加载，此处提供可视化编辑/预览/一键回滚。
+    // 纯前端复用既有 api()/toast()/竞态序号范式，零第三方依赖。
+    const PROMPT_MAX_BYTES = 8192;   // 与后端 maxPromptTemplateBytes 一致，仅用于前端字数提示
+    function byteLen(s) { return new TextEncoder().encode(s || '').length; }
+    // pmtToken 把变量名拼成字面占位符 {{name}}。必须在 JS 里构造：模板里直接写
+    // {{ '{{' + v + '}}' }} 会被 Vue 的插值解析器在字符串里的第一个 }} 处提前闭合。
+    function pmtToken(v) { return '{{' + v + '}}'; }
+    const prompts = reactive({
+      list: [],            // [{key,title,feature,vars,isCustom,updatedAt}]
+      busy: false, failed: false, error: '', loaded: false,
+      openKey: '',         // 当前展开编辑的模板 key（同一时刻只开一个，保持界面清爽）
+      detail: null,        // 展开项详情 {key,title,feature,vars,default,effective,isCustom,override,updatedAt}
+      detailBusy: false,
+      editContent: '',     // 编辑区正文（保存时作为覆盖 content）
+      saving: false, resetting: false,
+      previewText: '', previewBusy: false,
+      sampleVars: {},      // 预览用样本变量（仅字面替换，不调模型）
+    });
+    const promptTA = ref(null);   // 编辑 textarea 引用，供变量 chip 在光标处插入 {{key}}
+    let promptsSeq = 0;           // 打开详情竞态序号：快速点 A→B 时丢弃 A 的慢回包
+
+    async function loadPrompts() {
+      prompts.busy = true; prompts.failed = false; prompts.error = '';
+      try {
+        const out = await api('/api/assistant/prompts');
+        prompts.list = (out && out.items) || [];
+        prompts.loaded = true;
+      } catch (e) {
+        prompts.failed = true; prompts.error = e.message || '获取提示词列表失败'; prompts.list = [];
+      } finally { prompts.busy = false; }
+    }
+
+    // 用当前列表项即时构造一份占位详情先行展开，再异步拉全文（首屏不空等）。
+    async function openPrompt(key) {
+      if (prompts.openKey === key) { prompts.openKey = ''; prompts.detail = null; return; } // 再点收起
+      prompts.openKey = key;
+      prompts.detailBusy = true; prompts.detail = null;
+      prompts.previewText = ''; prompts.saving = false; prompts.resetting = false;
+      const seq = ++promptsSeq;   // 钉住本次请求，切到别的模板后旧回包一律丢弃
+      try {
+        const d = await api('/api/assistant/prompts/' + encodeURIComponent(key));
+        if (seq !== promptsSeq) return;
+        prompts.detail = d;
+        // 编辑区以「当前生效正文」打底：自定义项是其覆盖，否则是内置默认。
+        prompts.editContent = d.effective || d.default || '';
+        const sv = {};
+        (d.vars || []).forEach(v => { sv[v] = '[示例:' + v + ']'; });
+        prompts.sampleVars = sv;
+      } catch (e) {
+        if (seq !== promptsSeq) return;
+        prompts.openKey = '';
+        toast(e.message || '读取模板详情失败', 'error');
+      } finally {
+        if (seq === promptsSeq) prompts.detailBusy = false;
+      }
+    }
+
+    // 点击变量 chip：在光标处插入 {{key}}，保持编辑焦点与合理光标位。
+    function insertPromptVar(v) {
+      const token = '{{' + v + '}}';
+      // textarea 在 v-for 内，Vue 3 会把字符串 ref 收集为数组；当前只展开一个，取第一个。
+      let ta = promptTA.value;
+      if (Array.isArray(ta)) ta = ta[0];
+      if (!ta) { prompts.editContent += token; return; }
+      const start = ta.selectionStart || 0, end = ta.selectionEnd || 0;
+      prompts.editContent = prompts.editContent.slice(0, start) + token + prompts.editContent.slice(end);
+      nextTick(() => { ta.focus(); const p = start + token.length; ta.setSelectionRange(p, p); });
+    }
+
+    async function savePrompt() {
+      const key = prompts.openKey;
+      if (!key || prompts.saving) return;
+      const bytes = byteLen(prompts.editContent);
+      if (bytes > PROMPT_MAX_BYTES) { toast('正文 ' + bytes + ' 字节，超过上限 ' + PROMPT_MAX_BYTES + ' 字节', 'error'); return; }
+      prompts.saving = true;
+      try {
+        const d = await api('/api/assistant/prompts/' + encodeURIComponent(key), { method: 'PUT', body: { content: prompts.editContent } });
+        prompts.detail = d; prompts.previewText = '';
+        toast('已保存自定义提示词，下次调用即生效');
+        loadPrompts();   // 刷新列表「已自定义」徽标
+      } catch (e) {
+        toast(e.message || '保存失败（占位符需完整且不含未知变量）', 'error');
+      } finally { prompts.saving = false; }
+    }
+
+    async function resetPrompt() {
+      const key = prompts.openKey;
+      if (!key || prompts.resetting) return;
+      prompts.resetting = true;
+      try {
+        const d = await api('/api/assistant/prompts/' + encodeURIComponent(key), { method: 'DELETE' });
+        prompts.detail = d; prompts.editContent = d.effective || d.default || ''; prompts.previewText = '';
+        toast('已恢复内置默认');
+        loadPrompts();
+      } catch (e) {
+        toast(e.message || '重置失败', 'error');
+      } finally { prompts.resetting = false; }
+    }
+
+    async function previewPrompt() {
+      const key = prompts.openKey;
+      if (!key || prompts.previewBusy) return;
+      prompts.previewBusy = true;
+      try {
+        // 试渲染用「编辑区当前正文」还是「已保存生效正文」？后端 preview 走的是已保存覆盖/默认。
+        // 为反映未保存的草稿，preview 只对已保存内容有意义；这里直接调后端渲染当前生效内容。
+        const out = await api('/api/assistant/prompts/' + encodeURIComponent(key) + '/preview', { method: 'POST', body: { vars: prompts.sampleVars } });
+        prompts.previewText = (out && out.prompt) || '';
+      } catch (e) {
+        toast(e.message || '预览失败', 'error');
+      } finally { prompts.previewBusy = false; }
+    }
+
     return {
       assist, styles, copyAssist, reviewDraft, analyzeReplies, rewriteReply, loadChanges, closeChanges,
       profileEditor, profileSaving, profileEditError, profileSchema, startProfileEdit, saveProfileEdit, addIntentRow,
@@ -3041,6 +3155,9 @@ createApp({
       delFollowup, scanFollowups, openFollowupModal, addFollowup,
       cal, calBusy, loadCalendarKey, rotateCalendarKey, clearCalendarKey, copyText,
       blessBusy, genBlessing,
+      // v5.2.0 分析插件（提示词模板）管理
+      prompts, promptTA, PROMPT_MAX_BYTES, byteLen, pmtToken,
+      loadPrompts, openPrompt, insertPromptVar, savePrompt, resetPrompt, previewPrompt,
       // v4.7.0 关系维护日历（自研月历网格）
       calGrid, calEvents, calMonthBusy, calWeekdayNames, calKindLabels,
       calCells, calMonthLabel, calMonthCount, loadCalEvents,
