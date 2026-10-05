@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// appVersion 程序版本号，/api/status 与日志使用
-const appVersion = "v5.5.2"
+// appVersion 程序版本号，/api/status 与日志使用。版本单一事实来源（其余 README/docker-compose 均以此为准）。
+const appVersion = "v6.0.0"
 
 // progStart 进程启动时刻（包初始化即记录，早于 main 里的扫码登录）
 var progStart = time.Now()

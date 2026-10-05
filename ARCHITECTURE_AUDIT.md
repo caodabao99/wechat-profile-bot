@@ -11,7 +11,7 @@
 | caodabao99/wechat-profile | Windows Desktop | v3.0.0 |
 | caodabao99/wechat-profile-bot | Go Server | v5.5.2（本次审计对象） |
 
-版本单一事实来源：[sysinfo.go](file:///home/caodabao/文档/qodercn/wechat-profile-bot/sysinfo.go) 的 `const appVersion`。当前 = `v5.5.2`。
+版本单一事实来源：[sysinfo.go](file:///home/caodabao/文档/qodercn/wechat-profile-bot/sysinfo.go) 的 `const appVersion`。本审计**基线** = `v5.5.2`；OS 2.0 升级已全部交付，`appVersion` 现 = **`v6.0.0`**（README/docker-compose 同步）。
 
 技术栈关键事实（约束后续 Phase）：
 - SQLite（`github.com/glebarez/go-sqlite` 纯 Go 驱动 → `CGO_ENABLED=0` 交叉编译成立）。直接第三方依赖仅此三件：go-sqlite、`go-resty/resty/v2`、`skip2/go-qrcode`。

@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
     # 本地构建产出的镜像版本号，与 go 源码 sysinfo.go 的 appVersion 保持一致。
     # 若是 docker load 导入了 Release 附带的镜像 tar，删掉上面的 build: 段即可，
-    # image 名与 tar 内一致（wechat-profile-bot:v5.5.2）。
-    image: wechat-profile-bot:v5.5.2
+    # image 名与 tar 内一致（wechat-profile-bot:v6.0.0）。
+    image: wechat-profile-bot:v6.0.0
     container_name: wechat-profile-bot
     restart: unless-stopped
     volumes:

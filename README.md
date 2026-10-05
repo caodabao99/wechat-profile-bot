@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.5.2.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.0.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.5.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.5.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.5.2.tar.gz`，得到 `wechat-profile-bot:v5.5.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.0.0.tar.gz`，得到 `wechat-profile-bot:v6.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,20 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.0.0（2026-10-05）
+
+本版为 **Personal Relationship OS 2.0**——把此前分散的 Profile / Facts / Evidence / Timeline / Metrics / Goals / Suggestions / Health / Topics 等能力整合为一条闭环链路：`原始消息 → 记忆 → 可信事实 → 关系状态 → 目标/项目 → 风险/机会 → 决策 → 行动 → 结果 → 学习 → 记忆更新`。全部遵循增量复用、不重写既有模块；确定性优先、LLM 缺席也能完整运行。
+
+- **Phase 3 · Relationship State Machine（`statemachine.go`）**：为每个联系人派生「基态 / 动态态 / 亲密度 / 趋势 / 预警」的关系状态快照，状态跃迁写历史（`relationship_state`/`relationship_state_history`，均为派生表：不 bump `user_version`、入 `derivedTables`、访问时缺则自愈重建）。只读端点 `GET /api/relationships/state`、`GET /api/contacts/{id}/state`。
+- **Phase 4 · Decision Engine（`decision.go`，本次核心）**：统一判断层，汇聚 State + Health + 待跟进 + 目标 + 重要日子 + 行动建议，以**确定性打分**（非 LLM 排序，`scoreDecision` 纯函数）产出「今天谁最值得投入时间、为什么、做什么」的 Top-N。端点 `GET /api/relationships/decisions/today`（别名 `GET /api/decision/today`）、`POST /api/decision/refresh`。每个候选带 `reason_codes`/`why_now`/`best_time`，可回答「为什么」。
+- **Phase 5 · Relationship Projects（`projects.go`/`projects_api.go`）**：目标之上的高层关系经营单元（阶段 discovery/building/…/closing、状态 active/paused/completed/cancelled、下一步行动与到期）。懒建持久表 `relationship_projects`（用户创建的 core 表：**入备份、不入 `derivedTables`、含 `contact_id` 级联清理**）。CRUD 端点 `GET/POST /api/relationships/projects`、`.../projects/{pid}`（PATCH/PUT/DELETE），联系人作用域别名 `GET/POST /api/contacts/{id}/projects`。
+- **Phase 6 · AI Context Engine（`context.go`）**：统一分层上下文构造器 `BuildContactContext`，按任务（Ask/Coach/Simulation/Decision…）施加差异化 token/消息预算，逐块自锁取数、任一缺失优雅降级、绝不全量历史。只读端点 `GET /api/contacts/{id}/context?task=&q=`（含 `rendered` 提示词文本，供可观测调试）。
+- **Phase 7 · Memory Replay（`replay.go`，「重新认识 TA」）**：确定性拼装 12 段关系回放（首遇 / 阶段 / 转折 / 兴趣 / 职业 / 升温降温 / 共享事件 / 主题 / 当前状态 / 当前焦点 / 目标 / 未完成），**每条结论都带来源证据**、不依赖 LLM。端点 `GET /api/contacts/{id}/replay`（返回结构化 `replay` + `rendered`）。
+- **Phase 8 · Desktop/Web 集成（`static/`）**：联系人详情头部展示关系状态 chip 与「重新认识 TA」回放弹层；联系人列表顶部新增「今天值得做」决策卡（确定性 Top-3，点名字直达）。纯 Vue3 + `go:embed` + CSS，零第三方依赖。
+- **Phase 9 · 全量回归（`phase9_regression_test.go`）**：锁定删除/合并/备份恢复对新表的正确性——合并须把用户创建的 `relationship_goals`/`relationship_projects` 一并迁至目标且撤销精确还原（`merge.go` 补齐）、删除级联清理新表、核心用户表随备份往返而派生 `relationship_state` 不入备份、registry 元数据防漂移。
+- **Phase 10 · 性能基准（`pagination_bench_test.go`）**：深分页 OFFSET vs keyset 游标对比 Benchmark + 确定性结果等价验收，验证 keyset 不随页深退化。
+- **治理与测试**：数据层登记表 / 备份派生清单 / 联系人级联清理三处对每张新表保持同步；LLM 双重降级永不 503；`-race -cover` 全绿，覆盖率保持 ~69%，linux/amd64、linux/arm64、windows/amd64（`CGO_ENABLED=0`）交叉编译通过。配套桌面端 Web 对接轻量升级为 **Desktop v3.1.0**（独立仓库 caodabao99/wechat-profile）。
 
 ### v5.5.2（2026-10-05）
 
