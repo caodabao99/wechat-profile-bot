@@ -169,6 +169,13 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"单联系人时机", "GET", "/api/contacts/" + cid + "/timing", "", true, true},
 		{"单联系人主题历史", "GET", "/api/contacts/" + cid + "/topics", "", true, true},
 
+		// —— v5.4.0 新增确定性端点（零 LLM，必须 2xx 且可解析 JSON）——
+		{"消息密度热力图", "GET", "/api/contacts/" + cid + "/heatmap", "", true, true},
+		{"互动节奏分析", "GET", "/api/contacts/" + cid + "/rhythm", "", true, true},
+		{"对话风格镜像", "GET", "/api/contacts/" + cid + "/mirror", "", true, true},
+		{"标签冲突检测", "GET", "/api/assistant/tags/conflicts", "", true, true},
+		{"数据健康自检", "GET", "/api/system/data-report", "", true, true},
+
 		// —— 依赖 LLM / 副作用：仅要求路由命中(非 404) 且不崩溃 ——
 		{"改写(需LLM)", "POST", "/api/contacts/" + cid + "/rewrite", `{}`, false, false},
 		{"草稿检查(需LLM)", "POST", "/api/contacts/" + cid + "/review-draft", `{}`, false, false},
@@ -295,6 +302,71 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		}
 		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 14 {
 			t.Errorf("[提示词模板] items/total 应齐备且为 14 项: %s", truncate(body))
+		}
+	}
+
+	// v5.4.0 #2：/api/contacts/{id}/heatmap 须返回 {year,days,max,total}。
+	if code, body, err := do("GET", "/api/contacts/"+cid+"/heatmap", ""); err != nil {
+		t.Errorf("[热力图] /heatmap 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[热力图] /heatmap → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"year"`, `"days"`, `"max"`, `"total"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[热力图] /heatmap 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+	}
+
+	// v5.4.0 #3：/api/contacts/{id}/rhythm 须返回 {replyMedianMin,fastRatio,signature,bestHours,sample,note}。
+	if code, body, err := do("GET", "/api/contacts/"+cid+"/rhythm", ""); err != nil {
+		t.Errorf("[互动节奏] /rhythm 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[互动节奏] /rhythm → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"replyMedianMin"`, `"fastRatio"`, `"signature"`, `"bestHours"`, `"sample"`, `"note"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[互动节奏] /rhythm 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+	}
+
+	// v5.4.0 #5：/api/contacts/{id}/mirror 须返回 {dimensions,traits,note}。
+	if code, body, err := do("GET", "/api/contacts/"+cid+"/mirror", ""); err != nil {
+		t.Errorf("[风格镜像] /mirror 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[风格镜像] /mirror → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"dimensions"`, `"traits"`, `"note"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[风格镜像] /mirror 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+	}
+
+	// v5.4.0 #4：/api/assistant/tags/conflicts 须返回 {conflicts,total,note}。
+	if code, body, err := do("GET", "/api/assistant/tags/conflicts", ""); err != nil {
+		t.Errorf("[标签冲突] /tags/conflicts 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[标签冲突] /tags/conflicts → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"conflicts"`, `"total"`, `"note"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[标签冲突] /tags/conflicts 响应缺 %s 键: %s", k, truncate(body))
+			}
+		}
+	}
+
+	// v5.4.0 #9：/api/system/data-report 须返回核心健康指标键。
+	if code, body, err := do("GET", "/api/system/data-report", ""); err != nil {
+		t.Errorf("[数据自检] /system/data-report 崩溃: %v", err)
+	} else if code < 200 || code >= 300 {
+		t.Errorf("[数据自检] /system/data-report → %d: %s", code, truncate(body))
+	} else {
+		for _, k := range []string{`"dbSizeBytes"`, `"messagesTotal"`, `"contactsTotal"`, `"profileCoverage"`, `"cacheTables"`} {
+			if !strings.Contains(body, k) {
+				t.Errorf("[数据自检] /system/data-report 响应缺 %s 键: %s", k, truncate(body))
+			}
 		}
 	}
 }

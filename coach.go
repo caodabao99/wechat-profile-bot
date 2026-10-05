@@ -25,6 +25,11 @@ const (
 	coachTimingWindowDay = 180 // 时机统计窗口
 	coachTopHours        = 2   // 展示前几个最佳时段
 	coachTopWeekdays     = 1   // 展示前几个最佳星期
+
+	// v5.4.0 #3 互动节奏：秒回阈值（≤ 该分钟数视为秒回）与节奏签名阈值。
+	coachFastReplyMin = 5    // 回复间隔 ≤ 5 分钟计为「秒回」
+	coachNightRatio   = 0.3  // 深夜(23-4点)互动占比 ≥ 此值 → 深夜聊友
+	coachMorningRatio = 0.35 // 早安(5-11点)互动占比 ≥ 此值 → 早安伙伴
 )
 
 // ContactTiming 单联系人时机建议。
@@ -237,4 +242,207 @@ func (s *apiServer) hContactTiming(w http.ResponseWriter, r *http.Request, id in
 		return
 	}
 	writeJSON(w, http.StatusOK, computeContactTiming(s.db, id, time.Now()))
+}
+
+// ---- v5.4.0 #3 互动节奏分析（纯确定性统计，复用 hourWeekdayHist/selectTopK）----
+
+// RhythmResponse 单联系人的互动节奏画像。
+type RhythmResponse struct {
+	ContactID      int64    `json:"contactId"`
+	ReplyMedianMin int      `json:"replyMedianMin"` // 我方回复对方的间隔中位数（分钟）
+	FastRatio      float64  `json:"fastRatio"`      // 秒回率 0-100
+	Signature      string   `json:"signature"`      // 深夜聊友/早安伙伴/日间型
+	BestHours      []int    `json:"bestHours"`
+	BestWeekdays   []string `json:"bestWeekdays"`
+	Sample         int      `json:"sample"` // 对方发言样本数
+	Note           string   `json:"note"`
+}
+
+// latencyStats 纯函数：由「(对方发言时刻, 我方紧随回复时刻)」unix 对序列，
+// 算出回复间隔中位数（分钟）与秒回率（≤ coachFastReplyMin 分钟的占比，0-100）。确定性、可脱库单测。
+func latencyStats(pairs [][2]int64) (medianMin int, fastRatio float64) {
+	mins := make([]float64, 0, len(pairs))
+	fast := 0
+	for _, p := range pairs {
+		m := float64(p[1]-p[0]) / 60.0
+		if m < 0 {
+			continue
+		}
+		mins = append(mins, m)
+		if m <= float64(coachFastReplyMin) {
+			fast++
+		}
+	}
+	if len(mins) == 0 {
+		return 0, 0
+	}
+	sort.Float64s(mins)
+	mid := len(mins) / 2
+	var med float64
+	if len(mins)%2 == 1 {
+		med = mins[mid]
+	} else {
+		med = (mins[mid-1] + mins[mid]) / 2.0
+	}
+	return int(med + 0.5), float64(fast) / float64(len(mins)) * 100
+}
+
+// timeSignature 纯函数：按小时活跃直方给出作息签名（固定阈值、确定性）。
+func timeSignature(hourCounts []int) string {
+	total := 0
+	for _, c := range hourCounts {
+		total += c
+	}
+	if total <= 0 {
+		return ""
+	}
+	night, morning := 0, 0
+	for h, c := range hourCounts {
+		if h >= 23 || h <= 4 { // 深夜 23-4
+			night += c
+		}
+		if h >= 5 && h <= 11 { // 早安 5-11
+			morning += c
+		}
+	}
+	if float64(night)/float64(total) >= coachNightRatio {
+		return "深夜聊友"
+	}
+	if float64(morning)/float64(total) >= coachMorningRatio {
+		return "早安伙伴"
+	}
+	return "日间型"
+}
+
+// collectReplyLatencies 一趟锁内按时间正序取「对方/我方」发言时刻，配对「对方发言→我方紧随回复」。
+// 多条对方消息堆积时以最早未回者为起点（确定性）。
+func collectReplyLatencies(db *sql.DB, contactID int64, now time.Time) [][2]int64 {
+	since := now.AddDate(0, 0, -coachTimingWindowDay).Format(time.RFC3339)
+	type ev struct {
+		sender string
+		unix   int64
+	}
+	var evs []ev
+	dbMu.Lock()
+	var q string
+	var args []interface{}
+	if tableExistsLocked(db, "messages_archive") {
+		q = `SELECT sender, msg_unix FROM (
+			SELECT sender, msg_unix FROM messages WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
+			UNION ALL
+			SELECT sender, msg_unix FROM messages_archive WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
+		) ORDER BY msg_unix ASC, sender ASC`
+		args = []interface{}{contactID, since, contactID, since}
+	} else {
+		q = `SELECT sender, msg_unix FROM messages
+			WHERE contact_id=? AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER) ORDER BY msg_unix ASC, sender ASC`
+		args = []interface{}{contactID, since}
+	}
+	if r, err := db.Query(q, args...); err == nil {
+		for r.Next() {
+			var sender string
+			var unix sql.NullInt64
+			if r.Scan(&sender, &unix) == nil {
+				evs = append(evs, ev{sender: sender, unix: unix.Int64})
+			}
+		}
+		r.Close()
+	}
+	dbMu.Unlock()
+
+	var pairs [][2]int64
+	var pending int64
+	for _, e := range evs {
+		switch e.sender {
+		case "other":
+			if pending == 0 {
+				pending = e.unix
+			}
+		case "me":
+			if pending > 0 {
+				pairs = append(pairs, [2]int64{pending, e.unix})
+				pending = 0
+			}
+		}
+	}
+	return pairs
+}
+
+// computeContactRhythm 编排互动节奏画像：延迟统计 + 复用时段直方。
+func computeContactRhythm(db *sql.DB, contactID int64, now time.Time) *RhythmResponse {
+	resp := &RhythmResponse{ContactID: contactID, BestHours: []int{}, BestWeekdays: []string{}}
+	// 时段/星期直方与时机建议同源：直接复用 computeContactTiming（内部自锁、顺序调用不嵌套）。
+	if t := computeContactTiming(db, contactID, now); t != nil {
+		resp.BestHours = t.BestHours
+		resp.BestWeekdays = t.BestWeekdays
+		resp.Sample = t.Sample
+	}
+	lat := collectReplyLatencies(db, contactID, now)
+	med, fast := latencyStats(lat)
+	resp.ReplyMedianMin = med
+	resp.FastRatio = fast
+
+	// 签名基于「对方发言」小时分布重新聚合（与样本同源）。
+	sig := signatureFromQuery(db, contactID, now)
+	resp.Signature = sig
+
+	switch {
+	case resp.Sample < coachMinSamples && len(lat) == 0:
+		resp.Note = "互动样本不足，暂无可靠节奏画像。"
+	case med > 0:
+		if fast >= 50 {
+			resp.Note = "你们多是秒回（中位 " + strconv.Itoa(med) + " 分钟），节奏很合拍。"
+		} else {
+			resp.Note = "你回复 TA 的中位间隔约 " + strconv.Itoa(med) + " 分钟。"
+		}
+	}
+	return resp
+}
+
+// signatureFromQuery 一趟锁内取「对方发言」小时直方并给签名（复用 hourWeekdayHist）。
+func signatureFromQuery(db *sql.DB, contactID int64, now time.Time) string {
+	since := now.AddDate(0, 0, -coachTimingWindowDay).Format(time.RFC3339)
+	var pairs [][2]int
+	dbMu.Lock()
+	var q string
+	var args []interface{}
+	if tableExistsLocked(db, "messages_archive") {
+		q = `SELECT h, w FROM (
+			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
+			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
+			UNION ALL
+			SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) h, CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER) w
+			FROM messages_archive WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)
+		)`
+		args = []interface{}{contactID, since, contactID, since}
+	} else {
+		q = `SELECT CAST(strftime('%H', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER), CAST(strftime('%w', datetime(msg_unix,'unixepoch','localtime')) AS INTEGER)
+			FROM messages WHERE contact_id=? AND sender='other' AND msg_unix>0 AND msg_unix >= CAST(strftime('%s', ?) AS INTEGER)`
+		args = []interface{}{contactID, since}
+	}
+	if r, err := db.Query(q, args...); err == nil {
+		for r.Next() {
+			var h, w sql.NullInt64
+			if r.Scan(&h, &w) == nil {
+				pairs = append(pairs, [2]int{int(h.Int64), int(w.Int64)})
+			}
+		}
+		r.Close()
+	}
+	dbMu.Unlock()
+	hourCounts, _ := hourWeekdayHist(pairs)
+	return timeSignature(hourCounts)
+}
+
+// hContactRhythm GET /api/contacts/{id}/rhythm：单联系人互动节奏画像。
+func (s *apiServer) hContactRhythm(w http.ResponseWriter, r *http.Request, id int64) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	if _, err := GetContactByID(s.db, id); err != nil {
+		writeErr(w, http.StatusNotFound, "联系人不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, computeContactRhythm(s.db, id, time.Now()))
 }

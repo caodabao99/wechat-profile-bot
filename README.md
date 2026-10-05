@@ -40,6 +40,13 @@
 - **主动关系教练**（v5.3.0，关系助手页）：新增只读端点 `GET /api/assistant/coach` 与 `GET /api/contacts/{id}/timing`。教练卡片只读装配既有周计划的 Top 目标，每条附「为何联系（理由）+ 说什么（复用已有 draft 话术、可复制）+ 什么时候发（时机建议）」；时机为**净新增维度**——从对方历史发言的 `messages(∪archive)` 时间戳聚成小时×周几直方，算出最佳时段/星期，样本不足 8 条时诚实返回「数据不足、建议常规时段」。零新模型调用（draft 有则用、无则留空 + note）；`hourWeekdayHist` 为可脱库单测纯函数。前端助手页新面板。零第三方库。
 - **关系维护挑战 / 游戏化**（v5.3.0，关系助手页）：新增只读端点 `GET /api/assistant/challenges`，每周从「久未联系 / 待回复 / 核心圈」确定性挑最多 3 条小目标（按 ISO 周幂等入库、跨周不重复刷），你照常发消息、系统按本周新增互动自动判定达成并累加 XP（等级 = 1 + ⌊xp/100⌋），首次达成写一条 `kind="milestone"` 事件与 v5.2.1 成就徽章联动。两张新持久表 `weekly_challenges`/`gamification_state`（懒建表、不 bump user_version）作为用户数据自动纳入备份恢复。前端助手页新面板（周挑战清单 + 本周进度条 + XP 经验条 + 等级）。纯本地确定性、不调模型。零第三方库。
 - **消息主题演化追踪**（v5.3.0，洞察页）：新增 `GET /api/contacts/{id}/topics`（只读历史）与 `POST /api/contacts/{id}/topics/analyze`（手动触发），并挂入助手周一调度自动刷新。对活跃联系人按周让模型聚类聊天主题，产 `{topics:[{name,weight,status:emergent/persistent/fading}]}` 写入持久表 `contact_topic_history`（每联系人裁剪近 104 周）；前端洞察页新子标签展示联系人×主题演化表（chips 带 ↑涌现/→持续/↓消退）。为唯一新增 LLM 功能，仅当已配模型且开启高阶洞察时才跑（否则返回空 + note、不 500、绝不编造）；坏 JSON 回退上周快照；本周周锁防并发/重跑。新增第 14 个提示词模板 `topic_evolution`（13→14）。
+- **关系断点预警**（v5.4.0，洞察页健康仪表盘）：复用 `ComputeHealth` 已算好的近30天/前30天互动量与沉默天数，`projectCooling`（可脱库单测纯函数）由衰减斜率前瞻预测「预计多少天进入沉寂」，分级 `none/watching/urgent`。`GET /api/relationships/health` 响应**向后兼容**新增 `items[].alert`/`etaDays` + `summary.alertCount` + `alerts`（仅正在降温的关系子集，按紧急度排序）；前端新子视图抢在断联前提醒你主动联系。零新端点、零模型、不落库。
+- **消息密度热力图**（v5.4.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/heatmap?year=YYYY`，按自然日聚合 `relationship_daily_metrics` 的 `me_count+other_count`（该联系人指标为空但有消息时沿用自愈重建），返回 `{year,days,max,total}`；前端以 GitHub 贡献图式 53×7 SVG 网格按日着色、hover 显日期+条数，一眼看穿关系的季节变化。纯 SQL、计算即读、不新增表。
+- **互动节奏分析**（v5.4.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/rhythm`，`latencyStats`（回复间隔中位数+秒回率）与 `timeSignature`（深夜聊友/早安伙伴/日间型）为可脱库单测纯函数，复用 `computeContactTiming` 的小时/周一直方口径，返回 `{replyMedianMin,fastRatio,signature,bestHours,bestWeekdays,sample,note}`。前端「互动节奏」卡呈现节奏画像 + 时段签名。纯本地统计、零模型。
+- **标签冲突检测**（v5.4.0，标签管理）：新增只读端点 `GET /api/assistant/tags/conflicts`，`detectTagConflicts`（可脱库单测纯函数）按内置互斥标签组（亲密×疏远、家人×职场）检测同一联系人身上的矛盾标签，返回冲突清单（空则 note「标签体系自洽」）；前端标签管理弹层新增冲突面板、一键跳联系人消歧。一趟锁读已挂标签、只读不写库、零模型。
+- **对话风格镜像**（v5.4.0，联系人驾驶舱）：新增只读端点 `GET /api/contacts/{id}/mirror`，`lexicalRichness`/`avgLen`/`markerShare`/`emojiShare` 等纯函数按 rune 统计你发给某联系人的消息，并与你的全局均值对比，产「你在 TA 面前的样子」标签（话痨型/简洁型/表情党/问询型/热情型…）；前端「风格镜像」卡以维度条 + delta 徽标呈现。零第三方依赖、纯本地文本统计、不新增表。
+- **关系能量流桑基图**（v5.4.0，洞察页新子标签「能量流」）：纯前端手绘 SVG 桑基——「我」→ 四层圈带 → 每层 Top-N 联系人，连线宽度∝亲密度 score、节点按圈层/score 确定性排序（无随机数），数据源直接复用 `GET /api/relationships/circles`。零后端改动、零第三方库、点叶子直达联系人。
+- **数据健康自检报告**（v5.4.0，状态页）：新增只读端点 `GET /api/system/data-report`，一趟锁纯 SQL 聚合 DB 体积 / 消息总数与近30天增速 / 联系人·画像·标签·时间线计数与覆盖率 / 各派生缓存表行数与存在性 / 最近成功备份，前端「数据健康自检」面板以指标卡 + 覆盖率条呈现。纯本地只读、不新增表、不调模型。
 - **智能联系人自动分组**（v5.0.0，标签管理）：新增只读端点 `GET /api/assistant/tags/suggest?ids=1,2,3`，基于联系人画像（地域/职业/兴趣）与互动指标（亲密度分层、情绪告警、往来待跟进）用**确定性规则**批量产标签建议（含命中理由与置信度），前端一键/勾选批量采纳经 `POST /api/assistant/tags/apply` 走 `CreateTag`（幂等）+ `INSERT OR IGNORE` 落库。全程本地计算、不调模型、结果可复现（同数据同参跑两次逐字段相等）；情绪/待跟进为增值表，缺失则静默跳过对应规则不报错。零第三方库、采纳幂等（重复采纳不产生重复链接）。
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
@@ -58,7 +65,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.3.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v5.4.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -75,7 +82,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.3.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v5.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -293,7 +300,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.3.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.3.0.tar.gz`，得到 `wechat-profile-bot:v5.3.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v5.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v5.4.0.tar.gz`，得到 `wechat-profile-bot:v5.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -529,6 +536,11 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/assistant/challenges` | 维护挑战 / 游戏化（v5.3.0）：本周挑战清单 + 达成进度 + 累计 XP/等级 + 徽章数；首次生成幂等入库、读时按本周新增互动自动判定达成；纯确定性、不调模型 |
 | GET | `/api/contacts/{id}/topics?weeks=26` | 消息主题演化历史（v5.3.0）：只读某联系人按周的主题快照（涌现/持续/消退），未配模型/无历史时返回空 + note、不 500 |
 | POST | `/api/contacts/{id}/topics/analyze` | 手动触发某联系人本周主题演化聚类（v5.3.0，调模型）；未配模型 503；写入当周 `contact_topic_history`（幂等覆盖） |
+| GET | `/api/contacts/{id}/heatmap?year=YYYY` | 消息密度热力图（v5.4.0）：按自然日聚合某联系人全年 `me_count+other_count`；返回 `{year,days,max,total}`；纯 SQL 计算即读、不调模型 |
+| GET | `/api/contacts/{id}/rhythm` | 互动节奏分析（v5.4.0）：回复间隔中位数 + 秒回率 + 时段签名（深夜/早安/日间）+ 最佳时段/星期；返回 `{replyMedianMin,fastRatio,signature,bestHours,bestWeekdays,sample,note}`；纯本地、不调模型 |
+| GET | `/api/contacts/{id}/mirror` | 对话风格镜像（v5.4.0）：统计你发给某联系人的句长/用词丰富度/表情/提问/感叹，与其全局均值对比；返回 `{dimensions,traits,note}`；纯本地文本统计、不调模型 |
+| GET | `/api/assistant/tags/conflicts` | 标签冲突检测（v5.4.0）：按内置互斥标签组报出同一联系人身上的矛盾标签；返回 `{conflicts,total,note}`；只读不写库、零模型 |
+| GET | `/api/system/data-report` | 数据健康自检（v5.4.0）：DB 体积/消息增速/画像·标签·时间线覆盖率/各派生缓存表行数/最近备份；返回 `{dbSizeBytes,messagesTotal,profileCoverage,cacheTables,...}`；纯本地只读、不调模型 |
 | GET | `/api/assistant/tags/suggest?ids=1,2,3` | 智能标签建议（ids 缺省=全部活跃联系人，带上限护栏），返回 `{suggestions:[{contactId,name,tagName,reason,confidence}],total}`；纯本地确定性、不调模型 |
 | POST | `/api/assistant/tags/apply` | 批量采纳标签建议，body `{"items":[{contactId,tagName}]}`，走 `CreateTag`幂等 + `INSERT OR IGNORE`，返回 `{affected}`；重复采纳不产生重复链接 |
 | GET | `/api/assistant/prompts` | 提示词模板列表，返回 `{items:[{key,title,feature,vars,isCustom,updatedAt}],total}`（共 14 个） |
@@ -609,6 +621,19 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v5.4.0（2026-10-05）
+
+七项零 LLM 确定性新功能（均为增量复用、计算即读不落库、可脱库单测、前端手写 SVG 零第三方库）：
+
+- **关系断点预警**（`health.go`）：`projectCooling`/`alertRank` 纯函数由近30天/前30天斜率 + 沉默天数前瞻预测「预计多少天进入沉寂」（`healthDormantHorizon=30`），分级 `none/watching/urgent`。`HealthItem` 新增 `alert`/`etaDays`，`HealthSummary` 新增 `alertCount`，`HealthDashboard` 新增 `alerts` 子集（按紧急度排序）；`GET /api/relationships/health` 响应向后兼容纯增量。前端健康面板新增「断点预警」子视图。
+- **消息密度热力图**（`heatmap.go`，新建）：`buildHeatmap` 一趟锁内自愈重建 + 全年按日聚合 `relationship_daily_metrics`。新增 `GET /api/contacts/{id}/heatmap?year=YYYY`（`routeContact` 加 `case "heatmap"`）。前端驾驶舱新增 GitHub 贡献图式 53×7 SVG 网格（`heatmapGrid` computed 纯前端算格位）。
+- **互动节奏分析**（`coach.go`）：`latencyStats`（回复间隔中位数+秒回率）/`timeSignature`（深夜聊友/早安伙伴/日间型，固定阈值）/`collectReplyLatencies`/`computeContactRhythm`。新增 `GET /api/contacts/{id}/rhythm`。前端驾驶舱新增「互动节奏」卡。
+- **标签冲突检测**（`tagsuggest.go`/`tagsuggest_api.go`）：`tagConflictPairs` 互斥组常量 + `matchTagGroup`/`detectTagConflicts`（确定性、按 contactId 升序）/`collectAppliedTagsByContact`。新增 `GET /api/assistant/tags/conflicts`。前端标签管理弹层新增冲突面板。
+- **对话风格镜像**（`mirror.go`，新建）：`lexicalRichness`/`avgLen`/`markerShare`/`emojiShare`/`mirrorDelta`/`mirrorTraits`（均按 rune 迭代、零依赖）/`loadMeTexts`/`buildMirror`。新增 `GET /api/contacts/{id}/mirror`。前端驾驶舱新增「风格镜像」卡（维度条 + 对比 delta）。
+- **关系能量流桑基图**（纯前端、零后端改动）：`app.js` 新增 `flowSankey` computed（手绘 SVG 桑基，确定性布局：「我」→四层圈带→每层 Top-N 联系人，连线宽度∝score）与洞察页「能量流」子标签（复用 `loadCircles`）。
+- **数据健康自检报告**（`datareport.go`，新建）：`buildDataReport` 一趟锁聚合 DB 体积/消息增速/画像覆盖率/各派生缓存表行数/最近备份；`api.go` 顶层新增 `routeSystem`→`GET /api/system/data-report`。前端状态页新增「数据健康自检」面板。
+- **测试与门禁**：新增 `v54_features_test.go`（projectCooling/latencyStats/timeSignature/detectTagConflicts/lexicalRichness/avgLen/markerShare/emojiShare/mirrorDelta/mirrorTraits 纯函数边界与确定性）；`feature_sweep_test.go` 新增 5 个确定性端点用例（heatmap/rhythm/mirror/tags-conflicts/data-report）+ 响应键完整性断言。`go test -race -cover` 全绿。
 
 ### v5.3.0（2026-10-05）
 

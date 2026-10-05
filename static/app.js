@@ -1494,6 +1494,19 @@ createApp({
       } catch (e) { toast(e.message || '批量采纳失败', 'error'); }
       finally { suggest.busy = false; }
     }
+    // ---------- v5.4.0 #4 标签冲突检测（确定性互斥组，只读不写库） ----------
+    const conflicts = reactive({ items: [], note: '', busy: false, failed: false, error: '', loaded: false });
+    async function loadTagConflicts() {
+      conflicts.busy = true; conflicts.failed = false; conflicts.error = '';
+      try {
+        const out = await api('/api/assistant/tags/conflicts');
+        conflicts.items = (out && out.conflicts) || [];
+        conflicts.note = (out && out.note) || '';
+        conflicts.loaded = true;
+      } catch (e) {
+        conflicts.failed = true; conflicts.error = e.message || '冲突检测失败'; conflicts.items = [];
+      } finally { conflicts.busy = false; }
+    }
     function toggleFilterTag(id) {
       const i = filterTagIds.value.indexOf(id);
       if (i >= 0) filterTagIds.value.splice(i, 1); else filterTagIds.value.push(id);
@@ -1568,7 +1581,7 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('briefing');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false, health: false, circles: false, topics: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false, health: false, circles: false, topics: false, flow: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1585,6 +1598,8 @@ createApp({
       if (tab === 'learning' && !insightLoaded.learning) { insightLoaded.learning = true; loadIntervention(); }
       if (tab === 'health' && !insightLoaded.health) { insightLoaded.health = true; loadHealth(); }
       if (tab === 'circles' && !insightLoaded.circles) { insightLoaded.circles = true; loadCircles(); }
+      // 能量流桑基图：纯前端，数据复用圈层；首次进入若圈层未加载则顺带拉一次。
+      if (tab === 'flow' && !insightLoaded.flow) { insightLoaded.flow = true; if (!circles.tiers || !circles.tiers.length) loadCircles(); }
       // 主题演化：读路径只读某联系人历史；首次进入默认选列表首位（若有）并拉取。
       if (tab === 'topics') {
         insightLoaded.topics = true;
@@ -1779,7 +1794,7 @@ createApp({
     }
 
     // ---------- v5.3.0 #7 关系健康度仪表盘（确定性只读、零 LLM） ----------
-    const health = reactive({ generatedAt: '', windowDays: 90, summary: { avg: 0, total: 0, truncated: false, bands: [] }, items: [] });
+    const health = reactive({ generatedAt: '', windowDays: 90, summary: { avg: 0, total: 0, truncated: false, bands: [], alertCount: 0 }, items: [], alerts: [] });
     const healthBusy = ref(false);
     async function loadHealth() {
       if (healthBusy.value) return;
@@ -1788,11 +1803,16 @@ createApp({
         const data = await api('/api/relationships/health?window=90');
         health.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
         health.windowDays = data.windowDays || 90;
-        health.summary = data.summary || { avg: 0, total: 0, truncated: false, bands: [] };
+        health.summary = data.summary || { avg: 0, total: 0, truncated: false, bands: [], alertCount: 0 };
         health.items = data.items || [];
+        health.alerts = data.alerts || [];
       } catch (e) { toast(e.message, 'error'); }
       finally { healthBusy.value = false; }
     }
+    // v5.4.0 #1 关系断点预警：前瞻分级文案/样式（none/watching/urgent），纯前端映射。
+    function alertLabel(level) { return level === 'urgent' ? '即将断联' : (level === 'watching' ? '降温观察' : ''); }
+    function alertCls(level) { return level === 'urgent' ? 'st-bad' : (level === 'watching' ? 'st-warn' : 'st-gray'); }
+    function etaText(n) { if (n == null) return ''; if (n <= 0) return '已沉寂'; return '预计 ' + n + ' 天后沉寂'; }
     // 健康分→绿红（hue 0~120）；纯内联 style，零第三方依赖。
     function healthColor(h) {
       const v = Math.max(0, Math.min(100, Number(h) || 0));
@@ -1834,6 +1854,54 @@ createApp({
     function circleMembers(tier) { return (circles.members || []).filter(m => m.tier === tier); }
     const circleTierClass = { core: 'ct-core', intimate: 'ct-intimate', social: 'ct-social', weak: 'ct-weak' };
     function circleTierClassOf(key) { return circleTierClass[key] || 'ct-weak'; }
+
+    // ---------- v5.4.0 #8 关系能量流桑基图（纯前端、零后端、手写 SVG、确定性布局） ----------
+    // 数据源复用 GET /api/relationships/circles；左「我」→ 四层圈带 → 每层 Top-N 联系人。
+    // 连线宽度∝亲密度 score；纵向按圈层分组、层内按 score 降序（同分按 contactId 升序）固定排序，无随机。
+    function flowLinkPath(x1, y1, x2, y2) {
+      const mx = (x1 + x2) / 2;
+      return 'M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2;
+    }
+    const FLOW_W = 860;
+    const FLOW_COLORS = { 'ct-core': 'var(--accent)', 'ct-intimate': '#0ea5e9', 'ct-social': 'var(--warn)', 'ct-weak': 'var(--muted)' };
+    function flowColor(cls) { return FLOW_COLORS[cls] || 'var(--muted)'; }
+    const flowSankey = computed(() => {
+      const tiers = circles.tiers || [];
+      if (!tiers.length) return null;
+      const TOPN = 8, NODE_H = 15, LEAF_GAP = 7, TIER_GAP = 26, PAD_TOP = 22;
+      const xMe = 46, xTier = 380, xLeaf = 690;
+      const groups = tiers.map(tr => {
+        const mem = circleMembers(tr.key).slice()
+          .sort((a, b) => (b.score - a.score) || (a.contactId - b.contactId)).slice(0, TOPN);
+        const total = mem.reduce((s, m) => s + (m.score || 0), 0);
+        return { tr, mem, total };
+      }).filter(g => g.mem.length);
+      if (!groups.length) return null;
+      let y = PAD_TOP;
+      const leaves = [], tierNodes = [];
+      groups.forEach((g, gi) => {
+        const start = y;
+        g.mem.forEach(m => {
+          leaves.push({ cid: m.contactId, name: m.name, score: m.score || 0, gi, gTotal: g.total,
+            cls: circleTierClassOf(g.tr.key), cy: y + NODE_H / 2 });
+          y += NODE_H + LEAF_GAP;
+        });
+        const end = y - LEAF_GAP;
+        tierNodes.push({ gi, key: g.tr.key, label: g.tr.label, count: g.mem.length, total: g.total,
+          cls: circleTierClassOf(g.tr.key), color: flowColor(circleTierClassOf(g.tr.key)),
+          top: start, bot: end + NODE_H, cy: (start + end) / 2 });
+        y = end + TIER_GAP;
+      });
+      const H = y + 4;
+      const grandTotal = tierNodes.reduce((s, t) => s + t.total, 0) || 1;
+      const meCy = (PAD_TOP + (y - TIER_GAP)) / 2;
+      const tierLink = tierNodes.map(t => ({ key: 'me-' + t.key, cls: t.cls, color: flowColor(t.cls),
+        d: flowLinkPath(xMe, meCy, xTier, t.cy), w: 3 + (t.total / grandTotal) * 34 }));
+      const leafLink = leaves.map(l => ({ key: 'lf-' + l.cid, cls: l.cls, color: flowColor(l.cls),
+        d: flowLinkPath(xTier, tierNodes[l.gi].cy, xLeaf, l.cy), w: 1 + (l.score / (l.gTotal || 1)) * 15 }));
+      return { W: FLOW_W, H, xMe, xTier, xLeaf, meCy, NODE_H, tierNodes, leaves, tierLink, leafLink };
+    });
+    function flowGoto(cid) { if (cid) gotoDetail(cid); }
 
     // ---------- v5.3.0 #10 主题演化（按联系人读历史、读路径不调模型） ----------
     const topics = reactive({ contactId: 0, name: '', weeks: [], note: '' });
@@ -2556,6 +2624,12 @@ createApp({
       achievements: null, achBusy: false,
       // v4.9.0 智能回顾摘要（LLM，同 ask 风格降级：未配模型 503 不编造）
       summaryDays: 30, summaryBusy: false, summaryResult: null, summaryFailed: false, summaryError: '',
+      // v5.4.0 #2 消息密度热力图（全年 53×7 SVG 网格，纯本地 SQL）
+      heatmap: null, hmBusy: false, hmFailed: false, hmError: '', hmYear: new Date().getFullYear(),
+      // v5.4.0 #3 互动节奏分析（回复延迟中位数/秒回率/时段签名）
+      rhythm: null, rhBusy: false, rhFailed: false, rhError: '',
+      // v5.4.0 #5 对话风格镜像（你在 TA 面前的样子，纯本地文本统计）
+      mirror: null, miBusy: false, miFailed: false, miError: '',
     });
     const ckTrendMeta = {
       warming: { label: '关系升温', cls: 'st-ok' },
@@ -2577,6 +2651,9 @@ createApp({
       loadSuggestions();
       loadQuality();
       loadAchievements();
+      loadHeatmap();
+      loadRhythm();
+      loadMirror();
     }
     async function loadFacts(force) {
       const my = detailSeq;
@@ -2737,6 +2814,9 @@ createApp({
       ck.askQ = ''; ck.askBusy = false; ck.askResult = null; ck.askFailed = false; ck.askError = '';
       ck.quality = null; ck.qualityBusy = false; ck.qualityFailed = false; ck.qualityError = '';
       ck.achievements = null; ck.achBusy = false;
+      ck.heatmap = null; ck.hmBusy = false; ck.hmFailed = false; ck.hmError = '';
+      ck.rhythm = null; ck.rhBusy = false; ck.rhFailed = false; ck.rhError = '';
+      ck.mirror = null; ck.miBusy = false; ck.miFailed = false; ck.miError = '';
       ck.summaryBusy = false; ck.summaryResult = null; ck.summaryFailed = false; ck.summaryError = '';
       Object.keys(ckExpanded).forEach(k => { delete ckExpanded[k]; });
     }
@@ -2775,6 +2855,85 @@ createApp({
         if (my === detailSeq && route.id === cid) ck.achievements = null;
       } finally { if (my === detailSeq && route.id === cid) ck.achBusy = false; }
     }
+
+    // ---------- v5.4.0 #2 消息密度热力图（全年 53×7 SVG 网格，纯前端算格位） ----------
+    async function loadHeatmap() {
+      const my = detailSeq; const cid = route.id;
+      if (ck.hmBusy) return;
+      ck.hmBusy = true; ck.hmFailed = false; ck.hmError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/heatmap?year=' + ck.hmYear);
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.heatmap = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.hmFailed = true; ck.hmError = e.message || '热力图加载失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.hmBusy = false; }
+    }
+    function reloadHeatmap() { ck.heatmap = null; loadHeatmap(); }
+    const heatYears = computed(() => { const y = new Date().getFullYear(); return [y, y - 1, y - 2, y - 3, y - 4]; });
+    const HEAT_CELL = 11, HEAT_STEP = 13;
+    const heatmapGrid = computed(() => {
+      const hm = ck.heatmap;
+      if (!hm) return null;
+      const year = hm.year || new Date().getFullYear();
+      const cnt = {};
+      (hm.days || []).forEach(d => { cnt[d.date] = d.count || 0; });
+      const max = hm.max || 0;
+      const firstWd = new Date(year, 0, 1).getDay();
+      const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+      const daysIn = leap ? 366 : 365;
+      const pad = n => (n < 10 ? '0' + n : '' + n);
+      const cells = [];
+      let lastCol = 0;
+      const dObj = new Date(year, 0, 1);
+      for (let i = 0; i < daysIn; i++) {
+        const key = dObj.getFullYear() + '-' + pad(dObj.getMonth() + 1) + '-' + pad(dObj.getDate());
+        const wd = dObj.getDay();
+        const col = Math.floor((firstWd + i) / 7);
+        if (col > lastCol) lastCol = col;
+        const c = cnt[key] || 0;
+        let lvl = 0;
+        if (c > 0 && max > 0) { lvl = 1 + Math.min(3, Math.floor((c / max) * 4 - 0.0001)); }
+        cells.push({ key, c, lvl, x: col * HEAT_STEP, y: wd * HEAT_STEP });
+        dObj.setDate(dObj.getDate() + 1);
+      }
+      const cols = lastCol + 1;
+      return { cells, cols, step: HEAT_STEP, cell: HEAT_CELL, width: cols * HEAT_STEP, height: 7 * HEAT_STEP, total: hm.total || 0, max, year };
+    });
+
+    // ---------- v5.4.0 #3 互动节奏分析（回复延迟中位数/秒回率/时段签名） ----------
+    async function loadRhythm() {
+      const my = detailSeq; const cid = route.id;
+      if (ck.rhBusy) return;
+      ck.rhBusy = true; ck.rhFailed = false; ck.rhError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/rhythm');
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.rhythm = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.rhFailed = true; ck.rhError = e.message || '节奏分析失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.rhBusy = false; }
+    }
+    function fmtMedian(min) { if (min == null || min < 0) return '—'; if (min < 60) return min + ' 分钟'; const h = Math.floor(min / 60), m = min % 60; return m ? (h + ' 小时 ' + m + ' 分') : (h + ' 小时'); }
+
+    // ---------- v5.4.0 #5 对话风格镜像（你在 TA 面前的样子，纯本地文本统计） ----------
+    async function loadMirror() {
+      const my = detailSeq; const cid = route.id;
+      if (ck.miBusy) return;
+      ck.miBusy = true; ck.miFailed = false; ck.miError = '';
+      try {
+        const out = await api('/api/contacts/' + cid + '/mirror');
+        if (my !== detailSeq || route.id !== cid) return;
+        ck.mirror = out;
+      } catch (e) {
+        if (my === detailSeq && route.id === cid) { ck.miFailed = true; ck.miError = e.message || '风格镜像失败'; }
+      } finally { if (my === detailSeq && route.id === cid) ck.miBusy = false; }
+    }
+    // avgLen 以 60 字封顶归一，其余维度本就是 0-100 占比。
+    function mirrorValPct(d) { if (!d) return 0; if (d.key === 'avgLen') return Math.max(0, Math.min(100, d.value / 60 * 100)); return Math.max(0, Math.min(100, d.value)); }
+    function mirrorBasePct(d) { if (!d) return 0; if (d.key === 'avgLen') return Math.max(0, Math.min(100, d.baseline / 60 * 100)); return Math.max(0, Math.min(100, d.baseline)); }
+    function mirrorValText(d) { if (!d) return ''; if (d.key === 'avgLen') return (Math.round(d.value * 10) / 10) + ' 字'; return Math.round(d.value) + '%'; }
+    function mirrorDeltaCls(delta) { return delta.indexOf('高于') >= 0 ? 'st-ok' : (delta.indexOf('低于') >= 0 ? 'st-warn' : 'st-gray'); }
 
     // 四维轴：角度（度）-90(上)/0(右)/90(下)/180(左)，与 dims 顺序对齐。
     const Q_AXES = [
@@ -3080,6 +3239,23 @@ createApp({
         statusLoading.value = false;
       }
     }
+    // ---------- v5.4.0 #9 数据健康自检（只读 SQL 聚合，按需手动刷新） ----------
+    const dataReport = reactive({ data: null, busy: false, failed: false, error: '' });
+    async function loadDataReport() {
+      if (dataReport.busy) return;
+      dataReport.busy = true; dataReport.failed = false; dataReport.error = '';
+      try {
+        dataReport.data = await api('/api/system/data-report');
+      } catch (e) {
+        dataReport.failed = true; dataReport.error = e.message || '自检失败'; dataReport.data = null;
+      } finally { dataReport.busy = false; }
+    }
+    function fmtBytes(n) {
+      if (n == null || n < 0) return '—';
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1048576).toFixed(1) + ' MB';
+    }
     // 秒数转「x天 x小时 x分」
     function fmtUptime(sec) {
       if (sec == null || sec < 0) return '—';
@@ -3283,19 +3459,27 @@ createApp({
       startMerge, doMerge, doDelete, confirmDelete,
       loadMergeLogs, undoMerge, fmtTime,
       sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
+      // v5.4.0 #9 数据健康自检
+      dataReport, loadDataReport, fmtBytes,
       // 标签
       tags, tagsError, filterTagIds, picked, showTagMgr, showBatchTag, tagBusy, tagNewName,
       tagEditId, tagEditName, batchTagIds, batchTagRemove, tagEditOpen, tagEditIds,
       loadTags, createTag, startTagRename, cancelTagRename, commitTagRename, deleteTag,
       // v5.0.0 智能分组建议
       suggest, loadTagSuggestions, acceptSuggestion, acceptAllSuggestions,
+      // v5.4.0 #4 标签冲突检测
+      conflicts, loadTagConflicts,
       toggleFilterTag, clearFilterTags, togglePick, togglePickAll, clearPicks,
       openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
       // 洞察页
       insightTab, switchInsight,
       // v5.3.0 健康仪表盘 / 圈层 / 主题演化（洞察页）
       health, healthBusy, loadHealth, healthColor, bandCount, bandMax, healthFocus, healthSignalText,
+      // v5.4.0 #1 关系断点预警
+      alertLabel, alertCls, etaText,
       circles, circlesBusy, loadCircles, circleMembers, circleTierClassOf,
+      // v5.4.0 #8 能量流桑基图
+      flowSankey, flowGoto, flowColor,
       topics, topicsContact, topicsBusy, loadTopicsFor, topicsLatest, topicsStatusChip, topicArrow, topicsSelectChange,
       connections, connBusy, connTypeLabel, loadConnections, rebuildConnections,
       // 人生模拟器
@@ -3333,6 +3517,10 @@ createApp({
       loadQuality, reloadQuality, qualityRadar, qScoreCls,
       // v5.2.1 质量历史趋势折线 + 关系成就
       qualityHistory, loadAchievements,
+      // v5.4.0 #2/#3/#5 驾驶舱：热力图 / 互动节奏 / 风格镜像
+      loadHeatmap, reloadHeatmap, heatmapGrid, heatYears,
+      loadRhythm, fmtMedian,
+      loadMirror, mirrorValPct, mirrorBasePct, mirrorValText, mirrorDeltaCls,
       // v4.9.0 智能回顾摘要 + 待办一键转跟进
       genSummary, reloadSummary, todoToFollowup, jumpToSummarySource,
       // 待跟进 / 日历订阅 / 祝福草稿

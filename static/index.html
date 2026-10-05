@@ -463,6 +463,93 @@
           <p class="hint" v-if="ck.achievements">里程碑由本地聊天记录自动派生、首次跨越即写入时间线；可在「时间线」标签查看解锁历史。</p>
         </div>
 
+        <!-- v5.4.0 #2 消息密度热力图：GitHub 贡献图式 53×7 SVG 网格（纯本地、零 LLM） -->
+        <div class="card heatmap-card">
+          <div class="tl-head">
+            <h2>消息密度热力图 <span class="chip st-blue">全年</span></h2>
+            <div class="q-ctrl">
+              <select class="text-input sm" v-model.number="ck.hmYear" @change="reloadHeatmap">
+                <option v-for="y in heatYears" :key="y" :value="y">{{ y }} 年</option>
+              </select>
+              <button class="btn ghost sm" @click="loadHeatmap" :disabled="ck.hmBusy">{{ ck.hmBusy ? '生成中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="empty" v-if="ck.hmBusy && !ck.heatmap">正在按天聚合你与 TA 的全年互动密度…</p>
+          <p class="empty" v-else-if="ck.hmFailed && !ck.heatmap">{{ ck.hmError }}</p>
+          <template v-else-if="ck.heatmap && heatmapGrid">
+            <p class="hint block">颜色越深代表当天互动越多；一眼看穿关系的季节变化与“消失的那段日子”。</p>
+            <div class="hm-scroll">
+              <svg class="hm-grid" :width="heatmapGrid.width" :height="heatmapGrid.height" :viewBox="'0 0 ' + heatmapGrid.width + ' ' + heatmapGrid.height" role="img" aria-label="全年消息密度热力图">
+                <rect v-for="cell in heatmapGrid.cells" :key="cell.key" :x="cell.x" :y="cell.y" :width="heatmapGrid.cell" :height="heatmapGrid.cell" rx="2" :class="'hm-cell hm-l' + cell.lvl"><title>{{ cell.key }}：{{ cell.c }} 条</title></rect>
+              </svg>
+            </div>
+            <div class="hm-legend">
+              <span class="hint">少</span>
+              <span class="hm-cell hm-l0"></span><span class="hm-cell hm-l1"></span><span class="hm-cell hm-l2"></span><span class="hm-cell hm-l3"></span><span class="hm-cell hm-l4"></span>
+              <span class="hint">多</span>
+              <span class="hint hm-total">全年共 {{ heatmapGrid.total }} 条 · 单日峰值 {{ heatmapGrid.max }}</span>
+            </div>
+          </template>
+        </div>
+
+        <!-- v5.4.0 #3 互动节奏分析：回复中位数/秒回率/时段签名（纯本地、零 LLM） -->
+        <div class="card rhythm-card">
+          <div class="tl-head">
+            <h2>互动节奏 <span class="chip st-purple">节奏画像</span></h2>
+            <button class="btn ghost sm" @click="loadRhythm" :disabled="ck.rhBusy">{{ ck.rhBusy ? '分析中…' : '刷新' }}</button>
+          </div>
+          <p class="empty" v-if="ck.rhBusy && !ck.rhythm">正在统计你回复 TA 的速度与活跃时段…</p>
+          <p class="empty" v-else-if="ck.rhFailed && !ck.rhythm">{{ ck.rhError }}</p>
+          <template v-else-if="ck.rhythm">
+            <p class="empty" v-if="ck.rhythm.note">{{ ck.rhythm.note }}</p>
+            <template v-else>
+              <div class="rh-metrics">
+                <div class="rh-metric"><span class="rh-num">{{ fmtMedian(ck.rhythm.replyMedianMin) }}</span><span class="rh-lbl">回复中位数</span></div>
+                <div class="rh-metric"><span class="rh-num">{{ Math.round(ck.rhythm.fastRatio) }}%</span><span class="rh-lbl">秒回率</span></div>
+                <div class="rh-metric"><span class="rh-num rh-sig">{{ ck.rhythm.signature }}</span><span class="rh-lbl">时段签名</span></div>
+              </div>
+              <div class="rh-hours" v-if="ck.rhythm.bestHours && ck.rhythm.bestHours.length">
+                <span class="rh-sub">最活跃时段</span>
+                <span class="chip st-blue rh-hour" v-for="h in ck.rhythm.bestHours" :key="h">{{ h }}:00</span>
+              </div>
+              <div class="rh-hours" v-if="ck.rhythm.bestWeekdays && ck.rhythm.bestWeekdays.length">
+                <span class="rh-sub">最活跃日</span>
+                <span class="chip st-blue rh-hour" v-for="w in ck.rhythm.bestWeekdays" :key="w">{{ w }}</span>
+              </div>
+              <p class="hint" v-if="ck.rhythm.sample">基于 TA 的 {{ ck.rhythm.sample }} 条发言样本，纯本地统计、不花模型费用。</p>
+            </template>
+          </template>
+        </div>
+
+        <!-- v5.4.0 #5 对话风格镜像：你在 TA 面前的样子（纯本地文本统计、零 LLM） -->
+        <div class="card mirror-card">
+          <div class="tl-head">
+            <h2>风格镜像 <span class="chip st-blue">你在 TA 面前</span></h2>
+            <button class="btn ghost sm" @click="loadMirror" :disabled="ck.miBusy">{{ ck.miBusy ? '分析中…' : '刷新' }}</button>
+          </div>
+          <p class="empty" v-if="ck.miBusy && !ck.mirror">正在对比你在 TA 面前与平时的说话风格…</p>
+          <p class="empty" v-else-if="ck.miFailed && !ck.mirror">{{ ck.miError }}</p>
+          <template v-else-if="ck.mirror">
+            <p class="empty" v-if="ck.mirror.note">{{ ck.mirror.note }}</p>
+            <template v-else>
+              <div class="mi-traits" v-if="ck.mirror.traits && ck.mirror.traits.length">
+                <span class="chip st-purple mi-trait" v-for="t in ck.mirror.traits" :key="t">{{ t }}</span>
+              </div>
+              <div class="mi-dims">
+                <div class="mi-dim" v-for="d in ck.mirror.dimensions" :key="d.key">
+                  <div class="mi-dim-head">
+                    <span class="mi-dim-label">{{ d.label }}</span>
+                    <span class="mi-dim-val">{{ mirrorValText(d) }}<span class="hint mi-base">平时 {{ mirrorValText({ key: d.key, value: d.baseline }) }}</span></span>
+                    <span class="chip mi-delta" :class="mirrorDeltaCls(d.delta)">{{ d.delta }}</span>
+                  </div>
+                  <div class="mi-bar"><i :style="{width: mirrorValPct(d) + '%'}"></i><em class="mi-base-mark" :style="{left: mirrorBasePct(d) + '%'}"></em></div>
+                </div>
+              </div>
+              <p class="hint" v-if="ck.mirror.sample">基于你发给 TA 的 {{ ck.mirror.sample }} 条消息，与你的全局均值对比；纯本地文本统计。</p>
+            </template>
+          </template>
+        </div>
+
         <div class="card">
           <div class="tl-head">
             <h2>关系趋势</h2>
@@ -1273,6 +1360,7 @@
         <a href="#" :class="{active: insightTab==='learning'}" @click.prevent="switchInsight('learning')">干预学习</a>
         <a href="#" :class="{active: insightTab==='health'}" @click.prevent="switchInsight('health')">健康仪表盘</a>
         <a href="#" :class="{active: insightTab==='circles'}" @click.prevent="switchInsight('circles')">关系圈层</a>
+        <a href="#" :class="{active: insightTab==='flow'}" @click.prevent="switchInsight('flow')">能量流</a>
         <a href="#" :class="{active: insightTab==='topics'}" @click.prevent="switchInsight('topics')">主题演化</a>
         <a href="#" :class="{active: insightTab==='life'}" @click.prevent="switchInsight('life')">人生总览</a>
         <a href="#" :class="{active: insightTab==='lifeproj'}" @click.prevent="switchInsight('lifeproj')">未来推演</a>
@@ -1828,6 +1916,24 @@
             </ul>
           </template>
         </div>
+
+        <!-- v5.4.0 #1 关系断点预警：由近30天/前30天斜率 + 沉默天数前瞻预测，按紧急度排序 -->
+        <div class="card health-alert-card" v-if="health.summary.total">
+          <div class="tl-head">
+            <h2>断点预警 <span class="chip" :class="health.summary.alertCount ? 'st-bad' : 'st-ok'">{{ health.summary.alertCount || 0 }}</span></h2>
+          </div>
+          <p class="hint block">“正在降温但还没凉”的关系——根据互动衰减速度前瞻“预计多少天进入沉寂”，抢在断联前主动联系。</p>
+          <p class="empty" v-if="!health.alerts || !health.alerts.length">所有关系都健康，暂无断点风险。</p>
+          <ul class="ha-list" v-else>
+            <li class="ha-item" v-for="it in health.alerts" :key="it.contactId" @click="gotoDetail(it.contactId)">
+              <span class="chip ha-lvl" :class="alertCls(it.alert)">{{ alertLabel(it.alert) }}</span>
+              <span class="ha-name">{{ it.name }}</span>
+              <span class="hint ha-state">{{ (ckTrendMeta[it.trendState]||{label:it.trendState}).label || it.trendState }}</span>
+              <span class="hint ha-eta">{{ etaText(it.etaDays) }}</span>
+              <span class="ha-health">{{ it.health }}</span>
+            </li>
+          </ul>
+        </div>
       </template>
 
       <!-- ---- 关系圈层 ---- -->
@@ -1855,6 +1961,38 @@
               </span>
               <span class="hint" v-if="!circleMembers(tr.key).length">暂无成员</span>
             </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- 能量流桑基图（v5.4.0 #8，纯前端） ---- -->
+      <template v-if="insightTab==='flow'">
+        <div class="card flow-card">
+          <div class="tl-head">
+            <h2>关系能量流</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="circles.generatedAt">更新于 {{ circles.generatedAt }}</span>
+              <button class="btn sm" @click="loadCircles" :disabled="circlesBusy">{{ circlesBusy ? '计算中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="hint block">你 → 四层圈层 → 每层最投入的联系人。连线越粗代表在该关系上投入的亲密度能量越高（数据复用「关系圈层」，纯本地确定性、零模型）。</p>
+          <p class="empty" v-if="circlesBusy && !flowSankey">加载中…</p>
+          <p class="empty" v-else-if="!flowSankey">还没有可展示的关系圈层数据。</p>
+          <div class="flow-scroll" v-else>
+            <svg class="flow-svg" :viewBox="'0 0 ' + flowSankey.W + ' ' + flowSankey.H" :width="flowSankey.W" :height="flowSankey.H" role="img" aria-label="关系能量流桑基图">
+              <path v-for="l in flowSankey.tierLink" :key="l.key" :d="l.d" :stroke="l.color" :stroke-width="l.w" class="fl-link" fill="none" />
+              <path v-for="l in flowSankey.leafLink" :key="l.key" :d="l.d" :stroke="l.color" :stroke-width="l.w" class="fl-link" fill="none" />
+              <rect :x="flowSankey.xMe - 12" :y="flowSankey.meCy - 24" width="12" height="48" rx="3" class="fl-me" />
+              <text :x="flowSankey.xMe - 18" :y="flowSankey.meCy" class="fl-me-label" text-anchor="end" dominant-baseline="middle">我</text>
+              <g v-for="t in flowSankey.tierNodes" :key="'tn-'+t.key">
+                <rect :x="flowSankey.xTier" :y="t.top" width="12" :height="(t.bot - t.top)" rx="2" :fill="t.color" />
+                <text :x="flowSankey.xTier + 18" :y="t.cy" class="fl-tier-label" dominant-baseline="middle">{{ t.label }} · {{ t.count }}</text>
+              </g>
+              <g v-for="l in flowSankey.leaves" :key="'lv-'+l.cid" class="fl-leaf-grp" @click="flowGoto(l.cid)">
+                <rect :x="flowSankey.xLeaf" :y="l.cy - flowSankey.NODE_H/2" width="12" :height="flowSankey.NODE_H" rx="2" :fill="flowColor(l.cls)" />
+                <text :x="flowSankey.xLeaf + 18" :y="l.cy" class="fl-leaf-label" dominant-baseline="middle">{{ l.name }}<tspan class="fl-leaf-score"> {{ l.score }}</tspan></text>
+              </g>
+            </svg>
           </div>
         </div>
       </template>
@@ -2216,6 +2354,39 @@
           <div class="stat-row"><span class="st-label">消息总数</span><span class="st-val">{{ sysStatus.messages }} 条</span></div>
         </div>
       </div>
+
+      <!-- v5.4.0 #9 数据健康自检（只读 SQL 聚合，按需手动刷新） -->
+      <div class="card dr-card">
+        <div class="tl-head">
+          <h2>数据健康自检</h2>
+          <div class="lh-actions">
+            <span class="hint" v-if="dataReport.data">更新于 {{ (dataReport.data.generatedAt || '').slice(0,16).replace('T',' ') }}</span>
+            <button class="btn sm" @click="loadDataReport" :disabled="dataReport.busy">{{ dataReport.busy ? '自检中…' : (dataReport.data ? '重新自检' : '开始自检') }}</button>
+          </div>
+        </div>
+        <p class="hint block">本地盘点数据库体积、消息增速、画像/标签/时间线覆盖率与各派生缓存表行数，一眼看清数据健康度。纯本地只读，不花模型费用。</p>
+        <p class="empty" v-if="dataReport.busy && !dataReport.data">正在盘点本地数据…</p>
+        <p class="empty" v-else-if="dataReport.failed && !dataReport.data">{{ dataReport.error }}</p>
+        <template v-else-if="dataReport.data">
+          <div class="dr-metrics">
+            <div class="dr-metric"><span class="dr-num">{{ dataReport.data.contactsTotal }}</span><span class="dr-lbl">联系人</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ dataReport.data.messagesTotal }}</span><span class="dr-lbl">消息总数</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ dataReport.data.messagesLast30d }}</span><span class="dr-lbl">近 30 天新增</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ fmtBytes(dataReport.data.dbSizeBytes) }}</span><span class="dr-lbl">数据库体积</span></div>
+          </div>
+          <div class="dr-rows">
+            <div class="dr-row"><span class="dr-k">画像覆盖率</span><span class="dr-v"><span class="dr-bar"><i :style="{width: dataReport.data.profileCoverage + '%'}"></i></span>{{ dataReport.data.profiledContacts }}/{{ dataReport.data.contactsTotal }}（{{ Math.round(dataReport.data.profileCoverage) }}%）</span></div>
+            <div class="dr-row"><span class="dr-k">标签联系人</span><span class="dr-v">{{ dataReport.data.taggedContacts }} 人</span></div>
+            <div class="dr-row"><span class="dr-k">时间线事件</span><span class="dr-v">{{ dataReport.data.timelineEvents }} 条</span></div>
+            <div class="dr-row"><span class="dr-k">消息日均增速</span><span class="dr-v">{{ dataReport.data.messagesGrowthPerDay }} 条/天</span></div>
+            <div class="dr-row"><span class="dr-k">最近成功备份</span><span class="dr-v"><span class="chip" :class="dataReport.data.lastBackupOk ? 'st-ok' : 'st-warn'">{{ dataReport.data.lastBackupOk ? '正常' : '无/失败' }}</span>{{ dataReport.data.lastBackupAt || '从未备份' }}</span></div>
+          </div>
+          <h3 class="life-sub">派生缓存表</h3>
+          <div class="dr-cache">
+            <span class="chip dr-cache-item" :class="ct.present ? 'st-blue' : 'st-gray'" v-for="ct in dataReport.data.cacheTables" :key="ct.table">{{ ct.table }} · {{ ct.rows }}</span>
+          </div>
+        </template>
+      </div>
     </section>
 
   </main>
@@ -2369,6 +2540,26 @@
             </tr>
           </tbody>
         </table>
+      </div>
+      <div class="conflict-panel">
+        <div class="sug-head">
+          <h3>标签冲突检测 <span class="chip st-purple">确定性互斥组·零模型</span></h3>
+          <span class="sug-head-acts">
+            <button class="btn ghost sm" type="button" @click="loadTagConflicts" :disabled="conflicts.busy">{{ conflicts.busy ? '检测中…' : (conflicts.loaded ? '重新检测' : '开始检测') }}</button>
+          </span>
+        </div>
+        <p class="hint block">同一联系人身上同时命中互斥标签（如“核心/密友”与“弱联系/点头之交”）时报出，帮你保持标签体系自洽。只读不写库。</p>
+        <p class="empty" v-if="conflicts.failed && !conflicts.items.length">{{ conflicts.error }}</p>
+        <p class="empty" v-else-if="conflicts.loaded && !conflicts.items.length">{{ conflicts.note || '标签体系自洽，未发现矛盾分组。' }}</p>
+        <ul class="cf-list" v-else-if="conflicts.items.length">
+          <li class="cf-item" v-for="(c, i) in conflicts.items" :key="i">
+            <span class="cf-name" @click="gotoDetail(c.contactId)">{{ c.name }}</span>
+            <span class="chip st-warn cf-tag">{{ c.tagA }}</span>
+            <span class="cf-vs">×</span>
+            <span class="chip st-warn cf-tag">{{ c.tagB }}</span>
+            <span class="hint cf-reason">{{ c.reason }}</span>
+          </li>
+        </ul>
       </div>
       <div class="modal-actions">
         <button class="btn" @click="showTagMgr = false">关闭</button>

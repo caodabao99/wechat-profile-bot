@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxTagsuggestBodyBytes = 64 << 10
@@ -38,6 +39,13 @@ func (s *apiServer) routeAssistantTags(w http.ResponseWriter, r *http.Request, s
 			return
 		}
 		s.hTagsApply(w, r)
+	case "conflicts":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hTagsConflicts(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/tags/"+sub[0])
 	}
@@ -105,4 +113,20 @@ func (s *apiServer) hTagsApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"affected": affected})
+}
+
+// hTagsConflicts GET /api/assistant/tags/conflicts：检测同联系人相互矛盾的标签，提醒确认。
+func (s *apiServer) hTagsConflicts(w http.ResponseWriter, r *http.Request) {
+	tags, names := collectAppliedTagsByContact(s.db)
+	conflicts := detectTagConflicts(tags, names)
+	note := ""
+	if len(conflicts) == 0 {
+		note = "标签体系自洽，未发现矛盾分组。"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"generatedAt": time.Now().Format("2006-01-02 15:04:05"),
+		"conflicts":   conflicts,
+		"total":       len(conflicts),
+		"note":        note,
+	})
 }

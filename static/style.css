@@ -1055,3 +1055,96 @@ textarea.text-input { resize: vertical; }
 .ci-body a { font-size: 12px; text-decoration: none; word-break: break-all; }
 .ci-body a:hover { color: var(--accent); }
 .ci-xp { font-size: 12px; color: var(--accent); font-weight: 700; flex: none; }
+
+/* ================= v5.4.0 九功能前端样式（热力图/节奏/镜像/断点预警/能量流/标签冲突/数据自检） ================= */
+/* #2 消息密度热力图：GitHub 贡献图式网格 */
+.hm-scroll { overflow-x: auto; padding: 4px 2px 8px; }
+.hm-grid { display: block; }
+.hm-grid .hm-cell { --hm0: #eef1f6; --hm1: #c7f0d2; --hm2: #7fd6a0; --hm3: #34b56f; --hm4: #059669; }
+.hm-grid .hm-l0 { fill: var(--hm0); }
+.hm-grid .hm-l1 { fill: var(--hm1); }
+.hm-grid .hm-l2 { fill: var(--hm2); }
+.hm-grid .hm-l3 { fill: var(--hm3); }
+.hm-grid .hm-l4 { fill: var(--hm4); }
+.hm-grid rect.hm-cell:hover { stroke: var(--ink); stroke-width: 1; }
+.hm-legend { display: flex; align-items: center; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.hm-legend .hm-cell { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
+.hm-legend .hm-l0 { background: #eef1f6; }
+.hm-legend .hm-l1 { background: #c7f0d2; }
+.hm-legend .hm-l2 { background: #7fd6a0; }
+.hm-legend .hm-l3 { background: #34b56f; }
+.hm-legend .hm-l4 { background: #059669; }
+.hm-total { margin-left: auto; }
+
+/* #3 互动节奏 */
+.rh-metrics { display: flex; gap: 18px; flex-wrap: wrap; margin: 8px 0; }
+.rh-metric { display: flex; flex-direction: column; align-items: flex-start; }
+.rh-num { font-size: 22px; font-weight: 800; color: var(--accent); }
+.rh-sig { font-size: 18px; color: var(--ink); }
+.rh-lbl { font-size: 12px; color: var(--muted); }
+.rh-hours { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.rh-sub { font-size: 12px; color: var(--muted); margin-right: 4px; }
+.rh-hour { font-size: 12px; }
+
+/* #5 对话风格镜像 */
+.mi-traits { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+.mi-trait { font-size: 13px; }
+.mi-dims { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.mi-dim-head { display: flex; align-items: center; gap: 8px; }
+.mi-dim-label { font-size: 13px; font-weight: 600; color: var(--ink); min-width: 84px; }
+.mi-dim-val { font-size: 13px; color: var(--accent); font-weight: 700; }
+.mi-base { font-weight: 400; margin-left: 6px; }
+.mi-delta { font-size: 11px; margin-left: auto; }
+.mi-bar { position: relative; height: 8px; border-radius: 6px; background: var(--line); margin-top: 4px; }
+.mi-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.mi-base-mark { position: absolute; top: -2px; width: 2px; height: 12px; background: var(--muted); }
+
+/* #1 关系断点预警 */
+.ha-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.ha-item { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px dashed var(--line); cursor: pointer; }
+.ha-item:last-child { border-bottom: none; }
+.ha-item:hover .ha-name { color: var(--accent); }
+.ha-lvl { flex: none; min-width: 68px; text-align: center; }
+.ha-name { font-weight: 600; color: var(--ink); }
+.ha-state { flex: none; }
+.ha-eta { margin-left: auto; flex: none; }
+.ha-health { font-weight: 800; color: var(--bad); flex: none; min-width: 28px; text-align: right; }
+
+/* #8 能量流桑基图 */
+.flow-scroll { overflow-x: auto; padding: 6px 0; }
+.flow-svg { display: block; max-width: 100%; height: auto; }
+.flow-svg .fl-link { opacity: .32; transition: opacity .15s; }
+.flow-svg .fl-link:hover { opacity: .6; }
+.flow-svg .fl-me { fill: var(--accent); }
+.flow-svg .fl-me-label { font-size: 15px; font-weight: 800; fill: var(--ink); }
+.flow-svg .fl-tier-label { font-size: 13px; font-weight: 700; fill: var(--ink); }
+.flow-svg .fl-leaf-grp { cursor: pointer; }
+.flow-svg .fl-leaf-label { font-size: 12px; fill: var(--ink); }
+.flow-svg .fl-leaf-score { fill: var(--muted); font-size: 11px; }
+.flow-svg .fl-leaf-grp:hover .fl-leaf-label { fill: var(--accent); font-weight: 700; }
+
+/* #4 标签冲突检测 */
+.conflict-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.cf-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.cf-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.cf-item:last-child { border-bottom: none; }
+.cf-name { font-weight: 600; color: var(--ink); cursor: pointer; }
+.cf-name:hover { color: var(--accent); }
+.cf-tag { font-size: 12px; }
+.cf-vs { color: var(--bad); font-weight: 800; }
+.cf-reason { margin-left: auto; }
+
+/* #9 数据健康自检 */
+.dr-metrics { display: flex; gap: 18px; flex-wrap: wrap; margin: 8px 0; }
+.dr-metric { display: flex; flex-direction: column; }
+.dr-num { font-size: 20px; font-weight: 800; color: var(--accent); }
+.dr-lbl { font-size: 12px; color: var(--muted); }
+.dr-rows { margin: 8px 0; }
+.dr-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.dr-row:last-child { border-bottom: none; }
+.dr-k { color: var(--muted); flex: none; }
+.dr-v { color: var(--ink); display: flex; align-items: center; gap: 6px; }
+.dr-bar { display: inline-block; width: 120px; height: 8px; border-radius: 6px; background: var(--line); overflow: hidden; }
+.dr-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
+.dr-cache { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.dr-cache-item { font-size: 12px; }

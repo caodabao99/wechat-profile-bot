@@ -334,6 +334,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeLife(w, r, parts[1:])
 	case parts[0] == "data":
 		s.routeData(w, r, parts[1:])
+	case parts[0] == "system":
+		s.routeSystem(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
@@ -393,6 +395,12 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.routeContactAchievements(w, r, id)
 	case "timing":
 		s.hContactTiming(w, r, id)
+	case "rhythm":
+		s.hContactRhythm(w, r, id)
+	case "heatmap":
+		s.hContactHeatmap(w, r, id)
+	case "mirror":
+		s.hContactMirror(w, r, id)
 	case "topics":
 		s.routeContactTopics(w, r, id, sub[1:])
 	case "ask":

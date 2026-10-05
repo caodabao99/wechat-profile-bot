@@ -412,3 +412,100 @@ func trimSuggestions(out *[]TagSuggestion, cid int64, keep int) {
 	res := append(others, mine...)
 	*out = res
 }
+
+// ---- v5.4.0 #4 标签冲突检测（确定性互斥标签组，维护标签体系自洽）----
+
+// tagConflictGroup 一组互斥标签关键词（按「包含」匹配，命中即代表该侧）。
+type tagConflictGroup struct {
+	Keywords []string
+	Label    string
+}
+
+// tagConflictPairs 已知的关系强度对立组：同联系人同时命中两侧即为矛盾。
+var tagConflictPairs = []struct{ A, B tagConflictGroup }{
+	{
+		A: tagConflictGroup{[]string{"密友", "死党", "闺密", "闺蜜", "知己", "至交", "铁哥们", "核心关系", "核心"}, "亲密"},
+		B: tagConflictGroup{[]string{"点头之交", "泛泛之交", "普通朋友", "弱联系", "不熟", "待激活", "不常联系"}, "疏远"},
+	},
+	{
+		A: tagConflictGroup{[]string{"家人", "亲人", "亲属"}, "家人"},
+		B: tagConflictGroup{[]string{"同事", "客户", "合作方", "生意伙伴"}, "职场"},
+	},
+}
+
+// TagConflict 一条标签冲突。
+type TagConflict struct {
+	ContactID int64  `json:"contactId"`
+	Name      string `json:"name"`
+	TagA      string `json:"tagA"`
+	TagB      string `json:"tagB"`
+	Reason    string `json:"reason"`
+}
+
+// matchTagGroup 返回按传入顺序第一个命中该组关键词的标签（无则空串，确定性）。
+func matchTagGroup(tags, kw []string) string {
+	for _, t := range tags {
+		for _, k := range kw {
+			if strings.Contains(t, k) {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// detectTagConflicts 纯函数：对每个联系人检测是否同时命中互斥标签组的两侧。确定性、可脱库单测。
+// 输出按 contactId 升序；一个联系人只报首个命中的对立组。
+func detectTagConflicts(tagsByContact map[int64][]string, nameOf map[int64]string) []TagConflict {
+	out := []TagConflict{}
+	ids := make([]int64, 0, len(tagsByContact))
+	for id := range tagsByContact {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		sorted := append([]string{}, tagsByContact[id]...)
+		sort.Strings(sorted) // 标签内定序，去并列
+		for _, p := range tagConflictPairs {
+			a := matchTagGroup(sorted, p.A.Keywords)
+			b := matchTagGroup(sorted, p.B.Keywords)
+			if a != "" && b != "" && a != b {
+				out = append(out, TagConflict{
+					ContactID: id, Name: nameOf[id], TagA: a, TagB: b,
+					Reason: "「" + p.A.Label + "」与「" + p.B.Label + "」标签相互矛盾，建议保留更贴合的一个",
+				})
+				break
+			}
+		}
+	}
+	return out
+}
+
+// collectAppliedTagsByContact 一趟锁内读已挂标签，返回 (contactId→标签列表, contactId→展示名)。
+// 标签表缺失（老库未跑 ensureTagTables）则返回空集。
+func collectAppliedTagsByContact(db *sql.DB) (map[int64][]string, map[int64]string) {
+	tags := map[int64][]string{}
+	names := map[int64]string{}
+	dbMu.Lock()
+	if tagTableReadyLocked(db) {
+		if rows, err := db.Query(
+			`SELECT l.contact_id, t.name, COALESCE(c.remark, c.name, '')
+			 FROM contact_tag_links l
+			 JOIN contact_tags t ON t.id = l.tag_id
+			 JOIN contacts c ON c.id = l.contact_id
+			 WHERE c.merged_into IS NULL
+			 ORDER BY l.contact_id ASC, t.name ASC`); err == nil {
+			for rows.Next() {
+				var cid int64
+				var tagName, name string
+				if rows.Scan(&cid, &tagName, &name) == nil {
+					tags[cid] = append(tags[cid], tagName)
+					names[cid] = name
+				}
+			}
+			rows.Close()
+		}
+	}
+	dbMu.Unlock()
+	return tags, names
+}

@@ -27,6 +27,9 @@ const (
 	healthMaxContacts = 300 // 全局健康仪表盘一次最多覆盖的联系人数
 	healthWindowDays  = 90  // 亲密度/趋势窗口（与 tagsuggest、computeIntimacy 口径一致）
 	healthEmotionDays = 30  // 情绪均分窗口
+
+	// v5.4.0 #1 断点预警：前瞻「正在降温」判定的沉寂阈值（连续无互动达此天数即视为趋于断联）。
+	healthDormantHorizon = 30
 )
 
 // HealthSignal 一条对健康分的贡献说明（label + 实际作用的加减分）。
@@ -44,6 +47,8 @@ type HealthItem struct {
 	Intimacy   int            `json:"intimacy"`
 	TrendState string         `json:"trendState"`
 	Signals    []HealthSignal `json:"signals"`
+	Alert      string         `json:"alert"`   // v5.4.0 #1：none/watching/urgent（前瞻断点风险）
+	EtaDays    int            `json:"etaDays"` // v5.4.0 #1：预计距进入沉寂的剩余天数（越小越紧急）
 }
 
 // HealthBand 分档直方的一档。
@@ -54,10 +59,11 @@ type HealthBand struct {
 
 // HealthSummary 全局聚合。
 type HealthSummary struct {
-	Avg       int          `json:"avg"`
-	Total     int          `json:"total"`
-	Truncated bool         `json:"truncated"`
-	Bands     []HealthBand `json:"bands"` // 固定顺序：优秀/良好/一般/需关注/危险
+	Avg        int          `json:"avg"`
+	Total      int          `json:"total"`
+	Truncated  bool         `json:"truncated"`
+	AlertCount int          `json:"alertCount"` // v5.4.0 #1：watching+urgent 的关系数
+	Bands      []HealthBand `json:"bands"`      // 固定顺序：优秀/良好/一般/需关注/危险
 }
 
 // HealthDashboard 仪表盘响应体。
@@ -65,7 +71,8 @@ type HealthDashboard struct {
 	WindowDays  int           `json:"windowDays"`
 	GeneratedAt string        `json:"generatedAt"`
 	Summary     HealthSummary `json:"summary"`
-	Items       []HealthItem  `json:"items"` // 按 health 升序（最需关注的在前）
+	Items       []HealthItem  `json:"items"`  // 按 health 升序（最需关注的在前）
+	Alerts      []HealthItem  `json:"alerts"` // v5.4.0 #1：正在降温的关系子集（alert!=none），按紧急度排序
 }
 
 // healthBandOrder 分档固定顺序（供直方与前端配色）。
@@ -143,6 +150,49 @@ func fuseHealth(intimacy int, trendState string, emoAvg float64, emoOK bool, day
 		h = 100
 	}
 	return h, sig
+}
+
+// projectCooling 纯函数：由近30天/前30天互动量与已沉默天数，前瞻预测「正在降温」的程度与
+// 距进入沉寂的剩余天数（确定性、可脱库单测）。
+//   - df = recent30/prior30（prior30>0）；前期无近期有视为 1（升温）；两头皆无为 0（已沉寂）。
+//   - eta  = healthDormantHorizon - daysSinceLast（夹到 ≥0），即按沉默增长折算的「距断点」天数。
+//   - df>=0.9（持平/升温）→ none；两头皆无→urgent；df<0.5 或 eta<=15→urgent；其余冷却→watching。
+func projectCooling(recent30, prior30, daysSinceLast int) (string, int) {
+	df := 1.0
+	switch {
+	case prior30 > 0:
+		df = float64(recent30) / float64(prior30)
+	case recent30 > 0:
+		df = 1.0
+	default:
+		df = 0.0
+	}
+	eta := healthDormantHorizon - daysSinceLast
+	if eta < 0 {
+		eta = 0
+	}
+	if df >= 0.9 {
+		return "none", eta
+	}
+	if recent30 == 0 && prior30 == 0 {
+		return "urgent", 0
+	}
+	if df < 0.5 || eta <= 15 {
+		return "urgent", eta
+	}
+	return "watching", eta
+}
+
+// alertRank 预警分级排序权重（urgent 靠前）。
+func alertRank(level string) int {
+	switch level {
+	case "urgent":
+		return 0
+	case "watching":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // ComputeHealth 计算全局关系健康度仪表盘。
@@ -274,11 +324,13 @@ func ComputeHealth(db *sql.DB, now time.Time, windowDays int) (*HealthDashboard,
 		band := bandOfHealth(h)
 		bandCounts[band]++
 		sum += h
+		alert, eta := projectCooling(ta.recent30, ta.prior30, t.DaysSinceLast)
 
 		label := displayName(&Contact{ID: c.id, Name: c.name, Remark: c.remark})
 		items = append(items, HealthItem{
 			ContactID: c.id, Name: label, Health: h, Band: band,
 			Intimacy: intim, TrendState: state, Signals: sig,
+			Alert: alert, EtaDays: eta,
 		})
 	}
 
@@ -300,10 +352,29 @@ func ComputeHealth(db *sql.DB, now time.Time, windowDays int) (*HealthDashboard,
 		avg = int(float64(sum)/float64(len(items)) + 0.5)
 	}
 
+	// 断点预警子集：取 alert!=none 的关系，按紧急度（urgent 前）→ etaDays 升序 → contactId 升序。
+	// 与 items 共享同一份条目值拷贝，互不干扰（不改 items 自身升序语义）。
+	alerts := make([]HealthItem, 0)
+	for _, it := range items {
+		if it.Alert != "none" {
+			alerts = append(alerts, it)
+		}
+	}
+	sort.SliceStable(alerts, func(i, j int) bool {
+		if ri, rj := alertRank(alerts[i].Alert), alertRank(alerts[j].Alert); ri != rj {
+			return ri < rj
+		}
+		if alerts[i].EtaDays != alerts[j].EtaDays {
+			return alerts[i].EtaDays < alerts[j].EtaDays
+		}
+		return alerts[i].ContactID < alerts[j].ContactID
+	})
+
 	return &HealthDashboard{
 		WindowDays:  windowDays,
 		GeneratedAt: now.Format("2006-01-02 15:04:05"),
-		Summary:     HealthSummary{Avg: avg, Total: len(items), Truncated: truncated, Bands: bands},
+		Summary:     HealthSummary{Avg: avg, Total: len(items), Truncated: truncated, AlertCount: len(alerts), Bands: bands},
 		Items:       items,
+		Alerts:      alerts,
 	}, nil
 }
