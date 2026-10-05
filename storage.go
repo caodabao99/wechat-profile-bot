@@ -558,6 +558,80 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 19 {
+		// v19: 可信长期记忆升级（Temporal Memory / FACT LIFECYCLE，OS 2.0 Phase 2）。
+		// 在不破坏旧字段、不改现有代码语义的前提下：宽化 profile_facts 的 status CHECK
+		// （追加 inferred/confirmed/verified/stale/conflict/rejected/superseded，保留 active/retired），
+		// 新增 7 个生命周期/时效列；profile_fact_evidence 新增 4 个证据评估列。
+		//
+		// 为何可以重建 profile_facts：主库连接 DSN 未开 foreign_keys（SQLite 默认 OFF），
+		// 故 DROP+RENAME 不会经 ON DELETE CASCADE 波及 profile_fact_evidence；复制时保留原 id，
+		// 使证据的 fact_id 继续对齐。profile_facts 本身属 derived/可重建/不入备份，重建成本可接受。
+		if _, err := db.Exec(`CREATE TABLE profile_facts_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			fact_type TEXT NOT NULL,
+			fact_key TEXT NOT NULL DEFAULT '',
+			fact_value TEXT NOT NULL,
+			source TEXT NOT NULL DEFAULT 'profile',
+			confidence REAL NOT NULL DEFAULT 0.6,
+			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired','inferred','confirmed','verified','stale','conflict','rejected','superseded')),
+			first_seen TEXT NOT NULL DEFAULT '',
+			last_seen TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			source_type TEXT NOT NULL DEFAULT 'ai' CHECK(source_type IN ('user','message','ai','system')),
+			valid_from TEXT NOT NULL DEFAULT '',
+			valid_until TEXT NOT NULL DEFAULT '',
+			last_confirmed_at TEXT NOT NULL DEFAULT '',
+			superseded_by INTEGER,
+			confidence_type TEXT NOT NULL DEFAULT 'inferred' CHECK(confidence_type IN ('direct','multi_evidence','inferred','user_confirmed')),
+			evidence_strength REAL NOT NULL DEFAULT 0,
+			UNIQUE(contact_id, fact_type, fact_key, fact_value)
+		)`); err != nil {
+			return err
+		}
+		// 保留原 id / 旧字段值；历史事实视为 AI 派生（source_type='ai'、confidence_type='inferred'）。
+		if _, err := db.Exec(`INSERT INTO profile_facts_new
+			(id, contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at, source_type, confidence_type)
+			SELECT id, contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at, 'ai', 'inferred'
+			FROM profile_facts`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`DROP TABLE profile_facts`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`ALTER TABLE profile_facts_new RENAME TO profile_facts`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_profile_facts_contact ON profile_facts(contact_id, status)`); err != nil {
+			return err
+		}
+		// 证据评估列（无 CHECK、纯附加；历史证据都是字面命中 → match_type='exact'、direct=1）。
+		// 幂等：逐列先查 pragma_table_info 是否存在（同 v8 msg_unix 的做法），避免测试
+		// 回卷 user_version 后重跑 v19 报 duplicate column。
+		for _, col := range []struct{ name, ddl string }{
+			{"match_type", `ALTER TABLE profile_fact_evidence ADD COLUMN match_type TEXT NOT NULL DEFAULT 'exact'`},
+			{"support_strength", `ALTER TABLE profile_fact_evidence ADD COLUMN support_strength REAL NOT NULL DEFAULT 0.6`},
+			{"quote", `ALTER TABLE profile_fact_evidence ADD COLUMN quote TEXT NOT NULL DEFAULT ''`},
+			{"is_direct_support", `ALTER TABLE profile_fact_evidence ADD COLUMN is_direct_support INTEGER NOT NULL DEFAULT 1`},
+		} {
+			var exists int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('profile_fact_evidence') WHERE name=?`, col.name,
+			).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				if _, err := db.Exec(col.ddl); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 19`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

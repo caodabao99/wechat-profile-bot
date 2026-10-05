@@ -14,6 +14,7 @@ import (
 //
 //	GET  /api/contacts/{id}/facts          可信画像事实 + 证据链（空则自愈重建）
 //	POST /api/contacts/{id}/facts/rebuild  强制重建事实 + 证据
+//	POST /api/contacts/{id}/facts/confirm/{factId}  将事实提升为用户确认（最高可信来源，5.5）
 //	GET  /api/contacts/{id}/trend          关系变化趋势（升温/降温/沉寂）
 //
 // 全局（route() 里 `case "relationships"`）：
@@ -50,6 +51,39 @@ func (s *apiServer) routeContactFacts(w http.ResponseWriter, r *http.Request, id
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"active": active, "evidence": evidence, "facts": facts,
 		})
+		return
+	}
+	if len(sub) == 2 && sub[0] == "confirm" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		factID, err := strconv.ParseInt(sub[1], 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "事实 ID 无效")
+			return
+		}
+		// 越权保护：事实必须属于该联系人
+		var owner int64
+		if err := s.db.QueryRow(`SELECT contact_id FROM profile_facts WHERE id=?`, factID).Scan(&owner); err != nil {
+			writeErr(w, http.StatusNotFound, "事实不存在")
+			return
+		}
+		if owner != id {
+			writeErr(w, http.StatusForbidden, "事实不属于该联系人")
+			return
+		}
+		if err := ConfirmFact(s.db, factID); err != nil {
+			writeErr(w, http.StatusInternalServerError, "确认事实失败: "+err.Error())
+			return
+		}
+		facts, err := GetFacts(s.db, id, false)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取事实失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"facts": facts})
 		return
 	}
 	if len(sub) != 0 {

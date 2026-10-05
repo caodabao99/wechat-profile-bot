@@ -61,8 +61,8 @@ func init() {
 		{Name: "gamification_state", Type: "derived", Owner: "gamification", Backup: true, Rebuild: true, HasContactID: false, Note: "全局 XP/等级状态"},
 
 		// —— 派生/缓存表：不入备份（restoreSkipTables），恢复末尾清空，缺则自愈重建 ——
-		{Name: "profile_facts", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "可信画像事实，deriveFacts 产"},
-		{Name: "profile_fact_evidence", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "事实证据，FK 依赖 profile_facts"},
+		{Name: "profile_facts", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "可信画像事实，deriveFacts 产；含 FACT 生命周期（status/source_type/valid_from/valid_until/superseded_by/confidence_type/evidence_strength）"},
+		{Name: "profile_fact_evidence", Type: "derived", Owner: "facts", Backup: false, Rebuild: true, HasContactID: true, Note: "事实证据，FK 依赖 profile_facts；含证据评估（match_type/support_strength/quote/is_direct_support）"},
 		{Name: "relationship_daily_metrics", Type: "derived", Owner: "metrics", Backup: false, Rebuild: true, HasContactID: true, Note: "日粒度互动聚合，RebuildDailyMetrics 产"},
 		{Name: "relationship_action_suggestions", Type: "derived", Owner: "relationship", Backup: false, Rebuild: true, HasContactID: true},
 		{Name: "suggestion_outcomes", Type: "derived", Owner: "relationship", Backup: false, Rebuild: true, HasContactID: true, Note: "建议回测结果，FK 依赖 suggestions"},

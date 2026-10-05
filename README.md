@@ -557,6 +557,9 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | DELETE | `/api/assistant/prompts/{key}` | 重置为内置默认（删除覆盖行） |
 | POST | `/api/assistant/prompts/{key}/preview` | 用样本变量试渲染（只读、不调模型），body `{"vars":{...}}`，返回 `{prompt}` |
 | POST | `/api/relationships/connections/rebuild` | 手动全量重建关系连线（纯 SQL，不调模型） |
+| GET | `/api/contacts/{id}/facts` | 可信画像事实 + 证据链（`?includeRetired=1` 含历史；空则自愈重建）；每条事实附 FACT 生命周期字段（status/sourceType/validFrom/validUntil/supersededBy/confidenceType/evidenceStrength）与逐条证据评估（matchType/isDirectSupport/supportStrength/quote） |
+| POST | `/api/contacts/{id}/facts/rebuild` | 强制重建该联系人事实 + 证据 |
+| POST | `/api/contacts/{id}/facts/confirm/{factId}` | 将一条事实提升为「用户确认」（最高可信来源，confidence=1.0、sourceType=user，后续派生不再自动降级它）；越权/不属于该联系人 → 403 |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
 | GET | `/api/life/timeline` | 人生年表里程碑（每次现算，聚合很轻） |

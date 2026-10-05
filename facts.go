@@ -89,20 +89,44 @@ func extractProfileFactsLocked(db *sql.DB, contactID int64) (int, int, error) {
 	facts := deriveFacts(profileJSON.String)
 	now := time.Now().Format(time.RFC3339)
 
-	// 1) 现有一律先标 retired
-	if _, err := db.Exec(`UPDATE profile_facts SET status='retired', updated_at=? WHERE contact_id=? AND status='active'`, now, contactID); err != nil {
+	// 1) 现有一律先标 retired（用户确认的事实 source_type='user' 优先级最高，绝不自动降级）
+	if _, err := db.Exec(`UPDATE profile_facts SET status='retired', updated_at=? WHERE contact_id=? AND status='active' AND source_type!='user'`, now, contactID); err != nil {
 		return 0, 0, err
 	}
-	// 2) 逐条 UPSERT 回 active；已存在则只刷新状态与时间，保留其 confidence（可能已被证据抬高）
+	// 2) 逐条 UPSERT 回 active；已存在则只刷新状态与时间，保留其 confidence（可能已被证据抬高）。
+	// 用户确认事实（source_type='user'）：ON CONFLICT 不改其 status/失效标记，保持权威。
+	// 重新出现的旧值：复位 valid_until/superseded_by（事实重新生效）。
 	for _, f := range facts {
 		if _, err := db.Exec(
-			`INSERT INTO profile_facts (contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, 'profile', 0.6, 'active', ?, ?, ?, ?)
+			`INSERT INTO profile_facts (contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at, source_type, confidence_type, valid_from)
+			 VALUES (?, ?, ?, ?, 'profile', 0.6, 'active', ?, ?, ?, ?, 'ai', 'inferred', ?)
 			 ON CONFLICT(contact_id, fact_type, fact_key, fact_value) DO UPDATE SET
-			   status='active', last_seen=excluded.last_seen, updated_at=excluded.updated_at`,
-			contactID, f.Type, f.Key, f.Value, now, now, now, now); err != nil {
+			   status=CASE WHEN source_type='user' THEN status ELSE 'active' END,
+			   last_seen=excluded.last_seen,
+			   updated_at=excluded.updated_at,
+			   valid_until=CASE WHEN source_type='user' THEN valid_until ELSE '' END,
+			   superseded_by=CASE WHEN source_type='user' THEN superseded_by ELSE NULL END`,
+			contactID, f.Type, f.Key, f.Value, now, now, now, now, now); err != nil {
 			return 0, 0, err
 		}
+	}
+	// 2b) 时效取代（OS 2.0 5.4）：仅对单值型事实（职业/城市/亲密度）生效——本轮刚被降级、
+	// 且同 (类型,键) 已出现不同值的 active 事实的旧记录，语义上是被「取代」而非「消失」，
+	// 标 superseded、写 valid_until 失效时间、回填 superseded_by 指向新事实。多值集合型（兴趣/性格/
+	// 口头禅…）的移除属「消失」，保持 retired，不在此列。
+	if _, err := db.Exec(`UPDATE profile_facts
+		SET status='superseded', valid_until=?, superseded_by=(
+			SELECT q.id FROM profile_facts q
+			WHERE q.contact_id=profile_facts.contact_id AND q.fact_type=profile_facts.fact_type
+			  AND q.fact_key=profile_facts.fact_key AND q.status='active'
+			ORDER BY q.confidence DESC, q.id DESC LIMIT 1)
+		WHERE contact_id=? AND status='retired' AND updated_at=? AND source_type!='user'
+		  AND fact_type IN ('occupation','location','closeness')
+		  AND EXISTS(SELECT 1 FROM profile_facts q
+			WHERE q.contact_id=profile_facts.contact_id AND q.fact_type=profile_facts.fact_type
+			  AND q.fact_key=profile_facts.fact_key AND q.status='active' AND q.fact_value!=profile_facts.fact_value)`,
+		now, contactID, now); err != nil {
+		return 0, 0, err
 	}
 	var active, retired int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM profile_facts WHERE contact_id=? AND status='active'`, contactID).Scan(&active); err != nil {
@@ -184,14 +208,22 @@ func attachFactEvidenceLocked(db *sql.DB, contactID int64) (int, error) {
 			hits = append(hits, findFor("messages_archive", 1)...)
 		}
 		n := 0
+		direct := 0
 		for _, h := range hits {
 			if n >= evidencePerFact {
 				break
 			}
+			// 命中即字面包含事实值 → direct 支撑；否则视为 context（当前召回均为字面，保留分类以供后续扩展）
+			isDirect := strings.Contains(h.Content, f.value) || strings.Contains(h.Snippet, f.value)
+			mt, ss := "contextual", 0.4
+			if isDirect {
+				mt, ss = "exact", 0.8
+				direct++
+			}
 			if _, err := db.Exec(
-				`INSERT OR IGNORE INTO profile_fact_evidence (fact_id, contact_id, message_id, archived, snippet, msg_time, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				f.id, contactID, h.ID, boolToInt(h.Archived), h.Snippet, h.MsgTime, now); err != nil {
+				`INSERT OR IGNORE INTO profile_fact_evidence (fact_id, contact_id, message_id, archived, snippet, msg_time, created_at, match_type, support_strength, quote, is_direct_support)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				f.id, contactID, h.ID, boolToInt(h.Archived), h.Snippet, h.MsgTime, now, mt, ss, h.Snippet, boolToInt(isDirect)); err != nil {
 				return total, err
 			}
 			n++
@@ -201,7 +233,19 @@ func attachFactEvidenceLocked(db *sql.DB, contactID int64) (int, error) {
 		if conf > 0.95 {
 			conf = 0.95
 		}
-		if _, err := db.Exec(`UPDATE profile_facts SET confidence=?, updated_at=? WHERE id=?`, conf, now, f.id); err != nil {
+		// 证据强度（0~1）= 直接支撑占比；置信类型随直接证据数升级（描述性元数据，不改数值置信公式）
+		strength := 0.0
+		if n > 0 {
+			strength = float64(direct) / float64(n)
+		}
+		confType := "inferred"
+		switch {
+		case direct >= 2:
+			confType = "multi_evidence"
+		case direct == 1:
+			confType = "direct"
+		}
+		if _, err := db.Exec(`UPDATE profile_facts SET confidence=?, evidence_strength=?, confidence_type=?, updated_at=? WHERE id=? AND source_type!='user'`, conf, strength, confType, now, f.id); err != nil {
 			return total, err
 		}
 	}
@@ -241,6 +285,26 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// ConfirmFact 将一条既有事实提升为「用户确认」的最高可信来源（OS 2.0 5.5）。
+// 之后派生流程不会自动降级或改写它的 status/confidence，只有再次显式操作才会变动。
+// 未命中任何行返回 sql.ErrNoRows。
+func ConfirmFact(db *sql.DB, factID int64) error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.Exec(`UPDATE profile_facts
+		SET source_type='user', status='confirmed', confidence=1.0, confidence_type='user_confirmed',
+		    last_confirmed_at=?, valid_from=CASE WHEN valid_from='' THEN ? ELSE valid_from END, updated_at=?
+		WHERE id=?`, now, now, now, factID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // tableExistsLocked 检查表是否存在，要求调用方已持 dbMu。
 func tableExistsLocked(db *sql.DB, name string) bool {
 	var n int
@@ -252,23 +316,34 @@ func tableExistsLocked(db *sql.DB, name string) bool {
 
 // FactView 事实 + 其证据（供 API/前端展示）
 type FactView struct {
-	ID         int64              `json:"id"`
-	Type       string             `json:"type"`
-	Key        string             `json:"key"`
-	Value      string             `json:"value"`
-	Status     string             `json:"status"`
-	Confidence float64            `json:"confidence"`
-	FirstSeen  string             `json:"firstSeen"`
-	LastSeen   string             `json:"lastSeen"`
-	Evidence   []FactEvidenceView `json:"evidence"`
+	ID               int64              `json:"id"`
+	Type             string             `json:"type"`
+	Key              string             `json:"key"`
+	Value            string             `json:"value"`
+	Status           string             `json:"status"`
+	Confidence       float64            `json:"confidence"`
+	FirstSeen        string             `json:"firstSeen"`
+	LastSeen         string             `json:"lastSeen"`
+	SourceType       string             `json:"sourceType"`
+	ConfidenceType   string             `json:"confidenceType"`
+	EvidenceStrength float64            `json:"evidenceStrength"`
+	ValidFrom        string             `json:"validFrom"`
+	ValidUntil       string             `json:"validUntil"`
+	LastConfirmedAt  string             `json:"lastConfirmedAt"`
+	SupersededBy     *int64             `json:"supersededBy,omitempty"`
+	Evidence         []FactEvidenceView `json:"evidence"`
 }
 
 // FactEvidenceView 一条支撑证据
 type FactEvidenceView struct {
-	MessageID int64  `json:"messageId"`
-	Archived  bool   `json:"archived"`
-	Snippet   string `json:"snippet"`
-	MsgTime   string `json:"msgTime"`
+	MessageID       int64   `json:"messageId"`
+	Archived        bool    `json:"archived"`
+	Snippet         string  `json:"snippet"`
+	MsgTime         string  `json:"msgTime"`
+	MatchType       string  `json:"matchType"`
+	SupportStrength float64 `json:"supportStrength"`
+	Quote           string  `json:"quote"`
+	IsDirectSupport bool    `json:"isDirectSupport"`
 }
 
 // GetFacts 读取某联系人的事实（含证据）。includeRetired=false 时只返回 active。
@@ -278,10 +353,13 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 
 	where := `contact_id=?`
 	if !includeRetired {
-		where += ` AND status='active'`
+		// 「当前态」= 非历史（排除 retired/superseded/rejected）；包含 active/confirmed/verified/inferred/stale/conflict。
+		// 既有仅有 active/retired 的测试中，与旧 `status='active'` 完全等价。
+		where += ` AND status NOT IN ('retired','superseded','rejected')`
 	}
 	rows, err := db.Query(
-		`SELECT id, fact_type, fact_key, fact_value, status, confidence, first_seen, last_seen
+		`SELECT id, fact_type, fact_key, fact_value, status, confidence, first_seen, last_seen,
+		        source_type, confidence_type, evidence_strength, valid_from, valid_until, last_confirmed_at, superseded_by
 		 FROM profile_facts WHERE `+where+`
 		 ORDER BY status ASC, confidence DESC, fact_type ASC, id ASC`, contactID)
 	if err != nil {
@@ -293,8 +371,14 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 	idx := map[int64]int{}
 	for rows.Next() {
 		var v FactView
-		if err := rows.Scan(&v.ID, &v.Type, &v.Key, &v.Value, &v.Status, &v.Confidence, &v.FirstSeen, &v.LastSeen); err != nil {
+		var sup sql.NullInt64
+		if err := rows.Scan(&v.ID, &v.Type, &v.Key, &v.Value, &v.Status, &v.Confidence, &v.FirstSeen, &v.LastSeen,
+			&v.SourceType, &v.ConfidenceType, &v.EvidenceStrength, &v.ValidFrom, &v.ValidUntil, &v.LastConfirmedAt, &sup); err != nil {
 			return nil, err
+		}
+		if sup.Valid {
+			s := sup.Int64
+			v.SupersededBy = &s
 		}
 		v.Evidence = []FactEvidenceView{}
 		idx[v.ID] = len(out)
@@ -312,7 +396,7 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 			args[i] = id
 		}
 		er, err := db.Query(
-			`SELECT fact_id, message_id, archived, snippet, msg_time
+			`SELECT fact_id, message_id, archived, snippet, msg_time, match_type, support_strength, quote, is_direct_support
 			 FROM profile_fact_evidence WHERE fact_id IN (`+placeholders+`)
 			 ORDER BY id DESC`, args...)
 		if err != nil {
@@ -322,11 +406,12 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 		for er.Next() {
 			var factID int64
 			var ev FactEvidenceView
-			var arch int
-			if err := er.Scan(&factID, &ev.MessageID, &arch, &ev.Snippet, &ev.MsgTime); err != nil {
+			var arch, isDirect int
+			if err := er.Scan(&factID, &ev.MessageID, &arch, &ev.Snippet, &ev.MsgTime, &ev.MatchType, &ev.SupportStrength, &ev.Quote, &isDirect); err != nil {
 				return nil, err
 			}
 			ev.Archived = arch == 1
+			ev.IsDirectSupport = isDirect == 1
 			if pos, ok := idx[factID]; ok {
 				out[pos].Evidence = append(out[pos].Evidence, ev)
 			}
