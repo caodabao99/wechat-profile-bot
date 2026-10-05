@@ -51,6 +51,7 @@ func init() {
 		{Name: "contact_tags", Type: "config", Owner: "tag", Backup: true, Rebuild: false, HasContactID: false, Note: "标签字典（全局，不按联系人关联）"},
 		{Name: "followup_items", Type: "core", Owner: "followup", Backup: true, Rebuild: false, HasContactID: true},
 		{Name: "relationship_goals", Type: "core", Owner: "goals", Backup: true, Rebuild: false, HasContactID: true, Note: "关系目标，用户创建非派生"},
+		{Name: "relationship_projects", Type: "core", Owner: "projects", Backup: true, Rebuild: false, HasContactID: true, Note: "关系项目（Phase 5），目标之上的高层经营单元，用户创建非派生"},
 		{Name: "contact_events", Type: "audit", Owner: "timeline", Backup: true, Rebuild: false, HasContactID: true, Note: "关系时间线事件"},
 
 		// —— 游戏化 / 质量 / 情绪等派生状态表（含 contact_id，删联系人时清理；可重建但仍入备份）——

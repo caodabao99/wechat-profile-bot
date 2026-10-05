@@ -564,6 +564,9 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/relationships/state` | 全局关系状态看板（按健康度升序/亲密度降序） |
 | POST | `/api/relationships/state/recompute` | 强制重算全体关系状态（仅当状态真实跨越阈值才写变迁事件，返回 `{changed,total,states}`） |
 | GET | `/api/relationships/decisions/today` | Decision Engine（Phase 4）「今天最值得做的关系行动」Top N（`?top=3`）：汇聚状态机+健康度+待办+目标+重要日子+行动建议，确定性打分（非 LLM 排序），每条含 `reason_codes`/为什么现在/建议行动/最佳时段/来源/置信度 |
+| GET | `/api/relationships/projects` | Relationship Projects（Phase 5）列表（`?contactId=&status=`；`status=open` 取 active+paused） |
+| POST | `/api/relationships/projects` | 新建关系项目（目标之上的高层经营单元：主题/阶段/下一步行动/截止） |
+| GET/PUT/DELETE | `/api/relationships/projects/{id}` | 单条项目读/局部更新（PATCH 语义）/删除 |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
 | GET | `/api/life/timeline` | 人生年表里程碑（每次现算，聚合很轻） |
@@ -653,7 +656,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 本版为**内部底座 + 缺陷修复**（无新增用户可见功能）：落地 Personal Relationship OS 路线图中优先级最高的两项数据底座，并修复若干真实 bug：
 
-- **数据层登记表（Data Layer Registry，`registry.go` 新建）**：`TableMeta`/`TableRegistry()`/`GetTableMeta()`/`IsContactScoped()` 把全库 40 张表的语义（core/derived/cache/audit/config）与备份/重建/是否含 `contact_id` 三轴收敛为单一事实来源。新增运维只读端点 `GET /api/system/table-registry`。
+- **数据层登记表（Data Layer Registry，`registry.go` 新建）**：`TableMeta`/`TableRegistry()`/`GetTableMeta()`/`IsContactScoped()` 把全库各表的语义（core/derived/cache/audit/config）与备份/重建/是否含 `contact_id` 三轴收敛为单一事实来源。新增运维只读端点 `GET /api/system/table-registry`。
 - **统一指标层（Unified Metrics Layer，`metrics.go` 新建）**：`GetAggregatedMetrics()` 把「按联系人、归档感知、窗口内」的小时直方与回复延迟中位收敛到一处（单趟锁、本地时区、缺归档表自动降级、纯读无副作用），`coach.go` 的时机/节奏/作息签名改从它取数，不再各自直查 `messages`。`medianSeconds` 为可脱库单测纯函数。
 - **修复：删联系人回滚**。`contact_connections` 用 `contact_a/contact_b` 双列、无 `contact_id`，若误入级联清理清单会生成 `WHERE contact_id=?` 报 *no such column* 而让删除事务整体失败；已从 `contactCleanupTables` 移除（该表由 `contact.go` 专用 DELETE 处理），并加回归护栏单测。
 - **修复：跨面板消息计数口径不一致**。`/api/status` 与 `/api/system/data-report` 改为从 `relationship_daily_metrics` 聚合计数后，刚升级、指标尚未建立时会误报 0 条；现与 health/heatmap 同语义在读路径内自愈重建（`ensureDailyMetricsSeededLocked`），并有真实 HTTP 活体用例验证。

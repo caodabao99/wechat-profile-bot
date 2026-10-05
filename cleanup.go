@@ -26,6 +26,7 @@ var contactCleanupTables = []string{
 	"relationship_action_suggestions",
 	"assistant_emotions",
 	"relationship_goals",
+	"relationship_projects",
 	"weekly_challenges",
 	"contact_achievements",
 	"contact_quality_history",

@@ -245,6 +245,8 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 		s.routeRelationshipState(w, r, sub[1:])
 	case "decisions":
 		s.routeTodayDecisions(w, r)
+	case "projects":
+		s.routeProjects(w, r, sub[1:])
 	case "circles":
 		s.hRelationshipCircles(w, r)
 	default:
