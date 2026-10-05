@@ -840,6 +840,70 @@
           <p class="hint block" v-if="weeklyPlan.generatedAt">上次生成：{{ fmtTime(weeklyPlan.generatedAt).slice(0,16) }}</p>
         </div>
 
+        <!-- v5.3.0 #5 关系教练：周计划话术 + 该联系人的最佳联系时机（纯确定性、零新模型调用） -->
+        <div class="card coach-card">
+          <div class="tl-head">
+            <h3 style="margin:0">🎯 关系教练</h3>
+            <button class="btn ghost sm" @click="loadCoach">刷新</button>
+          </div>
+          <p class="hint block">把本周维护计划的目标逐条揉成「为什么联系 + 说什么 + 什么时候发」的行动卡片；时机来自对方历史发言的小时/星期分布，纯本地统计、不调模型。</p>
+          <p class="empty" v-if="coach.note">{{ coach.note }}</p>
+          <p class="empty" v-else-if="!coach.items.length">本周暂无教练建议——保持得不错。</p>
+          <ul class="coach-list" v-else>
+            <li class="coach-item" v-for="it in coach.items" :key="it.contactId">
+              <div class="co-top">
+                <a :href="'#/contact/' + it.contactId">{{ it.name }}</a>
+                <span class="chip co-action" v-if="it.action">{{ it.action }}</span>
+              </div>
+              <p class="co-reason hint" v-if="it.reason">{{ it.reason }}</p>
+              <p class="co-draft" v-if="it.draft">建议开口：{{ it.draft }}
+                <button class="btn ghost xs" @click="copyText(it.draft)">复制</button>
+              </p>
+              <div class="co-timing" v-if="it.timing">
+                <span class="tm-chip" v-if="fmtTimingHours(it.timing)">🕐 {{ fmtTimingHours(it.timing) }}</span>
+                <span class="tm-chip" v-if="it.timing.bestWeekdays && it.timing.bestWeekdays.length">📅 {{ it.timing.bestWeekdays.join('、') }}</span>
+                <span class="tm-note hint" v-if="it.timing.note">{{ it.timing.note }}</span>
+              </div>
+            </li>
+          </ul>
+          <p class="hint block" v-if="coach.generatedAt">更新于 {{ coach.generatedAt }}</p>
+        </div>
+
+        <!-- v5.3.0 #8 维护挑战 / 游戏化：本周挑战 + XP/等级 + 徽章（确定性完成检测） -->
+        <div class="card chal-card">
+          <div class="tl-head">
+            <h3 style="margin:0">🏆 维护挑战</h3>
+            <button class="btn ghost sm" @click="loadChallenges" :disabled="chalsBusy">{{ chalsBusy ? '刷新中…' : '刷新' }}</button>
+          </div>
+          <p class="hint block">每周从久未联系、待回复、核心圈里自动挑最多 3 条小目标；你照常发消息，系统按本周新增互动自动判定达成并加经验值——不用手动打勾。</p>
+          <div class="chal-head" v-if="chals.total || chals.xp">
+            <div class="chal-week">
+              <span class="cw-label">本周进度</span>
+              <span class="cw-num">{{ chals.done }} / {{ chals.total }}</span>
+              <span class="cw-bar"><i :style="{width: chalWeekPct() + '%'}"></i></span>
+            </div>
+            <div class="chal-level">
+              <span class="cl-label">Lv.{{ chals.level }}</span>
+              <span class="cl-num">{{ chals.xp }} XP</span>
+              <span class="cl-bar"><i :style="{width: chalLevelPct() + '%'}"></i></span>
+              <span class="cl-next hint">距下一级还差 {{ chals.nextLevelAt - chals.xp }} XP</span>
+            </div>
+          </div>
+          <p class="empty" v-if="!chals.challenges.length">本周还没有生成挑战——多录入一些聊天记录后自动会出。</p>
+          <ul class="chal-list" v-else>
+            <li class="chal-item" :class="{done: c.achieved}" v-for="c in chals.challenges" :key="c.kind + '-' + c.contactId">
+              <span class="ci-check">{{ c.achieved ? '✓' : '○' }}</span>
+              <div class="ci-body">
+                <div class="ci-title">{{ c.title }}</div>
+                <a class="hint" :href="'#/contact/' + c.contactId" v-if="c.contactId">{{ c.name }}</a>
+              </div>
+              <span class="ci-xp">+{{ c.xp }} XP</span>
+            </li>
+          </ul>
+          <p class="hint block" v-if="chals.badgesUnlocked">已解锁成就徽章 {{ chals.badgesUnlocked }} 枚 · 详见「洞察 · 成就」。</p>
+          <p class="hint block" v-if="chals.weekStart">统计周起始：{{ chals.weekStart }}</p>
+        </div>
+
         <!-- 设置 -->
         <div class="card">
           <h3>提醒设置</h3>
@@ -1207,6 +1271,9 @@
         <a href="#" :class="{active: insightTab==='network'}" @click.prevent="switchInsight('network')">社交网络</a>
         <a href="#" :class="{active: insightTab==='self'}" @click.prevent="switchInsight('self')">自我画像</a>
         <a href="#" :class="{active: insightTab==='learning'}" @click.prevent="switchInsight('learning')">干预学习</a>
+        <a href="#" :class="{active: insightTab==='health'}" @click.prevent="switchInsight('health')">健康仪表盘</a>
+        <a href="#" :class="{active: insightTab==='circles'}" @click.prevent="switchInsight('circles')">关系圈层</a>
+        <a href="#" :class="{active: insightTab==='topics'}" @click.prevent="switchInsight('topics')">主题演化</a>
         <a href="#" :class="{active: insightTab==='life'}" @click.prevent="switchInsight('life')">人生总览</a>
         <a href="#" :class="{active: insightTab==='lifeproj'}" @click.prevent="switchInsight('lifeproj')">未来推演</a>
         <a href="#" :class="{active: insightTab==='lifets'}" @click.prevent="switchInsight('lifets')">人生年表</a>
@@ -1715,6 +1782,108 @@
               </div>
             </li>
           </ul>
+        </div>
+      </template>
+
+      <!-- ---- 关系健康度仪表盘 ---- -->
+      <template v-if="insightTab==='health'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>关系健康度</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="health.generatedAt">更新于 {{ health.generatedAt }}</span>
+              <button class="btn sm" @click="loadHealth" :disabled="healthBusy">{{ healthBusy ? '计算中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="hint block">给每段关系融合亲密度 / 趋势 / 情绪 / 沉默 / 单向信号，算出 0-100 健康分（与驾驶舱的「对话质量分」是不同口径）。纯本地确定性，不花模型费用。</p>
+          <p class="empty" v-if="healthBusy && !health.items.length">加载中…</p>
+          <p class="empty" v-else-if="!health.items.length">还没有可评估的联系人。</p>
+          <template v-if="health.summary.total">
+            <div class="health-head">
+              <div class="health-avg">平均健康分 <strong>{{ health.summary.avg }}</strong><span class="hint"> · 共 {{ health.summary.total }} 人</span></div>
+              <div class="health-hist">
+                <div class="hh-row" v-for="b in health.summary.bands" :key="b.band">
+                  <span class="hh-band">{{ b.band }}</span>
+                  <span class="hh-bar"><i :style="{width: (b.count / bandMax() * 100) + '%'}"></i></span>
+                  <span class="hh-num">{{ b.count }}</span>
+                </div>
+              </div>
+            </div>
+            <p class="hint block" v-if="health.summary.truncated">为保证速度，仅覆盖前若干位联系人。</p>
+            <h3 class="life-sub">全局热力图（点格子直达该联系人）</h3>
+            <div class="health-grid">
+              <div class="health-cell" v-for="it in health.items" :key="it.contactId"
+                   :title="it.name + ' 健康 ' + it.health + '（' + it.band + '）'"
+                   :style="{background: healthColor(it.health)}"
+                   @click="gotoDetail(it.contactId)"></div>
+            </div>
+            <h3 class="life-sub">最需关注</h3>
+            <ul class="health-focus">
+              <li v-for="it in healthFocus" :key="it.contactId" @click="gotoDetail(it.contactId)">
+                <span class="hf-dot" :style="{background: healthColor(it.health)}"></span>
+                <span class="hf-name">{{ it.name }}</span>
+                <span class="hint hf-signals">{{ healthSignalText(it) }}</span>
+                <span class="hf-health">{{ it.health }}</span>
+              </li>
+            </ul>
+          </template>
+        </div>
+      </template>
+
+      <!-- ---- 关系圈层 ---- -->
+      <template v-if="insightTab==='circles'">
+        <div class="card">
+          <div class="tl-head">
+            <h2>关系圈层</h2>
+            <div class="lh-actions">
+              <span class="hint" v-if="circles.generatedAt">更新于 {{ circles.generatedAt }}</span>
+              <button class="btn sm" @click="loadCircles" :disabled="circlesBusy">{{ circlesBusy ? '计算中…' : '刷新' }}</button>
+            </div>
+          </div>
+          <p class="hint block">按「互动频率 + 亲密度」自动分入四层圈层，每层配一套差异化维护打法（点成员直达该联系人）。</p>
+          <p class="empty" v-if="!circles.tiers.length">加载中…</p>
+          <div class="circle-tier" v-for="tr in circles.tiers" :key="tr.key" :class="circleTierClassOf(tr.key)">
+            <div class="ct-head">
+              <span class="ct-label">{{ tr.label }}</span>
+              <span class="ct-count">{{ tr.count }} 人</span>
+              <span class="ct-cadence">建议节奏：每 {{ tr.cadenceDays }} 天</span>
+            </div>
+            <div class="ct-strategy">{{ tr.strategy }}</div>
+            <div class="ct-chips">
+              <span class="chip ct-member" v-for="m in circleMembers(tr.key)" :key="m.contactId" @click="gotoDetail(m.contactId)">
+                {{ m.name }}<span class="cm-cluster" v-if="m.cluster">{{ m.cluster }}</span>
+              </span>
+              <span class="hint" v-if="!circleMembers(tr.key).length">暂无成员</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- 消息主题演化 ---- -->
+      <template v-if="insightTab==='topics'">
+        <div class="card">
+          <div class="tl-head"><h2>消息主题演化</h2></div>
+          <p class="hint block">按周让模型聚类某联系人的聊天主题，追踪涌现 ↑ / 持续 → / 消退 ↓。未配置模型或关闭高阶洞察时不会生成。</p>
+          <label class="topics-pick">联系人：
+            <select v-model="topicsContact" @change="topicsSelectChange">
+              <option :value="0">请选择…</option>
+              <option v-for="c in contacts" :key="c.id" :value="c.id">{{ displayName(c) }}</option>
+            </select>
+          </label>
+          <p class="empty" v-if="topicsBusy">加载中…</p>
+          <p class="empty" v-else-if="!topics.contactId">请选择一位联系人。</p>
+          <template v-else>
+            <p class="hint block" v-if="topics.note">{{ topics.note }}</p>
+            <div class="topics-week" v-for="w in topics.weeks" :key="w.weekStart">
+              <div class="tw-head">{{ w.weekStart }} <span class="hint" v-if="w.generatedAt">{{ w.generatedAt }}</span></div>
+              <div class="tw-chips">
+                <span class="chip" :class="'ts-' + t.status" v-for="(t, i) in w.topics" :key="i">
+                  {{ t.name }} <b class="ts-arrow">{{ topicArrow(t.status) }}</b> <span class="ts-w">{{ t.weight }}</span>
+                </span>
+                <span class="hint" v-if="!w.topics || !w.topics.length">该周无主题</span>
+              </div>
+            </div>
+          </template>
         </div>
       </template>
 

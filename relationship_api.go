@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // 关系驾驶舱后端接口（Phase 8/10）。
@@ -201,9 +202,47 @@ func (s *apiServer) routeRelationships(w http.ResponseWriter, r *http.Request, s
 		s.routeSuggestions(w, r, sub[1:])
 	case "connections":
 		s.routeConnections(w, r, sub[1:])
+	case "health":
+		s.hRelationshipHealth(w, r)
+	case "circles":
+		s.hRelationshipCircles(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}
+}
+
+// hRelationshipHealth GET /api/relationships/health?window=90：全局关系健康度仪表盘（只读、计算即读）。
+func (s *apiServer) hRelationshipHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	window := 0
+	if v := r.URL.Query().Get("window"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			window = n
+		}
+	}
+	dash, err := ComputeHealth(s.db, time.Now(), window)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "计算健康度仪表盘失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dash)
+}
+
+// hRelationshipCircles GET /api/relationships/circles：全局关系圈层（只读、计算即读）。
+func (s *apiServer) hRelationshipCircles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		return
+	}
+	dash, err := ComputeCircles(s.db, time.Now())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "计算关系圈层失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dash)
 }
 
 func (s *apiServer) routeSuggestions(w http.ResponseWriter, r *http.Request, sub []string) {

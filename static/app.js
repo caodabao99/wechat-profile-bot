@@ -225,6 +225,8 @@ createApp({
         loadCalendarKey();
         loadWeeklyPlan();
         loadCalEvents();
+        loadCoach();
+        loadChallenges();
       } catch (e) { toast(e.message, 'error'); }
       finally { asstLoading.value = false; }
     }
@@ -257,6 +259,51 @@ createApp({
         setTimeout(loadWeeklyPlan, 8000);
       } catch (e) { toast(e.message, 'error'); }
       finally { setTimeout(() => { weeklyPlanBusy.value = false; }, 3000); }
+    }
+
+    // ---------- v5.3.0 #5 关系教练（只读装配：周计划 draft + 时机建议） ----------
+    const coach = reactive({ generatedAt: '', items: [], note: '' });
+    async function loadCoach() {
+      try {
+        const data = await api('/api/assistant/coach');
+        coach.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        coach.items = data.items || [];
+        coach.note = data.note || '';
+      } catch (e) { /* 静默：教练卡片加载失败不打断助手看板 */ }
+    }
+    // 把时机 bestHours（小时数组）拼成「19-21 点」式短语；纯前端拼接规避 Vue 插值陷阱。
+    function fmtTimingHours(t) {
+      if (!t || !t.bestHours || !t.bestHours.length) return '';
+      const s = t.bestHours.slice().sort((a, b) => a - b);
+      if (s.length === 2 && s[1] === s[0] + 1) return s[0] + '-' + s[1] + ' 点';
+      return s.map(h => h + ' 点').join('、');
+    }
+
+    // ---------- v5.3.0 #8 维护挑战 / 游戏化（读本周挑战 + XP/等级 + 徽章） ----------
+    const chals = reactive({ weekStart: '', generatedAt: '', challenges: [], done: 0, total: 0, xp: 0, level: 1, nextLevelAt: 100, badgesUnlocked: 0 });
+    const chalsBusy = ref(false);
+    async function loadChallenges() {
+      if (chalsBusy.value) return;
+      chalsBusy.value = true;
+      try {
+        const data = await api('/api/assistant/challenges');
+        chals.weekStart = data.weekStart || '';
+        chals.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        chals.challenges = data.challenges || [];
+        chals.done = data.done || 0;
+        chals.total = data.total || 0;
+        chals.xp = data.xp || 0;
+        chals.level = data.level || 1;
+        chals.nextLevelAt = data.nextLevelAt || 100;
+        chals.badgesUnlocked = data.badgesUnlocked || 0;
+      } catch (e) { toast(e.message, 'error'); }
+      finally { chalsBusy.value = false; }
+    }
+    function chalWeekPct() { return chals.total ? Math.round((chals.done / chals.total) * 100) : 0; }
+    function chalLevelPct() {
+      const base = (chals.level - 1) * 100, span = chals.nextLevelAt - base;
+      if (span <= 0) return 0;
+      return Math.max(0, Math.min(100, Math.round(((chals.xp - base) / span) * 100)));
     }
 
     // numField 校验 type=number + v-model.number 的输入框。
@@ -1521,7 +1568,7 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('briefing');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false, health: false, circles: false, topics: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1536,6 +1583,14 @@ createApp({
       if (tab === 'network' && !insightLoaded.network) { insightLoaded.network = true; loadNetwork(); }
       if (tab === 'self' && !insightLoaded.self) { insightLoaded.self = true; loadSelfPortrait(); }
       if (tab === 'learning' && !insightLoaded.learning) { insightLoaded.learning = true; loadIntervention(); }
+      if (tab === 'health' && !insightLoaded.health) { insightLoaded.health = true; loadHealth(); }
+      if (tab === 'circles' && !insightLoaded.circles) { insightLoaded.circles = true; loadCircles(); }
+      // 主题演化：读路径只读某联系人历史；首次进入默认选列表首位（若有）并拉取。
+      if (tab === 'topics') {
+        insightLoaded.topics = true;
+        if (!topicsContact.value && contacts.value.length) topicsContact.value = contacts.value[0].id;
+        if (topicsContact.value) loadTopicsFor(topicsContact.value);
+      }
       // 趋势是四个高阶子页共用的便利层：首次进入任一页顺带拉一次，失败静默。
       if ((tab === 'briefing' || tab === 'network' || tab === 'self' || tab === 'learning') && !insightLoaded.trend) { insightLoaded.trend = true; loadTrend(); }
     }
@@ -1722,6 +1777,94 @@ createApp({
         return x.toFixed(1) + ',' + y.toFixed(1);
       }).join(' ');
     }
+
+    // ---------- v5.3.0 #7 关系健康度仪表盘（确定性只读、零 LLM） ----------
+    const health = reactive({ generatedAt: '', windowDays: 90, summary: { avg: 0, total: 0, truncated: false, bands: [] }, items: [] });
+    const healthBusy = ref(false);
+    async function loadHealth() {
+      if (healthBusy.value) return;
+      healthBusy.value = true;
+      try {
+        const data = await api('/api/relationships/health?window=90');
+        health.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        health.windowDays = data.windowDays || 90;
+        health.summary = data.summary || { avg: 0, total: 0, truncated: false, bands: [] };
+        health.items = data.items || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { healthBusy.value = false; }
+    }
+    // 健康分→绿红（hue 0~120）；纯内联 style，零第三方依赖。
+    function healthColor(h) {
+      const v = Math.max(0, Math.min(100, Number(h) || 0));
+      const hue = Math.round(v * 1.2);
+      return 'hsl(' + hue + ',60%,' + (v < 20 ? 40 : 46) + '%)';
+    }
+    function bandCount(band) {
+      const b = (health.summary.bands || []).find(x => x.band === band);
+      return b ? b.count : 0;
+    }
+    function bandMax() {
+      let m = 1;
+      (health.summary.bands || []).forEach(b => { if (b.count > m) m = b.count; });
+      return m;
+    }
+    // 把信号拼成「亲密度+80 趋势+8 …」一行短语（纯前端拼接，避免模板内箭头函数）。
+    function healthSignalText(it) {
+      if (!it || !it.signals) return '';
+      return it.signals.map(s => s.label + (s.delta > 0 ? '+' : '') + s.delta).join(' ');
+    }
+    const healthFocus = computed(() => (health.items || []).slice(0, 8)); // items 已按 health 升序→最需关注在前
+
+    // ---------- v5.3.0 #6 智能关系圈层（确定性只读、零 LLM） ----------
+    const circles = reactive({ generatedAt: '', windowDays: 90, truncated: false, tiers: [], members: [] });
+    const circlesBusy = ref(false);
+    async function loadCircles() {
+      if (circlesBusy.value) return;
+      circlesBusy.value = true;
+      try {
+        const data = await api('/api/relationships/circles');
+        circles.generatedAt = (data.generatedAt || '').slice(0, 16).replace('T', ' ');
+        circles.windowDays = data.windowDays || 90;
+        circles.truncated = !!data.truncated;
+        circles.tiers = data.tiers || [];
+        circles.members = data.members || [];
+      } catch (e) { toast(e.message, 'error'); }
+      finally { circlesBusy.value = false; }
+    }
+    function circleMembers(tier) { return (circles.members || []).filter(m => m.tier === tier); }
+    const circleTierClass = { core: 'ct-core', intimate: 'ct-intimate', social: 'ct-social', weak: 'ct-weak' };
+    function circleTierClassOf(key) { return circleTierClass[key] || 'ct-weak'; }
+
+    // ---------- v5.3.0 #10 主题演化（按联系人读历史、读路径不调模型） ----------
+    const topics = reactive({ contactId: 0, name: '', weeks: [], note: '' });
+    const topicsContact = ref(0);
+    const topicsBusy = ref(false);
+    async function loadTopicsFor(cid) {
+      if (!cid) { topics.contactId = 0; topics.name = ''; topics.weeks = []; topics.note = ''; return; }
+      topicsBusy.value = true;
+      try {
+        const data = await api('/api/contacts/' + cid + '/topics');
+        topics.contactId = data.contactId || cid;
+        topics.name = data.name || '';
+        topics.weeks = data.weeks || [];
+        topics.note = data.note || '';
+      } catch (e) { toast(e.message, 'error'); }
+      finally { topicsBusy.value = false; }
+    }
+    // 最近一周的主题供下拉选择器默认展示；纯读、不触发模型。
+    function topicsLatest() {
+      const ws = topics.weeks || [];
+      return ws.length ? ws[ws.length - 1] : null;
+    }
+    // topicsDiff：把当周主题与上周对照，给每个 chip 标状态（若无上周则用模型返回的 status）。
+    function topicsStatusChip(week, i) {
+      const t = (week && week.topics && week.topics[i]) || null;
+      if (!t) return '';
+      return t.name + ' ' + (topicArrows[t.status] || '');
+    }
+    const topicArrows = { emergent: '↑', persistent: '→', fading: '↓' };
+    function topicArrow(st) { return topicArrows[st] || ''; }
+    function topicsSelectChange() { loadTopicsFor(Number(topicsContact.value) || 0); }
 
     // ---------- v4.6.0 关系知识图谱：手写内联 SVG 力导向（零第三方库、确定性） ----------
     // 数据来自 /api/insight/network 的 nodes/edges；自研斥力+弹簧+引力固定迭代收敛，
@@ -3128,6 +3271,9 @@ createApp({
       asst, asstLoading, asstBusy, asstForm,
       loadAssistant, saveAssistantSettings, testAssistantEmail, runAssistantNow,
       weeklyPlan, weeklyPlanBusy, weeklyKindLabel, loadWeeklyPlan, regenWeeklyPlan,
+      // v5.3.0 关系教练 + 维护挑战（助手页）
+      coach, loadCoach, fmtTimingHours,
+      chals, chalsBusy, loadChallenges, chalWeekPct, chalLevelPct,
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       toasts,
@@ -3147,6 +3293,10 @@ createApp({
       openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
       // 洞察页
       insightTab, switchInsight,
+      // v5.3.0 健康仪表盘 / 圈层 / 主题演化（洞察页）
+      health, healthBusy, loadHealth, healthColor, bandCount, bandMax, healthFocus, healthSignalText,
+      circles, circlesBusy, loadCircles, circleMembers, circleTierClassOf,
+      topics, topicsContact, topicsBusy, loadTopicsFor, topicsLatest, topicsStatusChip, topicArrow, topicsSelectChange,
       connections, connBusy, connTypeLabel, loadConnections, rebuildConnections,
       // 人生模拟器
       life, lifeproj, lifes, lifeBusy, lifeClassLabel,

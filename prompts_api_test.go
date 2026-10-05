@@ -3,7 +3,7 @@ package main
 // v5.2.0 提示词管理接口 HTTP 契约测试（前端「分析插件（提示词）」面板依赖的端点）。
 // 真实 SQLite + 真实 http 路由（s.route），覆盖 SV2 界面会用到的全部往返：
 //   - 鉴权（无 Bearer → 401）
-//   - GET 列表（13 项、字段齐备、初始全内置）
+//   - GET 列表（14 项、字段齐备、初始全内置）
 //   - GET 详情（default/effective/isCustom/vars）
 //   - PUT 保存合法覆盖（→ isCustom true、effective 变为覆盖）
 //   - PUT 非法覆盖（缺必填变量 → 400）、未知 key（→ 404）
@@ -82,8 +82,8 @@ func TestPromptsAPIContract(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("列表解析失败: %v %s", err, w.Body.String())
 	}
-	if listResp.Total != 13 || len(listResp.Items) != 13 {
-		t.Fatalf("列表应 13 项, got total=%d len=%d", listResp.Total, len(listResp.Items))
+	if listResp.Total != 14 || len(listResp.Items) != 14 {
+		t.Fatalf("列表应 14 项, got total=%d len=%d", listResp.Total, len(listResp.Items))
 	}
 	for _, it := range listResp.Items {
 		if it.Key == "" || it.Title == "" || len(it.Vars) == 0 {

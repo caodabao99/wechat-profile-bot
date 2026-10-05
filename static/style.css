@@ -968,3 +968,90 @@ textarea.text-input { resize: vertical; }
   .pmt-meta { width: 100%; margin-left: 0; order: 5; }
   .pmt-row { gap: 6px; }
 }
+
+/* ================= v5.3.0 关系健康度仪表盘 ================= */
+.health-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin: 12px 0 4px; }
+.health-avg { font-size: 14px; color: var(--muted); }
+.health-avg strong { font-size: 26px; color: var(--ink); margin: 0 2px; }
+.health-hist { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 4px; }
+.hh-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.hh-band { width: 64px; color: var(--muted); flex: none; }
+.hh-bar { flex: 1; height: 8px; background: var(--line); border-radius: 5px; overflow: hidden; }
+.hh-bar i { display: block; height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
+.hh-num { width: 28px; text-align: right; color: var(--ink); font-weight: 600; flex: none; }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(22px, 1fr)); gap: 4px; margin: 6px 0 4px; }
+.health-cell { aspect-ratio: 1 / 1; border-radius: 5px; cursor: pointer; min-width: 16px; transition: transform .1s; }
+.health-cell:hover { transform: scale(1.18); outline: 2px solid var(--ink); }
+.health-focus { list-style: none; margin: 6px 0 0; padding: 0; }
+.health-focus li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px dashed var(--line); cursor: pointer; }
+.health-focus li:last-child { border-bottom: none; }
+.health-focus li:hover .hf-name { color: var(--accent); }
+.hf-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.hf-name { font-weight: 600; font-size: 14px; }
+.hf-signals { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.hf-health { font-weight: 700; font-size: 15px; flex: none; }
+
+/* ================= v5.3.0 关系圈层 ================= */
+.circle-tier { border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 10px; padding: 10px 12px; margin-top: 12px; background: #fff; }
+.ct-core { border-left-color: var(--accent); }
+.ct-intimate { border-left-color: #0ea5e9; }
+.ct-social { border-left-color: var(--warn); }
+.ct-weak { border-left-color: var(--muted); }
+.ct-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ct-label { font-size: 15px; font-weight: 700; color: var(--ink); }
+.ct-count { font-size: 13px; color: var(--accent); font-weight: 600; }
+.ct-cadence { font-size: 12px; color: var(--muted); margin-left: auto; }
+.ct-strategy { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+.ct-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ct-member { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.ct-member:hover { filter: brightness(.95); }
+.cm-cluster { font-style: normal; opacity: .65; font-size: 11px; }
+
+/* ================= v5.3.0 主题演化 ================= */
+.topics-pick { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+.topics-pick select { margin-left: 6px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; background: #fff; color: var(--ink); max-width: 260px; }
+.topics-week { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin-top: 10px; }
+.tw-head { font-size: 13px; font-weight: 600; color: var(--ink); display: flex; align-items: baseline; gap: 8px; }
+.tw-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ts-emergent { background: rgba(22,163,74,.12); color: var(--ok); }
+.ts-persistent { background: #f1f3f7; color: var(--muted); }
+.ts-fading { background: rgba(217,119,6,.12); color: var(--warn); }
+.ts-arrow { font-weight: 700; margin: 0 1px; }
+.ts-w { opacity: .7; font-size: 11px; margin-left: 3px; }
+
+/* ================= v5.3.0 关系教练 ================= */
+.coach-list { list-style: none; margin: 10px 0 0; padding: 0; }
+.coach-item { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.coach-item:last-child { border-bottom: none; }
+.co-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.co-top a { color: var(--ink); text-decoration: none; word-break: break-all; }
+.co-top a:hover { color: var(--accent); }
+.co-action { flex: none; }
+.co-reason { margin: 4px 0 0; font-size: 13px; }
+.co-draft { margin: 6px 0 0; font-size: 13px; background: #f9fafb; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; word-break: break-word; }
+.co-timing { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.tm-chip { font-size: 12px; background: rgba(5,150,105,.10); color: var(--accent2); border-radius: 999px; padding: 3px 10px; }
+.tm-note { font-size: 12px; }
+
+/* ================= v5.3.0 维护挑战 / 游戏化 ================= */
+.chal-head { display: flex; gap: 20px; flex-wrap: wrap; margin: 12px 0 4px; }
+.chal-week, .chal-level { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cw-label, .cl-label { color: var(--muted); flex: none; }
+.cl-label { font-weight: 700; color: var(--accent); }
+.cw-num, .cl-num { font-weight: 600; color: var(--ink); flex: none; }
+.cw-bar, .cl-bar { flex: 1; height: 8px; background: var(--line); border-radius: 5px; overflow: hidden; min-width: 60px; }
+.cw-bar i, .cl-bar i { display: block; height: 100%; background: var(--accent); border-radius: 5px; transition: width .3s; }
+.cl-bar i { background: linear-gradient(90deg, var(--accent), var(--accent2)); }
+.cl-next { font-size: 11px; flex: none; }
+.chal-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.chal-item { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px dashed var(--line); }
+.chal-item:last-child { border-bottom: none; }
+.chal-item.done { opacity: .7; }
+.chal-item.done .ci-title { text-decoration: line-through; color: var(--muted); }
+.ci-check { font-size: 16px; color: var(--muted); flex: none; width: 20px; text-align: center; }
+.chal-item.done .ci-check { color: var(--ok); }
+.ci-body { flex: 1; min-width: 0; }
+.ci-title { font-size: 14px; font-weight: 600; color: var(--ink); }
+.ci-body a { font-size: 12px; text-decoration: none; word-break: break-all; }
+.ci-body a:hover { color: var(--accent); }
+.ci-xp { font-size: 12px; color: var(--accent); font-weight: 700; flex: none; }

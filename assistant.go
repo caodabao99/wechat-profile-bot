@@ -1106,6 +1106,22 @@ func checkAssistantSchedule(db *sql.DB, llm *LLMClient, now time.Time, lastDaily
 				})
 			}
 		}
+		// 主题演化（LLM，增值）：同样并入周一触发、独立加锁，但用 topic_evolution_state 的
+		//   last_week 作天然周锁（触发前同步置位，防并发重入与坏模型每 30s 重跑）。仅在模型已配置
+		//   且高阶洞察开启时执行；绝不塞进 ComputeAdvancedInsights（后者保持 LLM-free）。
+		if s.AdvancedInsightsEnabled && llm.configured() {
+			ws := weekStartOf(now)
+			if !topicWeekFresh(db, ws) {
+				markTopicWeekRun(db, ws, now)
+				go safeAssistantTask("主题演化刷新", func() {
+					if n, _, err := ComputeTopicEvolution(context.Background(), db, llm, now, topicsWindowDays); err != nil {
+						slog.Warn("主题演化刷新失败", "err", err)
+					} else {
+						slog.Info("主题演化刷新完成", "contacts", n)
+					}
+				})
+			}
+		}
 	}
 
 	return lastDaily, lastWeekly

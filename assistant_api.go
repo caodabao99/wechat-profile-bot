@@ -91,6 +91,26 @@ func (s *apiServer) routeAssistant(w http.ResponseWriter, r *http.Request, sub [
 		default:
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
 		}
+	case "coach":
+		if len(sub) > 1 {
+			writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+strings.Join(sub, "/"))
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hCoach(w, r)
+	case "challenges":
+		if len(sub) > 1 {
+			writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+strings.Join(sub, "/"))
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hChallenges(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/assistant/"+sub[0])
 	}

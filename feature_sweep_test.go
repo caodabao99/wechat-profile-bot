@@ -161,6 +161,14 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"系统状态", "GET", "/api/status", "", true, true},
 		{"备份日志", "GET", "/api/backup/logs", "", true, true},
 
+		// —— v5.3.0 新增确定性端点（零 LLM，必须 2xx 且可解析 JSON）——
+		{"关系健康仪表盘", "GET", "/api/relationships/health", "", true, true},
+		{"关系圈层管理", "GET", "/api/relationships/circles", "", true, true},
+		{"关系教练", "GET", "/api/assistant/coach", "", true, true},
+		{"维护挑战", "GET", "/api/assistant/challenges", "", true, true},
+		{"单联系人时机", "GET", "/api/contacts/" + cid + "/timing", "", true, true},
+		{"单联系人主题历史", "GET", "/api/contacts/" + cid + "/topics", "", true, true},
+
 		// —— 依赖 LLM / 副作用：仅要求路由命中(非 404) 且不崩溃 ——
 		{"改写(需LLM)", "POST", "/api/contacts/" + cid + "/rewrite", `{}`, false, false},
 		{"草稿检查(需LLM)", "POST", "/api/contacts/" + cid + "/review-draft", `{}`, false, false},
@@ -179,6 +187,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		{"周期报告(可能需LLM)", "GET", "/api/insights/period-report?period=week", "", false, false},
 		{"摄入粘贴(需LLM)", "POST", "/api/ingest", `{"text":"没有联系人头的乱码内容"}`, false, false},
 		{"周计划重生(需LLM)", "POST", "/api/assistant/weekly-plan", "", false, false},
+		{"主题演化分析(需LLM)", "POST", "/api/contacts/" + cid + "/topics/analyze", "", false, false},
 	}
 
 	pass := 0
@@ -269,7 +278,7 @@ func TestZZFeatureSweepLive(t *testing.T) {
 		}
 	}
 
-	// v5.1.0：/api/assistant/prompts 须返回 {items, total}，每项含 key/isCustom/vars；列表应恰好 13 个模板。
+	// v5.1.0：/api/assistant/prompts 须返回 {items, total}，每项含 key/isCustom/vars；列表应恰好 14 个模板。
 	if code, body, err := do("GET", "/api/assistant/prompts", ""); err != nil {
 		t.Errorf("[提示词模板] /assistant/prompts 崩溃: %v", err)
 	} else if code < 200 || code >= 300 {
@@ -284,8 +293,8 @@ func TestZZFeatureSweepLive(t *testing.T) {
 			Items []PromptTemplateInfo `json:"items"`
 			Total int                  `json:"total"`
 		}
-		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 13 {
-			t.Errorf("[提示词模板] items/total 应齐备且为 13 项: %s", truncate(body))
+		if json.Unmarshal([]byte(body), &out) != nil || out.Total != len(out.Items) || len(out.Items) != 14 {
+			t.Errorf("[提示词模板] items/total 应齐备且为 14 项: %s", truncate(body))
 		}
 	}
 }
