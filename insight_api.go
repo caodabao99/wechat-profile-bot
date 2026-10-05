@@ -14,6 +14,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,7 +24,7 @@ func (s *apiServer) routeInsight(w http.ResponseWriter, r *http.Request, sub []s
 		writeErr(w, http.StatusNotFound, "未知接口: /api/insight")
 		return
 	}
-	known := map[string]bool{"network": true, "self": true, "intervention": true, "briefing": true, "recompute": true}
+	known := map[string]bool{"network": true, "self": true, "intervention": true, "briefing": true, "trend": true, "recompute": true}
 	if !known[sub[0]] || len(sub) > 1 {
 		writeErr(w, http.StatusNotFound, "未知接口: /api/insight/"+strings.Join(sub, "/"))
 		return
@@ -36,6 +37,12 @@ func (s *apiServer) routeInsight(w http.ResponseWriter, r *http.Request, sub []s
 			return
 		}
 		s.hInsight(w, r, sub[0])
+	case "trend":
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		s.hInsightTrend(w, r)
 	case "recompute":
 		if r.Method != http.MethodPost {
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
@@ -106,6 +113,30 @@ func (s *apiServer) hInsight(w http.ResponseWriter, r *http.Request, kind string
 		kind:          data,
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// hInsightTrend 只读趋势历史（非自愈：无历史即空数组，不触发重算）。供前端 sparkline。
+func (s *apiServer) hInsightTrend(w http.ResponseWriter, r *http.Request) {
+	weeks := 0
+	if v := r.URL.Query().Get("weeks"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= trendMaxWeeks {
+			weeks = n
+		}
+	}
+	series, err := GetTrendSeries(s.db, weeks)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "读取洞察趋势失败")
+		return
+	}
+	var latest *TrendSnapshot
+	if len(series) > 0 {
+		latest = &series[len(series)-1]
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled": s.insightEnabled(),
+		"weeks":   series,
+		"latest":  latest,
+	})
 }
 
 func (s *apiServer) hInsightRecompute(w http.ResponseWriter, r *http.Request) {

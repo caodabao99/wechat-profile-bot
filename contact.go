@@ -141,6 +141,13 @@ func DeleteContactByID(db *sql.DB, contactID int64) error {
 	if _, err := tx.Exec(`UPDATE contacts SET merged_into = NULL WHERE merged_into = ?`, contactID); err != nil {
 		return err
 	}
+	// v4.5.0 C：删除涉及该联系人的关系连线（contact_connections 用 contact_a/contact_b 双列，
+	//   非单 ?，故不入 contactCleanupStmts）。属派生表会自愈重建，但残留边是隐私泄漏，显式删净。
+	//   表不存在时容忍（与下方清理循环同纪律，不因个别表缺失让核心删除失败）。
+	if _, err := tx.Exec(`DELETE FROM contact_connections WHERE contact_a = ? OR contact_b = ?`,
+		contactID, contactID); err != nil && !strings.Contains(err.Error(), "no such table") {
+		return err
+	}
 	// 清理增值功能新增的关联表（标签/事件/待跟进）；表不存在时跳过，不影响删除本身
 	for _, q := range contactCleanupStmts() {
 		if _, err := tx.Exec(q, contactID); err != nil && !strings.Contains(err.Error(), "no such table") {

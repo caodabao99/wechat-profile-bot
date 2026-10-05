@@ -1480,7 +1480,7 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('briefing');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false });
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1495,6 +1495,8 @@ createApp({
       if (tab === 'network' && !insightLoaded.network) { insightLoaded.network = true; loadNetwork(); }
       if (tab === 'self' && !insightLoaded.self) { insightLoaded.self = true; loadSelfPortrait(); }
       if (tab === 'learning' && !insightLoaded.learning) { insightLoaded.learning = true; loadIntervention(); }
+      // 趋势是四个高阶子页共用的便利层：首次进入任一页顺带拉一次，失败静默。
+      if ((tab === 'briefing' || tab === 'network' || tab === 'self' || tab === 'learning') && !insightLoaded.trend) { insightLoaded.trend = true; loadTrend(); }
     }
 
     // ---------- 关系图谱 ----------
@@ -1598,6 +1600,9 @@ createApp({
     const selfpt = reactive({ enabled: true, generatedAt: '', self: null });
     const learn = reactive({ enabled: true, generatedAt: '', intervention: null });
     const brief = reactive({ enabled: true, generatedAt: '', briefing: null });
+    const trend = reactive({ enabled: true, weeks: [] });   // 近 12 周趋势快照（供 sparkline / 周环比）
+    const exportBusy = ref(false);
+    const exportRedact = ref(false);
 
     async function loadNetwork() {
       if (advBusy.value) return;
@@ -1647,6 +1652,63 @@ createApp({
       finally { advBusy.value = false; }
     }
 
+    // 趋势周环比：便利层，首次进入洞察子页即加载；失败/无历史静默（不打断子页主体内容）。
+    async function loadTrend() {
+      try {
+        const data = await api('/api/insight/trend?weeks=12');
+        trend.enabled = data.enabled !== false;
+        trend.weeks = data.weeks || [];
+      } catch (e) { /* 趋势缺失不影响主功能，静默 */ }
+    }
+
+    // trendSeries：从 trend.weeks 抽某列数值序列，供各子页 sparkline 复用。
+    function trendSeries(key) {
+      return (trend.weeks || []).map(w => (w && typeof w[key] === 'number') ? w[key] : 0);
+    }
+
+    // sparkPoints：把一组数值映射为内联 SVG polyline 的 points 字符串（自包含、无第三方库）。
+    // 少于 2 个点返回空串（模板据此隐藏 sparkline，优雅降级）。
+    function sparkPoints(values, w, h) {
+      const nums = (values || []).map(Number).filter(n => !isNaN(n));
+      if (nums.length < 2) return '';
+      const min = Math.min.apply(null, nums), max = Math.max.apply(null, nums);
+      const span = (max - min) || 1;
+      const step = w / (nums.length - 1);
+      return nums.map((n, i) => {
+        const x = i * step;
+        const y = h - ((n - min) / span) * h;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      }).join(' ');
+    }
+
+    // 全量数据导出（可选脱敏）：带 Bearer fetch 成 Blob 触发浏览器下载，与全站认证一致。
+    async function exportData() {
+      if (exportBusy.value) return;
+      exportBusy.value = true;
+      try {
+        const q = '?redact=' + (exportRedact.value ? '1' : '0') + '&include=archive,derived';
+        const res = await fetch('/api/data/export' + q, {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem(TOKEN_KEY) },
+        });
+        if (res.status === 401) { localStorage.removeItem(TOKEN_KEY); authed.value = false; throw new Error('登录已过期，请重新输入 Token'); }
+        if (!res.ok) {
+          let msg = '导出失败 (' + res.status + ')';
+          try { msg = (await res.json()).error || msg; } catch (e) { /* 非 JSON 错误体 */ }
+          throw new Error(msg);
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const m = (res.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+        a.download = m ? m[1] : 'wechat-profile-export.json';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 120000);
+        toast('数据已导出' + (exportRedact.value ? '（已脱敏）' : ''));
+      } catch (e) { toast(e.message, 'error'); }
+      finally { exportBusy.value = false; }
+    }
+
     function refreshCurrentInsightTab() {
       if (insightTab.value === 'briefing') loadBriefing();
       else if (insightTab.value === 'network') loadNetwork();
@@ -1654,6 +1716,7 @@ createApp({
       else if (insightTab.value === 'learning') loadIntervention();
       else if (insightTab.value === 'life') loadLifeState();
       else if (insightTab.value === 'lifeproj') loadLifeProjection();
+      loadTrend();   // 手动重算后趋势也要刷新（本周可能刚追加新快照）
     }
 
     async function recomputeInsights() {
@@ -2545,6 +2608,9 @@ createApp({
       // 高阶洞察四件套
       advBusy, net, selfpt, learn, brief,
       loadNetwork, loadSelfPortrait, loadIntervention, loadBriefing, recomputeInsights,
+      // 趋势周环比 + 数据导出
+      trend, loadTrend, trendSeries, sparkPoints,
+      exportBusy, exportRedact, exportData,
       srch, srchRes, srchBusy, srchContacts, srchHasMore, doSearch, searchMore,
       dup, dupBusy, loadDuplicates, dupName, mergeDuplicate,
       social, socialDays, socialBusy, weekdayNames, loadSocial, changeSocialDays,

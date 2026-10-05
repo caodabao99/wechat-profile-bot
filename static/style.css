@@ -739,6 +739,18 @@ textarea.text-input { resize: vertical; }
 .bf-act-title { font-weight: 600; font-size: 14px; color: var(--ink); margin-bottom: 3px; }
 .bf-notes { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 
+/* 趋势周环比：简报“本周关键变化”块 + 各子页 sparkline（内联 SVG，无第三方库） */
+.brief-changes { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.brief-changes > li { display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; color: var(--ink); }
+.brief-changes .bc-arrow { font-size: 12px; line-height: 1; flex: none; }
+.brief-changes .change-up { color: var(--ok); }
+.brief-changes .change-down { color: var(--bad); }
+.brief-changes .change-flat { color: var(--muted); }
+.brief-changes .change-up .bc-arrow, .brief-changes .change-up .bc-text { color: var(--ok); }
+.brief-changes .change-down .bc-arrow, .brief-changes .change-down .bc-text { color: var(--bad); }
+.trend-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; color: var(--accent); }
+.trend-spark { display: block; color: var(--accent); opacity: 0.85; }
+
 .nw-clusters, .nw-bridges, .nw-intros, .sp-bars, .iv-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .nw-clusters > li, .nw-bridges > li, .nw-intros > li, .iv-list > li {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;

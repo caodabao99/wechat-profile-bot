@@ -146,3 +146,62 @@ func TestAdvancedInsightsEnabledDefault(t *testing.T) {
 		t.Error("显式关闭应持久化为 false")
 	}
 }
+
+// v4.5.0 A：趋势端点。无历史 → weeks 为空数组；非自愈（不触发重算）；POST 拒 405；过深子路径 404。
+func TestInsightTrendEndpoint(t *testing.T) {
+	db := regressionAssistantDB(t)
+	if err := saveAssistantSettings(db, defaultAssistantSettings()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{APIToken: "test-rel-token"}
+	s := &apiServer{db: db, cfg: cfg, sessions: &webSessionStore{sessions: map[string]time.Time{}}}
+
+	// 空历史：200 + weeks 为空数组、latest 为 null。
+	w := callAPI(s, http.MethodGet, "/api/insight/trend", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET insight/trend: %d %s", w.Code, w.Body.String())
+	}
+	var empty struct {
+		Enabled bool            `json:"enabled"`
+		Weeks   []TrendSnapshot `json:"weeks"`
+		Latest  *TrendSnapshot  `json:"latest"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &empty); err != nil {
+		t.Fatalf("trend 非 JSON: %v", err)
+	}
+	if len(empty.Weeks) != 0 || empty.Latest != nil {
+		t.Errorf("空库应为 weeks:[] latest:null, got weeks=%v latest=%v", empty.Weeks, empty.Latest)
+	}
+
+	// 追加快照后应能读到升序序列。
+	if err := appendTrendSnapshot(db, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w = callAPI(s, http.MethodGet, "/api/insight/trend?weeks=12", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET insight/trend?weeks=12: %d", w.Code)
+	}
+	var got struct {
+		Weeks []TrendSnapshot `json:"weeks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Weeks) != 1 || got.Weeks[0].WeekStart == "" {
+		t.Errorf("应读到 1 行快照, got %+v", got.Weeks)
+	}
+
+	// 非自愈：GET trend 不应触发整条流水线重算（网络缓存仍为空）。
+	if n, _, _ := GetCachedNetwork(db); n != nil {
+		t.Error("GET trend 不该触发网络层重算")
+	}
+
+	// POST → 405。
+	if c := callAPI(s, http.MethodPost, "/api/insight/trend", ""); c.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST insight/trend 应 405, got %d", c.Code)
+	}
+	// 过深子路径 → 404。
+	if c := callAPI(s, http.MethodGet, "/api/insight/trend/deep", ""); c.Code != http.StatusNotFound {
+		t.Errorf("过深子路径应 404, got %d", c.Code)
+	}
+}

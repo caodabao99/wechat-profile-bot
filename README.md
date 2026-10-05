@@ -23,6 +23,10 @@
 - **自我关系画像**（洞察页，高阶洞察）：从全体关系里反照出你自己——谁总在先开口（全局 + 按类别）、精力正从哪个类别迁向哪个类别、有多少关系几乎只有你一厢情愿、以及你的整体社交风格标签（主动/被动、深耕/广撒网、偏向哪类人），工具从“看别人”变成“照见自己”，零新增采数
 - **证据化干预学习**（洞察页，高阶洞察）：用你自己的历史回测数据学“对哪类人做什么真有效”——按干预方式分组算回暖率并给出 Wilson 95% 置信区间，样本不足时诚实降级只报基线率、绝不假装精确；按置信下界 × 覆盖人数排出“被验证有效的动作”
 - **本周简报**（洞察页，高阶洞察，进入洞察页默认落地）：把人生模拟器 + 社交网络 + 自我画像 + 干预学习四层揉成一页“打开即行动”的每周摘要——Top-3 本周最该做的事（每条指向具体人、附来源层与依据）、全局健康度一行、最强信号；纯确定性模板文案，每周一自动随四层刷新
+- **洞察趋势与周环比**（v4.5.0）：每周把四层的关键标量追加成一条 append-only 历史快照（只留近 52 周），各子页头部指标旁渲染 sparkline 走势，简报顶部新增“本周关键变化”块（如“高风险关系 3→5”“你先开口率 71%→64%”）——把产品从“看当下”升级为“看走势”，纯确定性、零新增采数
+- **跨层闭环自校准**（v4.5.0）：复用已有干预回测表（零新表），让“上次建议是否奏效”反向重排简报 Top 行动——已回暖的关系自动沉底不重复催、仍无改善的浮顶并附“上次建议后仍无改善”标注，四层互相咬合；无回测数据时严格等同旧行为
+- **图计算规模护栏**（v4.5.0）：联系人增长后，网络图算法进 Brandes/Tarjan 前对节点数封顶（按亲密度取最亲密的 250 人核心圈，tie-break 按 id 保确定性），防周一重算拖慢单连接池，并在洞察里诚实说明“已聚焦核心圈”
+- **数据可携与遗忘**（v4.5.0）：新增一键全量开放 JSON 导出（可选脱敏：姓名→伪名、正文抹除、保留结构与计数），并把“彻底删除联系人”的级联补齐隐私残留（互动指标/画像事实与证据/关系连线/建议回测）——纯本地、只读、零费用，给你的敏感关系数据真正的掌控感
 - **待跟进事项**：手动记一笔，或让 AI 从最近聊天里扫出「答应过的事 / 借钱还钱 / 待回复」，未完成项每天随提醒邮件一起推送
 - **联系人标签**：给联系人打自定义标签分组，列表页可按标签筛选、勾选多人批量打标
 - **聊天记录全文搜索**：跨全部联系人按关键词搜消息，可限定联系人、时间范围，可选一并搜归档消息
@@ -40,7 +44,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.4.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v4.5.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -57,7 +61,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v4.5.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -275,7 +279,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.4.0.tar.gz`，得到 `wechat-profile-bot:v4.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v4.5.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v4.5.0.tar.gz`，得到 `wechat-profile-bot:v4.5.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -509,7 +513,9 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/insight/network` | 社交网络洞察（连通分量/圈簇/割点桥梁/介数/脆弱度/跨圈撮合；缓存缺失或过期即自愈重算整条流水线，纯确定性图算法） |
 | GET | `/api/insight/self` | 自我关系画像（先开口率/精力迁移/单向关系/风格标签） |
 | GET | `/api/insight/intervention` | 证据化干预学习（按方式分组回暖率 + Wilson 95% 置信区间，样本不足诚实降级） |
-| GET | `/api/insight/briefing` | 主动人生简报（编排层只读四层缓存合成 Top-3 行动 + 全局健康度） |
+| GET | `/api/insight/briefing` | 主动人生简报（编排层只读四层缓存合成 Top-3 行动 + 全局健康度 + 本周关键变化） |
+| GET | `/api/insight/trend?weeks=12` | 高阶洞察趋势历史（升序周快照，供前端 sparkline；只读非自愈，无历史返回 `weeks:[]`） |
+| GET | `/api/data/export?redact=0|1&include=archive,derived` | 全量开放 JSON 导出（`redact=1` 脱敏；默认含活动数据、不含归档/派生；附件下载） |
 | POST | `/api/insight/recompute` | 后台异步重算四件套 + 简报（立即返回，不阻塞） |
 
 验证示例：
@@ -572,6 +578,24 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v4.5.0（2026-10-05）
+
+给 v4.4.0 的高阶洞察四件套长出“时间维度 + 自我校准”：把瞬时快照变长走势、让结果数据反向校准优先级、为敏感关系数据补上可携与遗忘能力。全部确定性、可解释、默认不调大模型、不产生意外费用。升级只需替换二进制并重启，数据库结构向后兼容（`user_version` 升到 18，新增一张趋势历史表启动时自愈创建）。趋势与闭环沿用现有高阶洞察开关，不新增开关。
+
+新增功能
+
+- **洞察趋势与周环比**：新增 append-only 周快照表 `insight_trend_history`，每周一随四件套追加一行聚合标量（只留近 52 周）；各子页头部指标旁渲染自包含内联 SVG sparkline 走势；简报顶部新增“本周关键变化”块（如“高风险关系 3 段→5 段”“你先开口率 71%→64%↓（你更被动了）”）——从“看当下”升级到“看走势”，首周无基准时优雅跳过
+- **跨层闭环自校准**：复用已有干预回测表（`suggestion_outcomes`，零新表），取每联系人近 90 天最近一条已回测结论，让“上次建议是否奏效”反向重排简报 Top 行动（已回暖沉底不重复催、无改善浮顶）并在行动/桥梁描述里附“上次建议已见效/仍无改善”标注；无回测数据时严格等同 v4.4.0 行为
+- **图计算规模护栏**：网络图算法进 Brandes/Tarjan 前对节点数封顶（`netMaxNodes=250`），超出则按亲密度取最亲密的 250 人核心圈（tie-break 按联系人 id 升序保确定性）、过滤悬边并重建图，置 `truncated`/`nodeCap` 字段并在洞察里追加“已聚焦核心圈”说明，防联系人增长后周一重算拖慢
+- **数据可携与遗忘**：新增 `GET /api/data/export` 全量开放 JSON 导出（流式逐表直写避免全库驻留内存；`redact=1` 可选脱敏：`contacts.name/remark`→`联系人#<id>`、消息正文抹除为 `***`、保留结构/计数/时间戳）；并把“彻底删除联系人”的级联补齐隐私残留（`relationship_daily_metrics`、`profile_facts`、`profile_fact_evidence`、`contact_connections`、`suggestion_outcomes`、`relationship_action_suggestions`）
+
+内部改进
+
+- 新增趋势历史表 `insight_trend_history`（`week_start` 主键、一周一行幂等覆盖），属派生便利层：不纳入备份、恢复末尾清空、历史重启可接受；DB `user_version` 升到 18，`backupCurrentDBVer` 同步
+- 趋势追加挂在 `ComputeAdvancedInsights` 流水线末尾（简报之后），不新增调度器、复用现有周一高阶洞察块；读缓存/读历史均在各写锁之前顺序完成，单连接池下绝不嵌套取锁
+- 新增 2 个 API（`/api/insight/trend`、`/api/data/export`），网页端高阶洞察子页加 sparkline 与“本周关键变化”块、设置区加“导出全部数据”按钮与脱敏复选框
+- 趋势/周环比/闭环排序/图截断/导出脱敏均附确定性、边界与幂等单测，活体扫描端点从 57 增至 59
 
 ### v4.4.0（2026-10-05）
 

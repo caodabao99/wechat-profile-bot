@@ -6,6 +6,8 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -253,5 +255,85 @@ func TestComputeNetworkInsightsDeterministic(t *testing.T) {
 		if first.Clusters[i].Label != second.Clusters[i].Label || first.Clusters[i].Size != second.Clusters[i].Size {
 			t.Fatalf("第 %d 个簇两次不一致: %+v vs %+v", i, first.Clusters[i], second.Clusters[i])
 		}
+	}
+}
+
+// v4.5.0 B：图计算规模护栏。喂 >netMaxNodes 个节点（链式相连），应触发 top-K 截断、
+// 只保留最亲密核心圈（无 life_state 缓存时余额全 0，按 id 升序稳定取 top-250），且确定性成立。
+func TestBuildNetworkScaleGuardrailTruncates(t *testing.T) {
+	db := regressionAssistantDB(t)
+	const n = netMaxNodes + 10
+	ids := make([]int64, 0, n)
+	for i := 0; i < n; i++ {
+		ids = append(ids, regressionContact(t, db, fmt.Sprintf("node-%03d", i)))
+	}
+	// 链式：i—i+1，共 n-1 条边、n 个节点（>netMaxNodes）。
+	for i := 0; i+1 < len(ids); i++ {
+		seedConn(t, db, ids[i], ids[i+1])
+	}
+	now := time.Now()
+
+	if err := ComputeNetworkInsights(db, now); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := GetCachedNetwork(db)
+	if err != nil || first == nil {
+		t.Fatal(err)
+	}
+	if !first.Truncated {
+		t.Fatalf("超上限应触发截断, got Truncated=%v nodes=%d", first.Truncated, first.NodeCount)
+	}
+	if first.NodeCap != netMaxNodes {
+		t.Errorf("NodeCap 应为 %d, got %d", netMaxNodes, first.NodeCap)
+	}
+	if first.NodeCount > netMaxNodes {
+		t.Errorf("入图节点数应被封顶 %d, got %d", netMaxNodes, first.NodeCount)
+	}
+	// 截断说明应被追加进 Insights。
+	var noted bool
+	for _, s := range first.Insights {
+		if strings.Contains(s, "核心圈") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Error("截断时应在 Insights 追加聚焦核心圈说明")
+	}
+
+	// 确定性：同输入再算一次，结构指标必须完全一致（tie-break id 升序稳定）。
+	if err := ComputeNetworkInsights(db, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := GetCachedNetwork(db)
+	if err != nil || second == nil {
+		t.Fatal(err)
+	}
+	if first.NodeCount != second.NodeCount || first.EdgeCount != second.EdgeCount ||
+		first.Truncated != second.Truncated || first.NodeCap != second.NodeCap {
+		t.Fatalf("截断两次不一致: first(nodes=%d edges=%d) second(nodes=%d edges=%d)",
+			first.NodeCount, first.EdgeCount, second.NodeCount, second.EdgeCount)
+	}
+}
+
+// 小图（<netMaxNodes）不应触发截断。
+func TestBuildNetworkUnderCapNotTruncated(t *testing.T) {
+	db := regressionAssistantDB(t)
+	var prev int64
+	for i := 0; i < 5; i++ {
+		id := regressionContact(t, db, "small-"+string(rune('a'+i)))
+		if prev != 0 {
+			seedConn(t, db, prev, id)
+		}
+		prev = id
+	}
+	if err := ComputeNetworkInsights(db, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	ins, _, err := GetCachedNetwork(db)
+	if err != nil || ins == nil {
+		t.Fatal(err)
+	}
+	if ins.Truncated || ins.NodeCap != 0 {
+		t.Errorf("小图不该截断, got Truncated=%v NodeCap=%d", ins.Truncated, ins.NodeCap)
 	}
 }

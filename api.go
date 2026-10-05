@@ -332,6 +332,8 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		s.routeRelationships(w, r, parts[1:])
 	case parts[0] == "life":
 		s.routeLife(w, r, parts[1:])
+	case parts[0] == "data":
+		s.routeData(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

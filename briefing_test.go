@@ -40,7 +40,7 @@ func fixtureSelf() *SelfPortrait {
 
 func TestBuildBriefingAllNilGraceful(t *testing.T) {
 	now := time.Now()
-	br := buildBriefing(now, nil, nil, nil, nil, nil)
+	br := buildBriefing(now, nil, nil, nil, nil, nil, nil, nil)
 	if br == nil {
 		t.Fatal("不应返回 nil")
 	}
@@ -61,7 +61,7 @@ func TestBuildBriefingPriorityOrderAndCap(t *testing.T) {
 		}},
 	}
 	learn := &InterventionInsight{TotalResolved: 30, BaseRate: 70, BestActions: []string{"破冰问候很有效"}}
-	br := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn)
+	br := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn, nil, nil)
 
 	if len(br.TopActions) == 0 || len(br.TopActions) > briefingMaxActions {
 		t.Fatalf("行动数应在 1..%d, got %d: %+v", briefingMaxActions, len(br.TopActions), br.TopActions)
@@ -84,7 +84,7 @@ func TestBuildBriefingPriorityOrderAndCap(t *testing.T) {
 
 func TestBuildBriefingLifeActionWhenStatePresent(t *testing.T) {
 	now := time.Now()
-	br := buildBriefing(now, fixtureState(), nil, nil, nil, nil)
+	br := buildBriefing(now, fixtureState(), nil, nil, nil, nil, nil, nil)
 	var foundLife bool
 	for _, a := range br.TopActions {
 		if a.Source == "life" && a.Who == "阿伟" {
@@ -104,8 +104,8 @@ func TestBuildBriefingDeterministic(t *testing.T) {
 	proj := &LifeProjection{HorizonDays: 90, BreakCount: 1,
 		Projections: []ContactProjection{{ContactID: 31, Name: "老张", WillBreak: true, SufficientData: true, FutureBalance: 5}}}
 	learn := &InterventionInsight{TotalResolved: 30, BaseRate: 70, BestActions: []string{"破冰问候很有效"}}
-	a := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn)
-	b := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn)
+	a := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn, nil, nil)
+	b := buildBriefing(now, fixtureState(), proj, fixtureNet(), fixtureSelf(), learn, nil, nil)
 	if a.Headline != b.Headline || len(a.TopActions) != len(b.TopActions) || len(a.Signals) != len(b.Signals) {
 		t.Fatalf("同输入两次简报不一致")
 	}
@@ -178,4 +178,99 @@ func TestComputeAdvancedInsightsPipeline(t *testing.T) {
 
 func uniqueHash(prefix string, i int) string {
 	return prefix + "-" + string(rune('a'+i))
+}
+
+// ---------- v4.5.0 A：周环比变化块接入 ----------
+
+// prev 为 nil（首周/无历史）时 Changes 应为空——向后兼容 v4.4.0 行为。
+func TestBuildBriefingNoPrevNoChanges(t *testing.T) {
+	br := buildBriefing(time.Now(), fixtureState(), nil, fixtureNet(), fixtureSelf(), nil, nil, nil)
+	if len(br.Changes) != 0 {
+		t.Errorf("无上周基准不该有变化块, got %+v", br.Changes)
+	}
+}
+
+// 喂入与当前层不同的上周快照，应产出若干条人话 delta（含方向）。
+func TestBuildBriefingChangesFromPrev(t *testing.T) {
+	now := time.Now()
+	prev := &TrendSnapshot{
+		WeekStart: "2000-01-03", GeneratedAt: now.Format(time.RFC3339),
+		TotalWealth: 200, HighRiskCount: 5, ClusterCount: 4, FragilityScore: 0.3,
+		InitiationRate: 60, OneWayCount: 1, NodeCount: 7,
+	}
+	// fixtureState: TotalWealth=300 升、HighRiskCount=1 降；fixtureNet: ClusterCount=2 降、FragilityScore=0.6 升；
+	// fixtureSelf: InitiationRate=80 升、OneWayCount=3 升。
+	br := buildBriefing(now, fixtureState(), nil, fixtureNet(), fixtureSelf(), nil, prev, nil)
+	if len(br.Changes) == 0 {
+		t.Fatal("与上周差异显著时应产出变化块")
+	}
+	for _, c := range br.Changes {
+		if c.Text == "" || (c.Dir != "up" && c.Dir != "down" && c.Dir != "flat") || c.Layer == "" {
+			t.Errorf("变化项字段不完整: %+v", c)
+		}
+	}
+	// 确定性：同输入两次产出完全一致。
+	br2 := buildBriefing(now, fixtureState(), nil, fixtureNet(), fixtureSelf(), nil, prev, nil)
+	if len(br.Changes) != len(br2.Changes) {
+		t.Fatalf("变化块次数不一致 %d vs %d", len(br.Changes), len(br2.Changes))
+	}
+	for i := range br.Changes {
+		if br.Changes[i] != br2.Changes[i] {
+			t.Fatalf("第 %d 条变化不一致: %+v vs %+v", i, br.Changes[i], br2.Changes[i])
+		}
+	}
+}
+
+// ---------- v4.5.0 D：跨层闭环标注与重排序 ----------
+
+func TestOutcomeNoteAndActionImproved(t *testing.T) {
+	if outcomeNote(21, map[int64]string{21: "improved"}) != "（上次建议已见效，可少操心）" {
+		t.Error("improved 标注不符")
+	}
+	if outcomeNote(21, map[int64]string{21: "worsened"}) != "（上次建议后仍无改善，更需要你主动）" {
+		t.Error("worsened 标注不符")
+	}
+	if outcomeNote(21, nil) != "" || outcomeNote(0, map[int64]string{1: "improved"}) != "" {
+		t.Error("无回测数据/无指向人不该附注")
+	}
+	if actionImproved(BriefingAction{WhoID: 21}, map[int64]string{21: "improved"}) != 1 {
+		t.Error("improved 应计 1")
+	}
+	if actionImproved(BriefingAction{WhoID: 21}, map[int64]string{21: "worsened"}) != 0 {
+		t.Error("非 improved 应计 0")
+	}
+}
+
+// 闭环标注写进行动 Detail：上次已见效的人附“已见效”，无回测数据时不附（等同旧行为）。
+func TestBuildBriefingOutcomeNoteInDetail(t *testing.T) {
+	now := time.Now()
+	withOutcome := buildBriefing(now, fixtureState(), nil, fixtureNet(), nil, nil, nil, map[int64]string{21: "improved"})
+	var networkDetail string
+	for _, a := range withOutcome.TopActions {
+		if a.Source == "network" {
+			networkDetail = a.Detail
+		}
+	}
+	if networkDetail == "" {
+		t.Fatal("应有 network 行动")
+	}
+	if !contains(networkDetail, "已见效") {
+		t.Errorf("improved 联系人行动应附已见效注, got %q", networkDetail)
+	}
+	// 无回测数据时 Detail 不应含闭环注。
+	plain := buildBriefing(now, fixtureState(), nil, fixtureNet(), nil, nil, nil, nil)
+	for _, a := range plain.TopActions {
+		if a.Source == "network" && (contains(a.Detail, "已见效") || contains(a.Detail, "仍无改善")) {
+			t.Errorf("无回测数据不该附闭环注, got %q", a.Detail)
+		}
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

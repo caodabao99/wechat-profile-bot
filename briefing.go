@@ -24,6 +24,7 @@ import (
 type BriefingAction struct {
 	Title    string `json:"title"`
 	Who      string `json:"who,omitempty"`
+	WhoID    int64  `json:"-"` // 指向的联系人 id，供闭环按人回流（不序列化）
 	Detail   string `json:"detail"`
 	Source   string `json:"source"` // network / life / projection / self / intervention
 	Priority int    `json:"priority"`
@@ -34,6 +35,7 @@ type Briefing struct {
 	GeneratedAt string           `json:"generatedAt"`
 	Headline    string           `json:"headline"`
 	HealthLine  string           `json:"healthLine"`
+	Changes     []BriefingChange `json:"changes"` // 本周 vs 上周关键变化（周环比）
 	TopActions  []BriefingAction `json:"topActions"`
 	Signals     []string         `json:"signals"`
 	Notes       []string         `json:"notes"`
@@ -67,28 +69,39 @@ func ComputeAdvancedInsights(db *sql.DB, now time.Time) error {
 		return err
 	}
 	// 4) 编排层
-	return GenerateBriefing(db, now)
+	if err := GenerateBriefing(db, now); err != nil {
+		return err
+	}
+	// 5) 趋势层：把本周四层标量追加进历史表（一周一行、幂等覆盖），供下周环比与 sparkline。
+	//    放在简报之后：GenerateBriefing 已读过上周基准，本行 week_start 不参与本周环比。
+	return appendTrendSnapshot(db, now)
 }
 
 // GenerateBriefing 只读各层缓存合成简报并写入缓存（不触发各层重算）。
 func GenerateBriefing(db *sql.DB, now time.Time) error {
-	br := buildBriefing(now,
-		getCachedNoRecomputeState(db),
-		getCachedNoRecomputeProjection(db),
-		getCachedNoRecomputeNetwork(db),
-		getCachedNoRecomputeSelf(db),
-		getCachedNoRecomputeIntervention(db),
-	)
+	state := getCachedNoRecomputeState(db)
+	proj := getCachedNoRecomputeProjection(db)
+	net := getCachedNoRecomputeNetwork(db)
+	self := getCachedNoRecomputeSelf(db)
+	learn := getCachedNoRecomputeIntervention(db)
+	// 周环比基准（上周快照）+ 闭环校准（每联系人最近一次回测结论）：
+	//   两者都自取读锁、顺序完成，绝不与写锁嵌套。取不到即降级为 nil/空，简报等同旧行为。
+	prev, _ := latestPrevSnapshot(db, weekStartOf(now))
+	outcomes, _ := recentOutcomeIndex(db, now)
+	br := buildBriefing(now, state, proj, net, self, learn, prev, outcomes)
 	return saveBriefingCache(db, now, br)
 }
 
 // buildBriefing 纯合成，供单测直接喂入各层快照调用。
+// prev：上周趋势快照（周环比基准，nil 则无变化块）；outcomes：每联系人最近一次回测结论（闭环，nil 则不校准）。
 func buildBriefing(now time.Time,
 	state *LifeState, proj *LifeProjection, net *NetworkInsight,
-	self *SelfPortrait, learn *InterventionInsight) *Briefing {
+	self *SelfPortrait, learn *InterventionInsight,
+	prev *TrendSnapshot, outcomes map[int64]string) *Briefing {
 
 	br := &Briefing{
 		GeneratedAt: now.Format("2006-01-02 15:04:05"),
+		Changes:     []BriefingChange{},
 		TopActions:  []BriefingAction{},
 		Signals:     []string{},
 		Notes:       []string{},
@@ -109,8 +122,8 @@ func buildBriefing(now time.Time,
 				conn = "连着你的" + b.ConnectsClusters[0]
 			}
 			acts = append(acts, BriefingAction{
-				Title: "先联系 " + b.Name, Who: b.Name, Source: "network", Priority: 1,
-				Detail: fmt.Sprintf("他是你网络的%s，且正处在高风险断联——一句话就能稳住", conn),
+				Title: "先联系 " + b.Name, Who: b.Name, WhoID: b.ContactID, Source: "network", Priority: 1,
+				Detail: fmt.Sprintf("他是你网络的%s，且正处在高风险断联——一句话就能稳住", conn) + outcomeNote(b.ContactID, outcomes),
 			})
 			break
 		}
@@ -120,8 +133,8 @@ func buildBriefing(now time.Time,
 	if state != nil && len(state.HighRisk) > 0 {
 		a := state.HighRisk[0]
 		acts = append(acts, BriefingAction{
-			Title: "给 " + a.Name + " 发条消息", Who: a.Name, Source: "life", Priority: 2,
-			Detail: fmt.Sprintf("%s 风险分 %.0f%%（%s），已经 %.0f 天没互动", riskLevelCn(a.RiskLevel), a.RiskScore*100, a.Category, float64(a.DecayDays)),
+			Title: "给 " + a.Name + " 发条消息", Who: a.Name, WhoID: a.ContactID, Source: "life", Priority: 2,
+			Detail: fmt.Sprintf("%s 风险分 %.0f%%（%s），已经 %.0f 天没互动", riskLevelCn(a.RiskLevel), a.RiskScore*100, a.Category, float64(a.DecayDays)) + outcomeNote(a.ContactID, outcomes),
 		})
 	}
 
@@ -132,8 +145,8 @@ func buildBriefing(now time.Time,
 				continue
 			}
 			acts = append(acts, BriefingAction{
-				Title: "别让 " + p.Name + " 淡出", Who: p.Name, Source: "projection", Priority: 3,
-				Detail: fmt.Sprintf("照当前趋势约 %d 天后亲密度只剩 %d，本周花一分钟问候就能保住", proj.HorizonDays, p.FutureBalance),
+				Title: "别让 " + p.Name + " 淡出", Who: p.Name, WhoID: p.ContactID, Source: "projection", Priority: 3,
+				Detail: fmt.Sprintf("照当前趋势约 %d 天后亲密度只剩 %d，本周花一分钟问候就能保住", proj.HorizonDays, p.FutureBalance) + outcomeNote(p.ContactID, outcomes),
 			})
 			break
 		}
@@ -162,11 +175,22 @@ func buildBriefing(now time.Time,
 		})
 	}
 
-	sort.SliceStable(acts, func(i, j int) bool { return acts[i].Priority < acts[j].Priority })
+	// 闭环排序：先按优先级；同优先级内，上次已回暖(=1)的关系沉底，
+	//   仍无改善/无记录(=0)的浮顶——把"系统建议是否奏效"反馈进"本周先做谁"。SliceStable 保确定性。
+	sort.SliceStable(acts, func(i, j int) bool {
+		if acts[i].Priority != acts[j].Priority {
+			return acts[i].Priority < acts[j].Priority
+		}
+		return actionImproved(acts[i], outcomes) < actionImproved(acts[j], outcomes)
+	})
 	if len(acts) > briefingMaxActions {
 		acts = acts[:briefingMaxActions]
 	}
 	br.TopActions = acts
+
+	// —— 周环比：本周标量 vs 上周快照的关键变化 ——
+	cur := snapFromCaches(weekStartOf(now), now, state, self, net, learn)
+	br.Changes = computeWeeklyChange(&cur, prev)
 
 	// —— 全局健康度一行 ——
 	br.HealthLine = healthLine(state)
@@ -243,6 +267,7 @@ func briefingHeadline(br *Briefing, state *LifeState) string {
 	return fmt.Sprintf("本周最值得你花时间的 %d 件事", len(br.TopActions))
 }
 
+// riskLevelCn 风险等级英文转中文。
 func riskLevelCn(level string) string {
 	switch level {
 	case "high":
@@ -254,6 +279,57 @@ func riskLevelCn(level string) string {
 	default:
 		return level
 	}
+}
+
+// ---------- 闭环校准（D）：复用既有回测数据，零新表 ----------
+
+// recentOutcomeIndex 取每个联系人近 90 天内最近一条已回测结论（improved/stable/worsened）。
+// 供简报闭环：上次建议奏效与否，反向影响优先级与标注。表缺失/无数据返回空 map（简报退回旧行为）。
+func recentOutcomeIndex(db *sql.DB, now time.Time) (map[int64]string, error) {
+	idx := map[int64]string{}
+	since := now.AddDate(0, 0, -90).Format(time.RFC3339)
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	rows, err := db.Query(`SELECT contact_id, outcome FROM suggestion_outcomes
+		WHERE outcome IN ('improved','stable','worsened') AND acted_at >= ?
+		ORDER BY acted_at DESC`, since)
+	if err != nil {
+		return idx, nil // 表缺失等：降级为空，不阻断简报
+	}
+	for rows.Next() {
+		var cid int64
+		var oc string
+		if rows.Scan(&cid, &oc) == nil {
+			if _, seen := idx[cid]; !seen {
+				idx[cid] = oc // 已按 acted_at 降序，首个即最近一条
+			}
+		}
+	}
+	rows.Close()
+	return idx, nil
+}
+
+// outcomeNote 依据最近一次回测结论，给行动附一句闭环说明（无则空串）。
+func outcomeNote(whoID int64, outcomes map[int64]string) string {
+	if outcomes == nil || whoID == 0 {
+		return ""
+	}
+	switch outcomes[whoID] {
+	case "improved":
+		return "（上次建议已见效，可少操心）"
+	case "worsened":
+		return "（上次建议后仍无改善，更需要你主动）"
+	default:
+		return ""
+	}
+}
+
+// actionImproved 该行动指向的人最近是否已回暖（1=已回暖，用于同优先级内沉底）。
+func actionImproved(a BriefingAction, outcomes map[int64]string) int {
+	if outcomes != nil && a.WhoID != 0 && outcomes[a.WhoID] == "improved" {
+		return 1
+	}
+	return 0
 }
 
 // ---------- 各层只读缓存（不重算，出错即 nil） ----------

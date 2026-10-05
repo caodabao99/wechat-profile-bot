@@ -782,7 +782,17 @@
           </div>
           <div class="asst-row">
             <label class="check-row inline"><input type="checkbox" v-model="asstForm.advancedInsightsEnabled"> 启用高阶洞察自动计算</label>
-            <span class="hint">每周一自动算好社交网络、自我画像、干预学习与本周简报（纯确定性图算法/规则、不调模型、零费用），在「洞察」页直接看结果</span>
+            <span class="hint">每周一自动算好社交网络、自我画像、干预学习与本周简报，并追加一行趋势快照供看走势（纯确定性图算法/规则、不调模型、零费用），在「洞察」页直接看结果</span>
+          </div>
+
+          <h3 style="margin-top:18px">数据可携与遗忘</h3>
+          <div class="asst-row">
+            <label class="check-row inline"><input type="checkbox" v-model="exportRedact"> 脱敏导出（姓名→伪名、消息正文抹除，保留结构/计数/时间）</label>
+            <span class="hint">导出为单个开放 JSON（含归档与派生缓存），纯本地、只读、零费用</span>
+            <button class="btn sm" @click="exportData" :disabled="exportBusy">{{ exportBusy ? '导出中…' : '导出全部数据' }}</button>
+          </div>
+          <div class="asst-row">
+            <span class="hint">彻底删除一个联系人时，系统会一并清理其互动指标、画像事实与证据、以及建议回测记录，不留隐私残留。</span>
           </div>
 
           <h3 style="margin-top:18px">邮件发送（SMTP）</h3>
@@ -1517,6 +1527,15 @@
           <template v-if="brief.briefing">
             <div class="bf-headline">{{ brief.briefing.headline }}</div>
             <p class="bf-health" v-if="brief.briefing.healthLine">{{ brief.briefing.healthLine }}</p>
+            <template v-if="brief.briefing.changes && brief.briefing.changes.length">
+              <h3 class="life-sub">本周关键变化</h3>
+              <ul class="brief-changes">
+                <li v-for="(c,i) in brief.briefing.changes" :key="i" :class="'change-'+c.dir">
+                  <span class="bc-arrow">{{ c.dir==='up' ? '▲' : (c.dir==='down' ? '▼' : '—') }}</span>
+                  <span class="bc-text">{{ c.text }}</span>
+                </li>
+              </ul>
+            </template>
             <h3 class="life-sub" v-if="brief.briefing.topActions && brief.briefing.topActions.length">最值得你花时间的事</h3>
             <ol class="bf-actions" v-if="brief.briefing.topActions && brief.briefing.topActions.length">
               <li v-for="(a,i) in brief.briefing.topActions" :key="i">
@@ -1553,6 +1572,12 @@
               <div class="life-metric"><span class="lm-num">{{ net.network.edgeCount }}</span><span class="lm-lbl">关联连线</span></div>
               <div class="life-metric"><span class="lm-num">{{ net.network.clusterCount }}</span><span class="lm-lbl">识别圈簇</span></div>
               <div class="life-metric"><span class="lm-num" :class="{down: net.network.fragilityScore>=0.4}">{{ Math.round(net.network.fragilityScore*100) }}%</span><span class="lm-lbl">网络脆弱度</span></div>
+            </div>
+            <div class="trend-row" v-if="sparkPoints(trendSeries('fragilityScore'), 140, 30)">
+              <span class="hint">脆弱度近{{ trend.weeks.length }}周</span>
+              <svg class="trend-spark" width="140" height="30" viewBox="0 0 140 30" preserveAspectRatio="none">
+                <polyline fill="none" stroke="currentColor" stroke-width="1.5" :points="sparkPoints(trendSeries('fragilityScore'), 140, 30)"/>
+              </svg>
             </div>
             <p class="hint block" v-if="net.network.fragilityNote">{{ net.network.fragilityNote }}</p>
 
@@ -1614,6 +1639,12 @@
               <div class="life-metric"><span class="lm-num down">{{ selfpt.self.oneWayCount }}</span><span class="lm-lbl">单向关系</span></div>
               <div class="life-metric"><span class="lm-num">{{ Math.round(selfpt.self.imbalanceAvg) }}%</span><span class="lm-lbl">平均失衡度</span></div>
             </div>
+            <div class="trend-row" v-if="sparkPoints(trendSeries('initiationRate'), 140, 30)">
+              <span class="hint">你先开口率近{{ trend.weeks.length }}周</span>
+              <svg class="trend-spark" width="140" height="30" viewBox="0 0 140 30" preserveAspectRatio="none">
+                <polyline fill="none" stroke="currentColor" stroke-width="1.5" :points="sparkPoints(trendSeries('initiationRate'), 140, 30)"/>
+              </svg>
+            </div>
 
             <h3 class="life-sub">你先开口的比例（按类别）</h3>
             <ul class="sp-bars">
@@ -1652,6 +1683,12 @@
             <div class="life-metrics" v-if="learn.intervention.totalResolved>0">
               <div class="life-metric"><span class="lm-num">{{ learn.intervention.totalResolved }}</span><span class="lm-lbl">已回测样本</span></div>
               <div class="life-metric"><span class="lm-num">{{ Math.round(learn.intervention.baseRate) }}%</span><span class="lm-lbl">整体回暖率</span></div>
+            </div>
+            <div class="trend-row" v-if="sparkPoints(trendSeries('outcomeSample'), 140, 30)">
+              <span class="hint">回测样本量近{{ trend.weeks.length }}周</span>
+              <svg class="trend-spark" width="140" height="30" viewBox="0 0 140 30" preserveAspectRatio="none">
+                <polyline fill="none" stroke="currentColor" stroke-width="1.5" :points="sparkPoints(trendSeries('outcomeSample'), 140, 30)"/>
+              </svg>
             </div>
             <h3 class="life-sub" v-if="learn.intervention.byKind && learn.intervention.byKind.length">按干预方式的效果</h3>
             <ul class="iv-list" v-if="learn.intervention.byKind && learn.intervention.byKind.length">

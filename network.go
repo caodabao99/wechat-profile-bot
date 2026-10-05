@@ -64,16 +64,19 @@ type NetworkInsight struct {
 	Bridges        []NetworkBridge  `json:"bridges"`
 	FragilityScore float64          `json:"fragilityScore"` // 0-1，越高越依赖少数桥
 	FragilityNote  string           `json:"fragilityNote"`
+	Truncated      bool             `json:"truncated"` // 节点超上限时为真，图仅覆盖核心圈
+	NodeCap        int              `json:"nodeCap"`   // 触发截断时的入图上限（0=未截断）
 	Introductions  []Introduction   `json:"introductions"`
 	Insights       []string         `json:"insights"`
 }
 
 const (
-	netLPAIterations  = 12 // 标签传播固定轮次（确定性）
-	netMaxBridges     = 8  // 桥梁人物展示上限
-	netMaxIntros      = 5  // 撮合引荐展示上限
-	netMinClusterSize = 2  // 少于两人的"簇"不成圈
-	netMaxMembersShow = 8  // 每簇展示成员名上限
+	netLPAIterations  = 12  // 标签传播固定轮次（确定性）
+	netMaxBridges     = 8   // 桥梁人物展示上限
+	netMaxIntros      = 5   // 撮合引荐展示上限
+	netMinClusterSize = 2   // 少于两人的"簇"不成圈
+	netMaxMembersShow = 8   // 每簇展示成员名上限
+	netMaxNodes       = 250 // 入图规模上限：超出只保留最亲密的 top-K 核心圈，防 Brandes/Tarjan 拖慢
 )
 
 // ComputeNetworkInsights 重算社交网络洞察并写入缓存。
@@ -172,6 +175,45 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	// 4b) 规模护栏（B）：节点过多时只保留最亲密的 top-K 核心圈。
+	//   确定性：按 LifeAsset.Balance 降序，tie-break 联系人 id 升序；再过滤掉两端不都在核心圈的边。
+	if len(ids) > netMaxNodes {
+		ranked := make([]int64, len(ids))
+		copy(ranked, ids)
+		sort.SliceStable(ranked, func(i, j int) bool {
+			bi, bj := assets[ranked[i]].Balance, assets[ranked[j]].Balance
+			if bi != bj {
+				return bi > bj
+			}
+			return ranked[i] < ranked[j]
+		})
+		keepSet := map[int64]bool{}
+		for _, id := range ranked[:netMaxNodes] {
+			keepSet[id] = true
+		}
+		keptEdges := edges[:0]
+		for _, e := range edges {
+			if keepSet[e.a] && keepSet[e.b] {
+				keptEdges = append(keptEdges, e)
+			}
+		}
+		edges = keptEdges
+		// 重建节点集（仅保留仍在边中的核心节点，按 id 升序）。
+		nodeSet2 := map[int64]bool{}
+		for _, e := range edges {
+			nodeSet2[e.a] = true
+			nodeSet2[e.b] = true
+		}
+		ids = ids[:0]
+		for _, id := range ranked[:netMaxNodes] {
+			if nodeSet2[id] {
+				ids = append(ids, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		ins.Truncated = true
+		ins.NodeCap = netMaxNodes
+	}
 	g := &netGraph{ids: ids, index: map[int64]int{}, adj: make([][]int, len(ids))}
 	for i, id := range ids {
 		g.index[id] = i
@@ -448,6 +490,10 @@ func buildNetwork(db *sql.DB, now time.Time) (*NetworkInsight, error) {
 
 	// 11) 洞察句子。
 	ins.Insights = networkInsights(len(ids), ins.EdgeCount, len(clusters), artCount, fragileCount, clusters, bridges)
+	// 规模护栏触发时置顶一句诚实说明（其余人未纳入图分析）。
+	if ins.Truncated {
+		ins.Insights = append([]string{fmt.Sprintf("社交网络较大，图分析已聚焦最亲密的 %d 人核心圈（其余暂未纳入）。", netMaxNodes)}, ins.Insights...)
+	}
 
 	return ins, nil
 }

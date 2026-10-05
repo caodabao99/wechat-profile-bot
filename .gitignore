@@ -19,6 +19,7 @@ banned_ips.json.corrupt
 
 # 打包文件
 *.tar
+*.tar.gz
 *.zip
 
 # 系统文件

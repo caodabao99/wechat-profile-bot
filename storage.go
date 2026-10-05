@@ -537,6 +537,27 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 18 {
+		// v18: 高阶洞察趋势历史（v4.5.0 A）——每周追加一行聚合标量，供周环比与 sparkline。
+		// 属派生便利层：不入备份、恢复末尾清空、历史重启可接受（跨数据集旧快照本就有误导性）。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS insight_trend_history (
+				week_start TEXT PRIMARY KEY,
+				generated_at TEXT NOT NULL,
+				total_wealth REAL NOT NULL DEFAULT 0, high_risk_count INTEGER NOT NULL DEFAULT 0,
+				concentration REAL NOT NULL DEFAULT 0, contact_count INTEGER NOT NULL DEFAULT 0,
+				initiation_rate REAL NOT NULL DEFAULT 0, one_way_count INTEGER NOT NULL DEFAULT 0,
+				imbalance_avg REAL NOT NULL DEFAULT 0,
+				node_count INTEGER NOT NULL DEFAULT 0, edge_count INTEGER NOT NULL DEFAULT 0,
+				cluster_count INTEGER NOT NULL DEFAULT 0, fragility_score REAL NOT NULL DEFAULT 0,
+				bridge_count INTEGER NOT NULL DEFAULT 0, intro_count INTEGER NOT NULL DEFAULT 0,
+				outcome_sample INTEGER NOT NULL DEFAULT 0, best_action_count INTEGER NOT NULL DEFAULT 0
+			)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 18`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
