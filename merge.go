@@ -271,6 +271,9 @@ func MergeContacts(db *sql.DB, sourceID, targetID int64, opts MergeOptions) (Mer
 	extra.MovedArchiveIDs = movedArchiveIDs
 	extra.MovedEventIDs, _ = moveContactRows(tx, "contact_events", sourceID, targetID)
 	extra.MovedFollowupIDs, _ = moveContactRows(tx, "followup_items", sourceID, targetID)
+	// 规格二十三：合并须让用户创建的目标 / 项目一并迁到目标，撤销时可还原。
+	extra.MovedGoalIDs, _ = moveContactRows(tx, "relationship_goals", sourceID, targetID)
+	extra.MovedProjectIDs, _ = moveContactRows(tx, "relationship_projects", sourceID, targetID)
 	extraJSON, err := json.Marshal(extra)
 	if err != nil {
 		return result, err
@@ -333,6 +336,8 @@ type mergeUndoExtra struct {
 	MovedArchiveIDs  []int64 `json:"movedArchiveIds"`
 	MovedEventIDs    []int64 `json:"movedEventIds"`
 	MovedFollowupIDs []int64 `json:"movedFollowupIds"`
+	MovedGoalIDs     []int64 `json:"movedGoalIds"`
+	MovedProjectIDs  []int64 `json:"movedProjectIds"`
 }
 
 // tableExistsTx 事务内判断表是否存在（增值表可能没建，查询前必须先探一次）
@@ -601,6 +606,12 @@ func UndoMerge(db *sql.DB, mergeLogID int64) error {
 		return err
 	}
 	if err := moveRowsBack(tx, "followup_items", extra.MovedFollowupIDs, log.SourceID); err != nil {
+		return err
+	}
+	if err := moveRowsBack(tx, "relationship_goals", extra.MovedGoalIDs, log.SourceID); err != nil {
+		return err
+	}
+	if err := moveRowsBack(tx, "relationship_projects", extra.MovedProjectIDs, log.SourceID); err != nil {
 		return err
 	}
 	if extra.TagsRecorded {
