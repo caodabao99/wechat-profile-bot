@@ -263,55 +263,54 @@ func GenerateBlessings(db *sql.DB, llm *LLMClient, item AssistantDateItem) ([]st
 	if llm == nil {
 		return nil, fmt.Errorf("未配置模型接口，无法生成祝福语")
 	}
-	c, err := GetContactByID(db, item.ContactID)
+	// v7.0 Context Engine 唯一入口化：联系人身份/画像/最近消息经引擎取用，
+	// 不直查 contacts 表、不自行解析 profile_json。
+	cc, err := buildBlessingContext(db, item.ContactID, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	name := displayName(c)
-
-	var hints []string
-	if strings.TrimSpace(c.ProfileJSON) != "" {
-		var p Profile
-		if err := json.Unmarshal([]byte(c.ProfileJSON), &p); err == nil {
-			add := func(label, v string) {
-				if strings.TrimSpace(v) != "" {
-					hints = append(hints, label+strings.TrimSpace(v))
-				}
-			}
-			add("关系概括：", p.Summary)
-			add("职业：", p.BasicInfo.Occupation)
-			add("亲密程度：", p.Relationship.Closeness)
-			add("互动模式：", p.Relationship.InteractionPattern)
-			add("对方语气：", p.CommunicationStyle.Tone)
-			if len(p.Personality) > 0 {
-				add("性格特征：", strings.Join(p.Personality, "、"))
-			}
-			if len(p.Interests) > 0 {
-				add("兴趣爱好：", strings.Join(p.Interests, "、"))
-			}
-			if len(p.CommunicationStyle.FrequentPhrases) > 0 {
-				add("对方口头禅：", strings.Join(p.CommunicationStyle.FrequentPhrases, "、"))
-			}
-			if len(p.Relationship.RecentEvents) > 0 {
-				add("近期共同事件：", strings.Join(p.Relationship.RecentEvents, "、"))
-			}
-			if len(p.EmotionalPatterns.Stressors) > 0 {
-				add("需要避开的雷点：", strings.Join(p.EmotionalPatterns.Stressors, "、"))
-			}
-		}
+	name := cc.Identity.Name
+	if strings.TrimSpace(cc.Identity.Remark) != "" {
+		name = cc.Identity.Remark + "（" + cc.Identity.Name + "）"
 	}
 
-	// 摘几句「我」平时怎么说话，让草稿的口吻贴近用户本人
+	pf := cc.Profile
+	var hints []string
+	add := func(label, v string) {
+		if strings.TrimSpace(v) != "" {
+			hints = append(hints, label+strings.TrimSpace(v))
+		}
+	}
+	add("关系概括：", cc.Identity.Summary)
+	add("职业：", cc.Identity.Occupation)
+	add("亲密程度：", cc.Identity.Closeness)
+	add("互动模式：", pf.InteractionPattern)
+	add("对方语气：", pf.Tone)
+	if len(pf.Personality) > 0 {
+		add("性格特征：", strings.Join(pf.Personality, "、"))
+	}
+	if len(pf.Interests) > 0 {
+		add("兴趣爱好：", strings.Join(pf.Interests, "、"))
+	}
+	if len(pf.FrequentPhrases) > 0 {
+		add("对方口头禅：", strings.Join(pf.FrequentPhrases, "、"))
+	}
+	if len(pf.CommonEvents) > 0 {
+		add("近期共同事件：", strings.Join(pf.CommonEvents, "、"))
+	}
+	if len(pf.Stressors) > 0 {
+		add("需要避开的雷点：", strings.Join(pf.Stressors, "、"))
+	}
+
+	// 摘几句「我」平时怎么说话，让草稿的口吻贴近用户本人（取自引擎最近消息块）
 	var myLines []string
-	if msgs, merr := GetRecentMessages(db, item.ContactID, blessingSampleMsg); merr == nil {
-		for _, m := range msgs {
-			if m.Sender != "me" {
-				continue
-			}
-			myLines = append(myLines, preview(m.Content, 60))
-			if len(myLines) >= 8 {
-				break
-			}
+	for _, m := range cc.RecentMessages {
+		if m.Sender != "me" {
+			continue
+		}
+		myLines = append(myLines, preview(m.Content, 60))
+		if len(myLines) >= 8 {
+			break
 		}
 	}
 	styleHint := "（暂无历史消息可参考）"
@@ -343,7 +342,7 @@ func GenerateBlessings(db *sql.DB, llm *LLMClient, item AssistantDateItem) ([]st
 
 	ctx, cancel := context.WithTimeout(context.Background(), blessingTimeout)
 	defer cancel()
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, item.ContactID, TaskBlessing, cc.ContextVersion, prompt)
 	if err != nil {
 		return nil, err
 	}

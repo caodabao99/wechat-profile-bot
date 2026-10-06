@@ -126,7 +126,12 @@ func SummarizeContact(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 		return nil, err
 	}
 
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSummary, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSummary, func() string {
+		if cc, e := buildSummaryContext(db, contactID, time.Now()); e == nil {
+			return cc.ContextVersion
+		}
+		return ""
+	}(), prompt)
 	if err != nil {
 		return nil, err
 	}

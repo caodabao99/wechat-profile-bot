@@ -16,6 +16,7 @@ type ContextBlock string
 
 const (
 	BlockIdentity          ContextBlock = "identity"
+	BlockProfile           ContextBlock = "profile"
 	BlockFacts             ContextBlock = "facts"
 	BlockEvidence          ContextBlock = "evidence"
 	BlockRelationshipState ContextBlock = "relationship_state"
@@ -59,11 +60,12 @@ const (
 	TaskFollowup ContextTask = "followup" // 待跟进抽取（extractFollowups）
 	TaskOutreach ContextTask = "outreach" // 每周维护开场白（generateOutreachDraft）
 	TaskEmotion  ContextTask = "emotion"  // 联系人情绪分析（analyzeContactEmotion）
+	TaskBlessing ContextTask = "blessing" // 日历祝福语生成（GenerateBlessings）
 )
 
 // allBlocks 便捷全量块集合（画像等重任务需要几乎全部上下文）。
 var allBlocks = []ContextBlock{
-	BlockIdentity, BlockFacts, BlockEvidence, BlockRelationshipState, BlockTimeline,
+	BlockIdentity, BlockProfile, BlockFacts, BlockEvidence, BlockRelationshipState, BlockTimeline,
 	BlockGoals, BlockProjects, BlockFollowups, BlockTopics, BlockMetrics,
 	BlockRecentMessages, BlockPreviousActions, BlockPreviousOutcomes, BlockActionLog,
 }
@@ -177,16 +179,16 @@ var contextTaskRegistry = map[ContextTask]contextTaskSpec{
 	},
 	TaskRewrite: {
 		Task: TaskRewrite, Label: "草稿改写",
-		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Required:  []ContextBlock{BlockIdentity, BlockProfile, BlockRecentMessages},
 		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
-		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
+		Budget:    ContextBudget{MaxMessages: 30, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
 		Cacheable: false, RequiresLLM: true, // 交互式改写：期望新鲜/多样结果且可取消，刻意不入缓存
 	},
 	TaskDraftReview: {
 		Task: TaskDraftReview, Label: "草稿检查",
-		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Required:  []ContextBlock{BlockIdentity, BlockProfile, BlockRecentMessages},
 		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
-		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
+		Budget:    ContextBudget{MaxMessages: 30, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
 		Cacheable: false, RequiresLLM: true, // 同上：交互式检查不入缓存
 	},
 	TaskFollowup: {
@@ -209,6 +211,13 @@ var contextTaskRegistry = map[ContextTask]contextTaskSpec{
 		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState, BlockMetrics},
 		Budget:    ContextBudget{MaxMessages: 20, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 4, MaxWeeks: 4, MaxTokens: 800},
 		Cacheable: true, RequiresLLM: true, // 后台派生：同消息快照重跑幂等
+	},
+	TaskBlessing: {
+		Task: TaskBlessing, Label: "日历祝福语",
+		Required:  []ContextBlock{BlockIdentity, BlockProfile, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
+		Budget:    ContextBudget{MaxMessages: 24, MaxRelevant: 0, MaxEvidence: 2, MaxEvents: 2, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 500},
+		Cacheable: true, RequiresLLM: true, // 同联系人+同日程重复生成幂等
 	},
 }
 

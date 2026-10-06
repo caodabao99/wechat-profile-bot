@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // 对话式问答「问 TA 的历史」（特性①）。
@@ -55,12 +56,14 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 		return nil, ErrLLMNotConfigured
 	}
 
-	var name, summary string
-	if err := db.QueryRow(
-		`SELECT COALESCE(name,''), COALESCE(profile_summary,'') FROM contacts WHERE id=?`,
-		contactID).Scan(&name, &summary); err != nil {
+	// v7.0 Context Engine 唯一入口化：联系人身份/画像经适配器获取，不再直查 contacts 表。
+	// 本功能以「问题」驱动带出相关消息做带编号的出处引用（Sources）——属于本任务特有的检索，
+	// 与 Context Engine 的通用相关消息臂不同，故保留 retrieveRelevantMessages。
+	cc, err := buildAskContext(db, contactID, question, time.Now())
+	if err != nil {
 		return nil, fmt.Errorf("联系人不存在: %w", err)
 	}
+	name, summary := cc.Identity.Name, cc.Identity.Summary
 
 	keywords := extractAskKeywords(ctx, db, llm, question)
 	candidates := retrieveRelevantMessages(db, contactID, keywords)
@@ -96,7 +99,7 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 		return nil, err
 	}
 
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskAsk, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskAsk, cc.ContextVersion, prompt)
 	if err != nil {
 		return nil, err
 	}

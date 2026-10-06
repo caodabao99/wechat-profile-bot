@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -70,6 +71,7 @@ type ContactContext struct {
 	ContextVersion string `json:"context_version"`
 
 	Identity                 ContextIdentity        `json:"identity"`
+	Profile                  ContextProfile         `json:"profile"`
 	CurrentRelationshipState *RelationshipStateView `json:"current_relationship_state,omitempty"`
 	TrustedFacts             []FactView             `json:"trusted_facts"`
 	ConflictingFacts         []FactView             `json:"conflicting_facts"`
@@ -101,6 +103,22 @@ type ContextIdentity struct {
 	Location    string `json:"location,omitempty"`
 	Closeness   string `json:"closeness,omitempty"`
 	FirstSeenAt string `json:"first_seen_at,omitempty"`
+}
+
+// ContextProfile 画像块（由 contact.profile_json 解析而来的结构化视图）。
+// v7.0 唯一入口化：需要丰富画像字段（性格/兴趣/语气/雷点/共同事件等）的任务
+// 一律经本块获取，不得自行解析 profile_json。仅保留渲染 prompt 常用的派生字段。
+type ContextProfile struct {
+	Personality        []string `json:"personality,omitempty"`
+	Interests          []string `json:"interests,omitempty"`
+	ImportantFacts     []string `json:"important_facts,omitempty"`
+	Tone               string   `json:"tone,omitempty"`
+	ReplyLength        string   `json:"reply_length,omitempty"`
+	FrequentPhrases    []string `json:"frequent_phrases,omitempty"`
+	InteractionPattern string   `json:"interaction_pattern,omitempty"`
+	CommonEvents       []string `json:"common_events,omitempty"`
+	Stressors          []string `json:"stressors,omitempty"`
+	ComfortTopics      []string `json:"comfort_topics,omitempty"`
 }
 
 // ContextEvidence 扁平化的证据引用（来自事实的 evidence，供 prompt 引用、可溯源）。
@@ -156,6 +174,25 @@ func BuildContactContext(db *sql.DB, contactID int64, task ContextTask, query st
 		return nil, err
 	}
 	cc.Identity = ContextIdentity{Name: contact.Name, Remark: contact.Remark, Summary: contact.ProfileSummary}
+
+	// 画像块：从 profile_json 解析结构化派生字段，供需要丰富画像的任务（如祝福语）经引擎取用。
+	if js := strings.TrimSpace(contact.ProfileJSON); js != "" {
+		var p Profile
+		if err := json.Unmarshal([]byte(js), &p); err == nil {
+			cc.Profile = ContextProfile{
+				Personality:        p.Personality,
+				Interests:          p.Interests,
+				ImportantFacts:     p.ImportantFacts,
+				Tone:               p.CommunicationStyle.Tone,
+				ReplyLength:        p.CommunicationStyle.ReplyLength,
+				FrequentPhrases:    p.CommunicationStyle.FrequentPhrases,
+				InteractionPattern: p.Relationship.InteractionPattern,
+				CommonEvents:       p.Relationship.RecentEvents,
+				Stressors:          p.EmotionalPatterns.Stressors,
+				ComfortTopics:      p.EmotionalPatterns.ComfortTopics,
+			}
+		}
+	}
 
 	// 事实（含证据）：拆可信 / 冲突，并从可信事实抽单值进 Identity、证据扁平化。
 	if facts, err := GetFacts(db, contactID, false); err == nil {
@@ -370,6 +407,18 @@ func computeContextVersion(cc *ContactContext) string {
 	tok(cc.Identity.Location)
 	tok(cc.Identity.Closeness)
 	tok(cc.Identity.FirstSeenAt)
+	// 画像块（profile_json 派生字段变化 → 指纹变化，即使 summary 未变）
+	tok("profile")
+	tok(strings.Join(cc.Profile.Personality, "|"))
+	tok(strings.Join(cc.Profile.Interests, "|"))
+	tok(strings.Join(cc.Profile.ImportantFacts, "|"))
+	tok(cc.Profile.Tone)
+	tok(cc.Profile.ReplyLength)
+	tok(strings.Join(cc.Profile.FrequentPhrases, "|"))
+	tok(cc.Profile.InteractionPattern)
+	tok(strings.Join(cc.Profile.CommonEvents, "|"))
+	tok(strings.Join(cc.Profile.Stressors, "|"))
+	tok(strings.Join(cc.Profile.ComfortTopics, "|"))
 	// 关系状态（state change）
 	if st := cc.CurrentRelationshipState; st != nil {
 		tok("state")

@@ -263,7 +263,12 @@ func GenerateOrUpdateProfile(ctx context.Context, db *sql.DB, llmClient *LLMClie
 		return fmt.Errorf("渲染画像提示词失败: %w", err)
 	}
 
-	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskProfile, "", prompt)
+	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskProfile, func() string {
+		if cc, e := buildProfileContext(db, contactID, time.Now()); e == nil {
+			return cc.ContextVersion
+		}
+		return ""
+	}(), prompt)
 	if err != nil {
 		return fmt.Errorf("生成画像失败: %w", err)
 	}
@@ -346,7 +351,12 @@ func SupplementProfile(ctx context.Context, db *sql.DB, llmClient *LLMClient, co
 		return fmt.Errorf("渲染补充提示词失败: %w", err)
 	}
 
-	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskProfile, "", prompt)
+	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskProfile, func() string {
+		if cc, e := buildProfileContext(db, contactID, time.Now()); e == nil {
+			return cc.ContextVersion
+		}
+		return ""
+	}(), prompt)
 	if err != nil {
 		return fmt.Errorf("补充画像失败: %w", err)
 	}
@@ -393,7 +403,12 @@ func AnalyzeIntent(ctx context.Context, db *sql.DB, llmClient *LLMClient, contac
 		return nil, fmt.Errorf("渲染意图提示词失败: %w", err)
 	}
 
-	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskIntent, "", prompt)
+	raw, err := callLLMCached(ctx, db, llmClient, contactID, TaskIntent, func() string {
+		if cc, e := buildIntentContext(db, contactID, time.Now()); e == nil {
+			return cc.ContextVersion
+		}
+		return ""
+	}(), prompt)
 	if err != nil {
 		return nil, err
 	}

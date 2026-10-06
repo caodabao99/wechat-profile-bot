@@ -328,18 +328,19 @@ type followupLLMItem struct {
 }
 
 // extractFollowups 让 LLM 从一个联系人的近期消息里挖待跟进事项，写入 followup_items，返回新增条数。
+// v7.0：经 Context Engine 唯一入口获取上下文，不再自行查询 contact/messages。
 func extractFollowups(ctx context.Context, db *sql.DB, llm *LLMClient, contactID int64, now time.Time, windowDays int) (int, error) {
-	c, err := GetContactByID(db, contactID)
+	cc, err := buildFollowupContext(db, contactID, now)
 	if err != nil {
 		return 0, err
 	}
-	msgs, err := GetRecentMessages(db, contactID, followupMaxMsgs)
-	if err != nil {
-		return 0, err
+	name := cc.Identity.Name
+	if cc.Identity.Remark != "" {
+		name = cc.Identity.Remark + "（" + name + "）"
 	}
 	cutoff := now.AddDate(0, 0, -windowDays)
-	lines := make([]string, 0, len(msgs))
-	for _, m := range msgs {
+	lines := make([]string, 0, len(cc.RecentMessages))
+	for _, m := range cc.RecentMessages {
 		if m.Timestamp.Before(cutoff) {
 			continue
 		}
@@ -355,7 +356,7 @@ func extractFollowups(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 	}
 
 	prompt, err := RenderPrompt(db, "followup_extract", map[string]string{
-		"name":          displayName(c),
+		"name":          name,
 		"maxPerContact": strconv.Itoa(followupMaxPerContact),
 		"messages":      strings.Join(lines, "\n"),
 	})
@@ -368,7 +369,7 @@ func extractFollowups(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 	}
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskFollowup, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskFollowup, cc.ContextVersion, prompt)
 	if err != nil {
 		return 0, err
 	}

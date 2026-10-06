@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // 对话推演 / 回复前模拟（Phase 9）。
@@ -43,13 +44,12 @@ func SimulateReply(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 		return nil, ErrLLMNotConfigured
 	}
 
-	var name, summary string
-	err := db.QueryRow(
-		`SELECT COALESCE(name,''), COALESCE(profile_summary,'') FROM contacts WHERE id=?`,
-		contactID).Scan(&name, &summary)
+	// v7.0 Context Engine 唯一入口化：联系人身份/画像经适配器获取，不再直查 contacts 表
+	cc, err := buildSimulationContext(db, contactID, draft, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("联系人不存在: %w", err)
 	}
+	name, summary := cc.Identity.Name, cc.Identity.Summary
 
 	// 组织最近对话上下文（正序，最新在后），控制在合理长度内避免 prompt 过长
 	var convo []string
@@ -79,7 +79,7 @@ func SimulateReply(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 		return nil, err
 	}
 
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSimulation, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSimulation, cc.ContextVersion, prompt)
 	if err != nil {
 		return nil, err
 	}

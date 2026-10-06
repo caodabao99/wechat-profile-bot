@@ -328,11 +328,13 @@ func checkPendingOutcomes(db *sql.DB, now time.Time) {
 func generateOutreachDraft(db *sql.DB, llm *LLMClient, contactID int64, kind string) string {
 	ctx := context.Background()
 
-	// 读取联系人画像（锁内）
-	dbMu.Lock()
-	var name, summary string
-	db.QueryRow(`SELECT name, COALESCE(profile_summary,'') FROM contacts WHERE id=?`, contactID).Scan(&name, &summary)
-	dbMu.Unlock()
+	// v7.0：经 Context Engine 获取联系人上下文
+	cc, err := buildOutreachContext(db, contactID, time.Now())
+	if err != nil {
+		return ""
+	}
+	name := cc.Identity.Name
+	summary := cc.Identity.Summary
 
 	if name == "" || !llm.configured() {
 		return ""
@@ -354,7 +356,7 @@ func generateOutreachDraft(db *sql.DB, llm *LLMClient, contactID int64, kind str
 		return ""
 	}
 
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskOutreach, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskOutreach, cc.ContextVersion, prompt)
 	if err != nil || raw == "" {
 		return ""
 	}

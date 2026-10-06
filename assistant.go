@@ -571,19 +571,16 @@ type EmotionResult struct {
 
 // analyzeContactEmotion 取最近一周双方消息 + 画像情绪特征，让 LLM 判断对方近期情绪。
 // 结果写入 assistant_emotions；对方消息少于 3 条时跳过（样本不足不瞎猜）。
+// v7.0：经 Context Engine 获取上下文，不再自行查询 contact/messages。
 func analyzeContactEmotion(ctx context.Context, db *sql.DB, llm *LLMClient, contactID int64, now time.Time) (*EmotionResult, error) {
-	c, err := GetContactByID(db, contactID)
-	if err != nil {
-		return nil, err
-	}
-	msgs, err := GetRecentMessages(db, contactID, 60)
+	cc, err := buildEmotionContext(db, contactID, now)
 	if err != nil {
 		return nil, err
 	}
 	weekAgo := now.AddDate(0, 0, -7)
-	lines := make([]string, 0, len(msgs))
+	lines := make([]string, 0, len(cc.RecentMessages))
 	otherCount := 0
-	for _, m := range msgs {
+	for _, m := range cc.RecentMessages {
 		if m.Timestamp.Before(weekAgo) {
 			continue
 		}
@@ -599,26 +596,18 @@ func analyzeContactEmotion(ctx context.Context, db *sql.DB, llm *LLMClient, cont
 		return nil, fmt.Errorf("对方最近一周消息不足 3 条，暂不分析")
 	}
 
-	// 画像里的情绪特征给 LLM 做参照（没有画像就省略这段）
+	// 画像里的情绪特征给 LLM 做参照（从 Context Engine 的 summary 获取）
 	emotionHint := ""
-	if strings.TrimSpace(c.ProfileJSON) != "" {
-		var p Profile
-		if err := json.Unmarshal([]byte(c.ProfileJSON), &p); err == nil {
-			var hints []string
-			if len(p.EmotionalPatterns.Stressors) > 0 {
-				hints = append(hints, "压力源/雷点："+strings.Join(p.EmotionalPatterns.Stressors, "、"))
-			}
-			if strings.TrimSpace(p.EmotionalPatterns.WhenUpset) != "" {
-				hints = append(hints, "不高兴时的表现："+p.EmotionalPatterns.WhenUpset)
-			}
-			if len(hints) > 0 {
-				emotionHint = "\n该联系人的已知情绪特征：" + strings.Join(hints, "；") + "。\n"
-			}
-		}
+	if cc.Identity.Summary != "" {
+		emotionHint = "\n该联系人的已知特征：" + cc.Identity.Summary + "。\n"
 	}
 
+	name := cc.Identity.Name
+	if cc.Identity.Remark != "" {
+		name = cc.Identity.Remark + "（" + name + "）"
+	}
 	prompt, err := RenderPrompt(db, "emotion_analyze", map[string]string{
-		"name":        displayName(c),
+		"name":        name,
 		"messages":    strings.Join(lines, "\n"),
 		"emotionHint": emotionHint,
 	})
@@ -631,7 +620,7 @@ func analyzeContactEmotion(ctx context.Context, db *sql.DB, llm *LLMClient, cont
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskEmotion, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskEmotion, cc.ContextVersion, prompt)
 	if err != nil {
 		return nil, err
 	}

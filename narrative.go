@@ -264,7 +264,12 @@ func GenerateNarrative(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 	if err != nil {
 		return degrade("模型叙事不可用，以上为基于往来事实的确定性叙事。"), nil
 	}
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskNarrative, "", prompt)
+	// v7.0：经 Context Engine 获取 contextVersion
+	ccVer := ""
+	if cc, err := buildNarrativeContext(db, contactID, now); err == nil {
+		ccVer = cc.ContextVersion
+	}
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskNarrative, ccVer, prompt)
 	if err != nil {
 		return degrade("模型调用失败，已降级为基于往来事实的确定性叙事。"), nil
 	}

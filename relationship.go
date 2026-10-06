@@ -327,37 +327,41 @@ func fillDrafts(db *sql.DB, llm *LLMClient, ids []int64) {
 		args = append(args, id)
 	}
 	rows, err := db.Query(
-		`SELECT s.id, s.contact_id, s.kind, COALESCE(c.name,''), COALESCE(c.profile_summary,'')
+		`SELECT s.id, s.contact_id, s.kind
 		 FROM relationship_action_suggestions s
-		 LEFT JOIN contacts c ON c.id = s.contact_id
 		 WHERE s.draft='' AND s.status='open' AND s.kind IN ('cooling','silence') AND s.contact_id IN (`+placeholders+`)`,
 		args...)
 	if err != nil {
 		return
 	}
 	type row struct {
-		sid, cid            int64
-		kind, name, summary string
+		sid, cid int64
+		kind     string
 	}
 	var pending []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.sid, &r.cid, &r.kind, &r.name, &r.summary); err != nil {
+		if err := rows.Scan(&r.sid, &r.cid, &r.kind); err != nil {
 			continue
 		}
 		pending = append(pending, r)
 	}
 	rows.Close()
 	for _, r := range pending {
+		// v7.0 Context Engine 唯一入口化：身份/画像经适配器获取，不直查 contacts 表
+		cc, err := buildOutreachContext(db, r.cid, time.Now())
+		if err != nil {
+			continue
+		}
 		prompt, err := RenderPrompt(db, "relationship_draft", map[string]string{
-			"name":    r.name,
-			"summary": r.summary,
+			"name":    cc.Identity.Name,
+			"summary": cc.Identity.Summary,
 			"kind":    r.kind,
 		})
 		if err != nil {
 			continue
 		}
-		raw, err := llm.CallContext(ctx, prompt)
+		raw, err := callLLMCached(ctx, db, llm, r.cid, TaskOutreach, cc.ContextVersion, prompt)
 		if err != nil {
 			continue
 		}

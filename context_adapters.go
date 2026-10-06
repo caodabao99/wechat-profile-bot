@@ -1,14 +1,12 @@
 package main
 
 // ═══════════════════════════════════════════════════════════════════════════
-// §4.1 Context Adapter — legacy AI 功能的统一上下文入口（渐进「影子接管」第一步）
+// §4.1 Context Adapter — AI 功能的统一上下文入口（v7.0 Context Engine 唯一入口化）
 //
-// 蓝图要求为 profile/ask/coach/simulation 增加 buildXxxContext，内部一律走
-// BuildContactContext。本文件落地这四个适配器：它们产出**规范化、带 context_version
-// 的认知快照**，作为这些功能唯一的上下文来源，但**不**在此处替换各模块自身的 prompt
-// 文案生成——保持旧输出逐字不变、不一次性重写所有 prompt（蓝图 §4.1 红线）。
+// 蓝图要求所有 AI 任务必须经由本文件适配器获取上下文，不得自行查询
+// contact / profile_json / facts / projects / goals / metrics / recent messages。
 //
-// 后续各 Phase 再逐模块把 prompt 迁移到消费这里的上下文对象 + callLLMCached 精确复用。
+// 模式：Task → BuildContactContext → Adapter → Prompt → Cache → Model
 // ═══════════════════════════════════════════════════════════════════════════
 
 import (
@@ -36,8 +34,72 @@ func buildSimulationContext(db *sql.DB, contactID int64, draft string, now time.
 	return BuildContactContext(db, contactID, TaskSimulation, draft, now)
 }
 
-// buildTaskContext 按任务分派到对应 legacy 适配器；其余任务回退通用 BuildContactContext。
-// 统一入口（如 /context 端点）经此，确保四大任务都经由上述适配器收敛。
+// buildNarrativeContext 关系叙事上下文（TaskNarrative）。
+func buildNarrativeContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskNarrative, "", now)
+}
+
+// buildSummaryContext 往来摘要上下文（TaskSummary）。
+func buildSummaryContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskSummary, "", now)
+}
+
+// buildFollowupContext 待跟进抽取上下文（TaskFollowup）。
+func buildFollowupContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskFollowup, "", now)
+}
+
+// buildTopicContext 主题演化上下文（TaskTopic）。
+func buildTopicContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskTopic, "", now)
+}
+
+// buildEmotionContext 情绪分析上下文（TaskEmotion）。
+func buildEmotionContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskEmotion, "", now)
+}
+
+// buildOutreachContext 开场白草稿上下文（TaskOutreach）。
+func buildOutreachContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskOutreach, "", now)
+}
+
+// buildRehearsalContext 对话彩排上下文（TaskRehearsal）。
+func buildRehearsalContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskRehearsal, "", now)
+}
+
+// buildIntentContext 意图分析上下文（TaskIntent）。
+func buildIntentContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskIntent, "", now)
+}
+
+// buildReplayContext 重新认识 TA 上下文（TaskReplay）。
+func buildReplayContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskReplay, "", now)
+}
+
+// buildDecisionContext 行动决策上下文（TaskDecision）。
+func buildDecisionContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskDecision, "", now)
+}
+
+// buildBlessingContext 日历祝福语上下文（TaskBlessing）。
+func buildBlessingContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskBlessing, "", now)
+}
+
+// buildRewriteContext 草稿改写上下文（TaskRewrite）。
+func buildRewriteContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskRewrite, "", now)
+}
+
+// buildDraftReviewContext 草稿歧义检查上下文（TaskDraftReview）。
+func buildDraftReviewContext(db *sql.DB, contactID int64, now time.Time) (*ContactContext, error) {
+	return BuildContactContext(db, contactID, TaskDraftReview, "", now)
+}
+
+// buildTaskContext 按任务分派到对应适配器；统一入口（如 /context 端点）经此。
 func buildTaskContext(db *sql.DB, contactID int64, task ContextTask, query string, now time.Time) (*ContactContext, error) {
 	switch task {
 	case TaskProfile:
@@ -48,6 +110,32 @@ func buildTaskContext(db *sql.DB, contactID int64, task ContextTask, query strin
 		return buildCoachContext(db, contactID, now)
 	case TaskSimulation:
 		return buildSimulationContext(db, contactID, query, now)
+	case TaskNarrative:
+		return buildNarrativeContext(db, contactID, now)
+	case TaskSummary:
+		return buildSummaryContext(db, contactID, now)
+	case TaskFollowup:
+		return buildFollowupContext(db, contactID, now)
+	case TaskTopic:
+		return buildTopicContext(db, contactID, now)
+	case TaskEmotion:
+		return buildEmotionContext(db, contactID, now)
+	case TaskOutreach:
+		return buildOutreachContext(db, contactID, now)
+	case TaskRehearsal:
+		return buildRehearsalContext(db, contactID, now)
+	case TaskIntent:
+		return buildIntentContext(db, contactID, now)
+	case TaskReplay:
+		return buildReplayContext(db, contactID, now)
+	case TaskDecision:
+		return buildDecisionContext(db, contactID, now)
+	case TaskBlessing:
+		return buildBlessingContext(db, contactID, now)
+	case TaskRewrite:
+		return buildRewriteContext(db, contactID, now)
+	case TaskDraftReview:
+		return buildDraftReviewContext(db, contactID, now)
 	default:
 		return BuildContactContext(db, contactID, task, query, now)
 	}

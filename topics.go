@@ -239,16 +239,29 @@ func analyzeContactTopics(ctx context.Context, db *sql.DB, llm *LLMClient, conta
 	if windowDays <= 0 {
 		windowDays = topicsWindowDays
 	}
-	// 取原文（loadSummaryInputs 内部自锁并释放，返回时间正序消息）。
-	c, _, msgs, err := loadSummaryInputs(db, contactID, windowDays)
+	// v7.0：经 Context Engine 获取上下文，不再自行查询 contact/messages。
+	cc, err := buildTopicContext(db, contactID, now)
 	if err != nil {
 		return nil, err
 	}
+	name := cc.Identity.Name
+	if cc.Identity.Remark != "" {
+		name = cc.Identity.Remark + "（" + name + "）"
+	}
 	ws := weekStartOf(now)
-	if len(msgs) < topicsMinMsgs {
+	// 用 Context Engine 提供的 recentMessages 作为原文源（受 budget.MaxMessages 约束）。
+	if len(cc.RecentMessages) < topicsMinMsgs {
 		return nil, fmt.Errorf("近 %d 天原文不足 %d 条，暂不聚类主题", windowDays, topicsMinMsgs)
 	}
-	_, captioned := numberMessagesForSummary(msgs)
+	msgs := cc.RecentMessages
+	captioned := make([]string, len(msgs))
+	for i, m := range msgs {
+		sender := "我"
+		if m.Sender == "other" {
+			sender = "对方"
+		}
+		captioned[i] = fmt.Sprintf("[%d] %s[%s]: %s", i+1, sender, m.Timestamp.Format("2006-01-02 15:04"), m.Content)
+	}
 
 	// 上周主题（供对照 + 坏 JSON 回退）。
 	prev := latestTopicsBefore(db, contactID, ws)
@@ -256,7 +269,7 @@ func analyzeContactTopics(ctx context.Context, db *sql.DB, llm *LLMClient, conta
 
 	// 渲染提示词（RenderPrompt 内部取 dbMu，必须锁外调用）。
 	prompt, err := RenderPrompt(db, "topic_evolution", map[string]string{
-		"name":       displayName(c),
+		"name":       name,
 		"days":       strconv.Itoa(windowDays),
 		"captioned":  strings.Join(captioned, "\n"),
 		"prevTopics": string(prevJSON),
@@ -266,7 +279,7 @@ func analyzeContactTopics(ctx context.Context, db *sql.DB, llm *LLMClient, conta
 	}
 
 	// 调模型（无锁）。
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskTopic, "", prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskTopic, cc.ContextVersion, prompt)
 	if err != nil {
 		return nil, err
 	}

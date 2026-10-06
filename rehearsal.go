@@ -266,7 +266,12 @@ func RehearsalReply(db *sql.DB, llm *LLMClient, contactID int64, scene string, t
 
 	ctx, cancel := context.WithTimeout(context.Background(), rehearsalTimeout)
 	defer cancel()
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsal, "", prompt)
+	// v7.0：经 Context Engine 获取 contextVersion 做缓存失效
+	ccVer := ""
+	if cc, err := buildRehearsalContext(db, contactID, time.Now()); err == nil {
+		ccVer = cc.ContextVersion
+	}
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsal, ccVer, prompt)
 	if err != nil {
 		return "", "", err
 	}
@@ -332,7 +337,11 @@ func ReviewRehearsal(db *sql.DB, llm *LLMClient, contactID int64, scene string, 
 
 	ctx, cancel := context.WithTimeout(context.Background(), rehearsalTimeout)
 	defer cancel()
-	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsalReview, "", prompt)
+	ccVer2 := ""
+	if cc, err := buildRehearsalContext(db, contactID, time.Now()); err == nil {
+		ccVer2 = cc.ContextVersion
+	}
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsalReview, ccVer2, prompt)
 	if err != nil {
 		return nil, err
 	}
