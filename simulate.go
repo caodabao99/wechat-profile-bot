@@ -79,7 +79,7 @@ func SimulateReply(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 		return nil, err
 	}
 
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSimulation, "", prompt)
 	if err != nil {
 		return nil, err
 	}

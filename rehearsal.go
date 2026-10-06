@@ -266,7 +266,7 @@ func RehearsalReply(db *sql.DB, llm *LLMClient, contactID int64, scene string, t
 
 	ctx, cancel := context.WithTimeout(context.Background(), rehearsalTimeout)
 	defer cancel()
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsal, "", prompt)
 	if err != nil {
 		return "", "", err
 	}
@@ -332,7 +332,7 @@ func ReviewRehearsal(db *sql.DB, llm *LLMClient, contactID int64, scene string, 
 
 	ctx, cancel := context.WithTimeout(context.Background(), rehearsalTimeout)
 	defer cancel()
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskRehearsalReview, "", prompt)
 	if err != nil {
 		return nil, err
 	}

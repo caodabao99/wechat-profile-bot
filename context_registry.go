@@ -50,6 +50,11 @@ const (
 	TaskExperiment   ContextTask = "experiment"
 	TaskSummary      ContextTask = "summary" // 联系人往来摘要（SummarizeContact）
 	TaskIntent       ContextTask = "intent"  // 单条新消息意图分析（AnalyzeIntent）
+	// 对话接管类任务（彩排/改写/草稿检查），prompt 内联构建，cache 键以最终 prompt 哈希为锚。
+	TaskRehearsal       ContextTask = "rehearsal"        // 扮演对方回一句（RehearsalReply）
+	TaskRehearsalReview ContextTask = "rehearsal_review" // 预演后复盘（ReviewRehearsal）
+	TaskRewrite         ContextTask = "rewrite"          // 改写草稿风格（RewriteReply）
+	TaskDraftReview     ContextTask = "draft_review"     // 草稿歧义检查（ReviewDraft）
 )
 
 // allBlocks 便捷全量块集合（画像等重任务需要几乎全部上下文）。
@@ -151,6 +156,34 @@ var contextTaskRegistry = map[ContextTask]contextTaskSpec{
 		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
 		Budget:    ContextBudget{MaxMessages: 10, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 700},
 		Cacheable: true, RequiresLLM: true,
+	},
+	TaskRehearsal: {
+		Task: TaskRehearsal, Label: "对话彩排",
+		Required:  []ContextBlock{BlockIdentity, BlockFacts, BlockRelationshipState},
+		Optional:  []ContextBlock{BlockRecentMessages, BlockGoals, BlockProjects, BlockTopics},
+		Budget:    ContextBudget{MaxMessages: 24, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 6, MaxTopics: 4, MaxWeeks: 4, MaxTokens: 1200},
+		Cacheable: true, RequiresLLM: true,
+	},
+	TaskRehearsalReview: {
+		Task: TaskRehearsalReview, Label: "彩排复盘",
+		Required:  []ContextBlock{BlockIdentity, BlockFacts, BlockRelationshipState},
+		Optional:  []ContextBlock{BlockGoals, BlockPreviousActions},
+		Budget:    ContextBudget{MaxMessages: 24, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 6, MaxTopics: 4, MaxWeeks: 4, MaxTokens: 1200},
+		Cacheable: true, RequiresLLM: true,
+	},
+	TaskRewrite: {
+		Task: TaskRewrite, Label: "草稿改写",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
+		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
+		Cacheable: false, RequiresLLM: true, // 交互式改写：期望新鲜/多样结果且可取消，刻意不入缓存
+	},
+	TaskDraftReview: {
+		Task: TaskDraftReview, Label: "草稿检查",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
+		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
+		Cacheable: false, RequiresLLM: true, // 同上：交互式检查不入缓存
 	},
 }
 

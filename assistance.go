@@ -87,6 +87,8 @@ func RewriteReply(ctx context.Context, db *sql.DB, llm *LLMClient, id int64, tex
 	if err != nil {
 		return "", err
 	}
+	// 不接管缓存：改写/检查是交互式操作，用户重复点击期望「新一次、更多样」的结果，
+	// 且需在请求取消时真实中断模型调用——而缓存会先于 ctx 检查命中、绕过这两点。
 	raw, err := llm.CallContext(ctx, prompt+"\n将原文改写成「"+style+"」风格："+styleHint(style)+"。保持原意和立场不变，只调整表达方式。只输出JSON：{\"reply\":\"改写后的单条回复\"}")
 	if err != nil {
 		return "", err
@@ -111,6 +113,7 @@ func ReviewDraft(ctx context.Context, db *sql.DB, llm *LLMClient, id int64, text
 	if err != nil {
 		return nil, err
 	}
+	// 同上：草稿检查为交互式、期望新鲜结果与可取消，不接管缓存。
 	raw, err := llm.CallContext(ctx, prompt+"\n检查我准备发送的原文，结合画像和最近上下文，指出可能的歧义，勿臆测对方心理。无明显问题如实返回空issues和原文，不强行挑错。只输出JSON：{\"issues\":[\"可能歧义及原因\"],\"improved\":\"保留原意的改进版本\"}")
 	if err != nil {
 		return nil, err
