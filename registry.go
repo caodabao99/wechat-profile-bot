@@ -97,6 +97,7 @@ func init() {
 		{Name: "assistant_runs", Type: "audit", Owner: "assistant", Backup: true, Rebuild: false, HasContactID: false, Note: "助手调度运行记录"},
 		{Name: "assistant_notified", Type: "audit", Owner: "assistant", Backup: true, Rebuild: false, HasContactID: false, Note: "推送去重账本"},
 		{Name: "email_send_log", Type: "audit", Owner: "legacy", Backup: true, Rebuild: false, HasContactID: false, Note: "邮件发送日志（邮件推送功能已移除，遗留表）"},
+		{Name: "llm_call_log", Type: "audit", Owner: "llm", Backup: true, Rebuild: false, HasContactID: false, Note: "模型调用量日志（v6.2）：每次真实 LLM 调用追加一行，供用量统计/状态页展示；无 contact_id、不可重建"},
 	}
 }
 

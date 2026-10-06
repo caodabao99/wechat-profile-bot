@@ -88,6 +88,11 @@ type chatResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 // Call 发送一次对话请求，要求模型输出 JSON。
@@ -110,8 +115,17 @@ func isRetryableStatus(code int) bool {
 // 避免调用方已经放弃后仍在后台占用 LLM 配额。
 // 每次调用都**运行时解析活动档案**（模型/密钥/接口/推理开关/是否走代理），
 // 故网页端切换模型后紧接着的调用即用新配置，无需重启。
+// 每次真实模型调用（含失败）都记一笔用量日志（缓存命中不会走到这里，故统计的是真实 API 消耗）。
 func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, error) {
 	spec := c.resolveSpec()
+	start := time.Now()
+	content, status, usage, err := c.doCallContext(ctx, spec, prompt)
+	c.logLLMCall(spec, err == nil, status, usage, time.Since(start).Milliseconds())
+	return content, err
+}
+
+// doCallContext 是 CallContext 的执行体（不含用量记录），返回最终内容/HTTP 状态/token 用量/错误。
+func (c *LLMClient) doCallContext(ctx context.Context, spec llmSpec, prompt string) (string, int, llmUsage, error) {
 	cli := c.clientFor(spec.UseProxy && spec.ProxyURL != "", spec.ProxyURL)
 
 	body := map[string]interface{}{
@@ -133,11 +147,12 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 
 	endpoint := spec.BaseURL + "/chat/completions"
 	var lastErr error
+	var lastStatus int
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return "", lastStatus, llmUsage{}, ctx.Err()
 			case <-time.After(2 * time.Second):
 			}
 		}
@@ -151,11 +166,12 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 			lastErr = fmt.Errorf("请求模型接口失败: %w", err)
 			continue
 		}
+		lastStatus = resp.StatusCode()
 		if resp.IsError() {
-			lastErr = fmt.Errorf("模型接口返回 %d: %s", resp.StatusCode(),
+			lastErr = fmt.Errorf("模型接口返回 %d: %s", lastStatus,
 				strings.TrimSpace(string(resp.Body())))
-			if !isRetryableStatus(resp.StatusCode()) {
-				return "", lastErr
+			if !isRetryableStatus(lastStatus) {
+				return "", lastStatus, llmUsage{}, lastErr
 			}
 			continue
 		}
@@ -173,9 +189,13 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 			lastErr = errors.New("模型返回内容为空")
 			continue
 		}
-		return out.Choices[0].Message.Content, nil
+		var u llmUsage
+		if out.Usage != nil {
+			u = llmUsage{Prompt: out.Usage.PromptTokens, Completion: out.Usage.CompletionTokens, Total: out.Usage.TotalTokens}
+		}
+		return out.Choices[0].Message.Content, lastStatus, u, nil
 	}
-	return "", lastErr
+	return "", lastStatus, llmUsage{}, lastErr
 }
 
 // ExtractJSON 从模型返回文本中提取第一个 { 到最后一个 } 的内容，
