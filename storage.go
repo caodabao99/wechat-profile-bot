@@ -909,6 +909,33 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 27 {
+		// v27: Personal Calibration（蓝图 §9）。用户反馈只写这张独立的软调整表，绝不改核心规则/权重；
+		// 记录 target/feedback/timestamp/weight/source，读取时按时间衰减并限幅（禁一次反馈永久改算法）。
+		// 纯新表、非重建已有真相，CREATE IF NOT EXISTS 幂等。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS personal_calibration_profile (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			target      TEXT NOT NULL,
+			target_type TEXT NOT NULL CHECK(target_type IN ('risk','frequency','importance','suggestion','reminder')),
+			feedback    TEXT NOT NULL,
+			weight      REAL NOT NULL DEFAULT 0,
+			source      TEXT NOT NULL DEFAULT 'manual',
+			created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_calibration_target ON personal_calibration_profile(target, target_type)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 27`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

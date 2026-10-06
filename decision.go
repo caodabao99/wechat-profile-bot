@@ -120,6 +120,13 @@ type DecisionCandidate struct {
 	ReasonCodes  []string `json:"reason_codes"`
 	WhyNow       []string `json:"why_now"` // 人类可读「为什么是现在」
 
+	// —— 策略学习软参考（蓝图 §8.3）：只读地标注该候选所属策略类型、其历史表现折算出的
+	// strategy_score 及说明。Priority（确定性优先级）不受影响；strategy_score 仅在 Priority
+	// 基础上加一个有界小数，措辞只谈「历史上表现」，绝不因果。
+	StrategyType  string `json:"strategy_type,omitempty"`
+	StrategyScore int    `json:"strategy_score,omitempty"`
+	StrategyNote  string `json:"strategy_note,omitempty"`
+
 	// —— 行动账本闭环（蓝图 §6 P2）：候选被幂等落入 relationship_action_log 后回填，供首页
 	// [接受/稍后/忽略/已完成] 走 /actions/{id}/... 生命周期；指纹用于 §6.1 防重复。
 	ActionLogID         int64  `json:"action_log_id,omitempty"`

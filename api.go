@@ -358,6 +358,12 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "llm":
 		// v6.2：模型与代理 /api/llm/{settings|active|profile|profile/delete|presets|proxy/test|model/test|usage}
 		s.routeLLM(w, r, parts[1:])
+	case parts[0] == "strategy":
+		// 蓝图 §8：Strategy Learning 统一视图 /api/strategy/history
+		s.routeStrategy(w, r, parts[1:])
+	case parts[0] == "calibration":
+		// 蓝图 §9：Personal Calibration 软调整 /api/calibration{,/*}
+		s.routeCalibration(w, r, parts[1:])
 	case parts[0] == "stats":
 		// v6.3 §P12：Smart Paste 去重统计 /api/stats/ingest
 		s.routeStats(w, r, parts[1:])

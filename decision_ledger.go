@@ -228,5 +228,12 @@ func SurfaceDecisions(db *sql.DB, now time.Time, topN int) ([]DecisionCandidate,
 			out[i].BestTime = peakHourLabel(m.OtherHourHist)
 		}
 	}
+	// §8.3 决策集成：只读地给候选附上策略类型与历史表现折算的 strategy_score（不改 Priority、
+	// 不重排）。策略历史读取失败不阻断首页——降级为「无历史参考」，绝不影响确定性推荐本身。
+	if hist, err := ComputeStrategyHistory(db, now); err == nil && hist != nil {
+		annotateStrategyScore(out, hist.Stats)
+	}
+	// §9 个性化校准：把用户软权重叠加到 strategy_score（不改 Priority、不重排）。
+	applyCalibrationToCandidates(db, out, now)
 	return out, nil
 }
