@@ -1144,5 +1144,47 @@ func (s *apiServer) hStatus(w http.ResponseWriter, r *http.Request) {
 		"trustedProxy":     len(s.cfg.TrustedProxies) > 0,
 		"whitelistEnabled": len(s.cfg.APIWhitelist) > 0,
 		"sys":              sysInfo,
+		"llm":              s.statusLLMBlock(),
 	})
+}
+
+// statusLLMBlock 组装状态页的「模型与代理」概览：活动模型摘要 + 代理状态与最近连通性测试 + 用量摘要。
+// 全程降级容错——任何一步失败都不使整个状态接口报错，只把可得的字段填上（状态页宁可少显示也不 500）。
+// 锁纪律：loadLLMSettings / ComputeLLMUsage 各自取 dbMu，此处不嵌套（hStatus 已在上方释锁）。
+func (s *apiServer) statusLLMBlock() map[string]interface{} {
+	block := map[string]interface{}{"configured": s.llm != nil && s.llm.configured()}
+	settings, err := loadLLMSettings(s.db)
+	if err != nil {
+		slog.Warn("状态接口读取模型配置失败", "err", err)
+		return block
+	}
+	if p := settings.activeProfile(); p != nil {
+		effectiveProxy := p.UseProxy && settings.Proxy.Enabled && strings.TrimSpace(settings.Proxy.URL) != ""
+		block["active"] = map[string]interface{}{
+			"id":              p.ID,
+			"label":           p.Label,
+			"provider":        p.Provider,
+			"model":           p.Model,
+			"region":          p.Region,
+			"disableThinking": p.DisableThinking,
+			"useProxy":        effectiveProxy,
+		}
+	}
+	block["proxy"] = map[string]interface{}{
+		"enabled":    settings.Proxy.Enabled,
+		"configured": strings.TrimSpace(settings.Proxy.URL) != "", // 不回显可能含口令的 URL
+		"testedAt":   settings.Proxy.TestedAt,
+		"egressIp":   settings.Proxy.EgressIP,
+		"directIp":   settings.Proxy.DirectIP,
+		"sites":      settings.Proxy.Sites,
+	}
+	if usage, err := ComputeLLMUsage(s.db); err == nil {
+		block["usage"] = map[string]interface{}{
+			"today":   usage.Today,
+			"week":    usage.Week,
+			"month":   usage.Month,
+			"byModel": usage.ByModel,
+		}
+	}
+	return block
 }
