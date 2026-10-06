@@ -200,3 +200,52 @@ func HistoryMessagesPlain(db *sql.DB, f HistoryFilter, limit int) ([]Message, er
 	}
 	return out, nil
 }
+
+// DayStat 是某一本地自然日（YYYY-MM-DD）的消息计数（并表口径）。
+type DayStat struct {
+	Day   string
+	Count int64
+}
+
+// HistoryAggregateByDayLocked 按本地自然日聚合窗口内消息条数（并表：messages + 归档）。
+//
+// 分桶必须走全仓唯一时间口径 historyTimeExpr，再转 localtime 日期：只查 messages
+// 会在一次归档后静默少算历史（本层存在的同一理由）。这里用纯拼接而不借 historySelectLocked：
+// historyTimeExpr 含 strftime('%s', …)，经 Sprintf 会把 %s 当格式动词吞掉后续参数（与
+// HistoryMessagesLocked 同一纪律）。无时间戳的行不属任何日桶，WHERE d IS NOT NULL 剔除。
+//
+// 调用方必须已持 dbMu；不在锁内请用 HistoryAggregateByDay 自持锁包装。
+func HistoryAggregateByDayLocked(db *sql.DB, f HistoryFilter) ([]DayStat, error) {
+	bucket := "strftime('%Y-%m-%d', " + historyTimeExpr + ", 'unixepoch', 'localtime')"
+	branch := func(table string, args *[]interface{}) string {
+		return "SELECT " + bucket + " AS d FROM " + table + " WHERE " + historyBranchWhere(f, args)
+	}
+	var args []interface{}
+	part := branch("messages", &args)
+	if tableExistsLocked(db, "messages_archive") {
+		part += " UNION ALL " + branch("messages_archive", &args)
+	}
+	q := "SELECT d, COUNT(*) FROM (" + part + ") x WHERE d IS NOT NULL GROUP BY d ORDER BY d"
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DayStat
+	for rows.Next() {
+		var d string
+		var n int64
+		if err := rows.Scan(&d, &n); err != nil {
+			return nil, err
+		}
+		out = append(out, DayStat{Day: d, Count: n})
+	}
+	return out, rows.Err()
+}
+
+// HistoryAggregateByDay 是 HistoryAggregateByDayLocked 的自持锁版本。
+func HistoryAggregateByDay(db *sql.DB, f HistoryFilter) ([]DayStat, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	return HistoryAggregateByDayLocked(db, f)
+}
