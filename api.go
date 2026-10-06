@@ -358,6 +358,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "llm":
 		// v6.2：模型与代理 /api/llm/{settings|active|profile|profile/delete|presets|proxy/test|model/test|usage}
 		s.routeLLM(w, r, parts[1:])
+	case parts[0] == "stats":
+		// v6.3 §P12：Smart Paste 去重统计 /api/stats/ingest
+		s.routeStats(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
@@ -1071,6 +1074,9 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+
+	// v6.3 §P12：记录去重统计
+	RecordIngestStat(s.db, outcome.Contact.ID, outcome.ParsedCount, outcome.NewCount, time.Now())
 
 	resp := map[string]interface{}{
 		"contactId":        outcome.Contact.ID,
