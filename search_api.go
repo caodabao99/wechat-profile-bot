@@ -89,6 +89,8 @@ func (s *apiServer) hSearchMessages(w http.ResponseWriter, r *http.Request) {
 		Offset:         offset,
 		Limit:          limit,
 		Cursor:         q.Get("cursor"),
+		// §11.1 默认不算总数（不执行全表 COUNT(*)），只有显式 includeTotal=1/true 才回 total。
+		IncludeTotal: q.Get("includeTotal") == "1" || q.Get("includeTotal") == "true",
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

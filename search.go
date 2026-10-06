@@ -35,6 +35,7 @@ type SearchOptions struct {
 	Offset         int
 	Limit          int
 	Cursor         string // keyset 游标（安全编码，非空时优先于 Offset，翻页成本恒定）
+	IncludeTotal   bool   // §11.1 默认 false：不执行全表 COUNT(*)（深分页主开销），hasMore 改由「多取一条」推断；仅显式要求时置 true
 }
 
 // SearchHit 单条命中
@@ -255,9 +256,12 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 	// 归档表在检查之后被删/损坏时，报错降级为只搜活跃表重试一次（同锁内不可递归，必须内联）。
 	runQuery := func(withArchive bool) (int, []SearchHit, string, bool, error) {
 		union, args := buildUnion(withArchive)
-		var total int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
-			return 0, nil, "", false, err
+		total := 0
+		// §11.1 默认不执行全表 COUNT(*)（深分页/大结果集下它是主要开销）；仅 includeTotal=true 时算。
+		if opt.IncludeTotal {
+			if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
+				return 0, nil, "", false, err
+			}
 		}
 		// 排序键改用 msg_unix（避免每行 strftime 计算）；跨 messages+archive 用 (mu,id,archived)
 		// 作全序，游标据此定位下一页。无 cursor 时保留旧 offset 语义向后兼容。
@@ -276,12 +280,12 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 			pageArgs = append(pageArgs, cu.Mu, cu.Mu, cu.ID, cu.Mu, cu.ID, cu.Ar)
 		}
 		pageSQL += ` ORDER BY u.mu DESC, u.id DESC, u.archived DESC`
-		if hasCursor {
-			pageSQL += ` LIMIT ?`
-			pageArgs = append(pageArgs, opt.Limit+1) // 多取一条以判定 hasMore
-		} else {
-			pageSQL += ` LIMIT ? OFFSET ?`
-			pageArgs = append(pageArgs, opt.Limit, opt.Offset)
+		// 一律多取一条以判定 hasMore，替代旧「靠 total 推断」——从而默认无需 COUNT(*)。
+		pageSQL += ` LIMIT ?`
+		pageArgs = append(pageArgs, opt.Limit+1)
+		if !hasCursor {
+			pageSQL += ` OFFSET ?`
+			pageArgs = append(pageArgs, opt.Offset) // 旧 offset 语义向后兼容（§11.4 deprecated）
 		}
 		rows, err := db.Query(pageSQL, pageArgs...)
 		if err != nil {
@@ -312,18 +316,13 @@ func searchViaFTS(db *sql.DB, opt SearchOptions, keywords, ftsKws, likeKws []str
 			return 0, nil, "", false, err
 		}
 		nextCursor, hasMore := "", false
-		if hasCursor {
-			if len(list) > opt.Limit {
-				hasMore = true
-				list = list[:opt.Limit]
-				nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
-			}
-		} else {
-			hasMore = opt.Offset+len(list) < total
-			if len(list) > 0 {
-				// offset 首页也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
-				nextCursor = encodeSearchCursor(cursors[len(list)-1])
-			}
+		if len(list) > opt.Limit {
+			hasMore = true
+			list = list[:opt.Limit]
+			nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
+		} else if len(list) > 0 {
+			// 末批也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
+			nextCursor = encodeSearchCursor(cursors[len(list)-1])
 		}
 		return total, list, nextCursor, hasMore, nil
 	}
@@ -413,11 +412,14 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 	// 注意必须在本函数内重试（不能递归调用自己），dbMu 不可重入，递归会死锁。
 	runQuery := func(withArchive bool) (int, []SearchHit, string, bool, error) {
 		union, args := buildUnion(withArchive)
-		var total int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
-			return 0, nil, "", false, err
+		total := 0
+		// §11.1 默认不执行全表 COUNT(*)（深分页/大结果集下它是主要开销）；仅 includeTotal=true 时算。
+		if opt.IncludeTotal {
+			if err := db.QueryRow(`SELECT COUNT(*) FROM (`+union+`) u`, args...).Scan(&total); err != nil {
+				return 0, nil, "", false, err
+			}
 		}
-		// 与 FTS 路径一致：排序键用 msg_unix，跨双表用 (mu,id,archived) 全序；有 cursor 走 keyset。
+		// 与 FTS 路径一致：排序键用 msg_unix，跨双表 用 (mu,id,archived) 全序；有 cursor 走 keyset。
 		pageSQL := `SELECT u.id, u.contact_id, u.sender, u.content, COALESCE(u.msg_time,''), u.archived, u.mu,
 				COALESCE(c.remark,''), COALESCE(c.name,'')
 			FROM (` + union + `) u
@@ -433,12 +435,12 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 			pageArgs = append(pageArgs, cu.Mu, cu.Mu, cu.ID, cu.Mu, cu.ID, cu.Ar)
 		}
 		pageSQL += ` ORDER BY u.mu DESC, u.id DESC, u.archived DESC`
-		if hasCursor {
-			pageSQL += ` LIMIT ?`
-			pageArgs = append(pageArgs, opt.Limit+1) // 多取一条以判定 hasMore
-		} else {
-			pageSQL += ` LIMIT ? OFFSET ?`
-			pageArgs = append(pageArgs, opt.Limit, opt.Offset)
+		// 一律多取一条以判定 hasMore，替代旧「靠 total 推断」——从而默认无需 COUNT(*)。
+		pageSQL += ` LIMIT ?`
+		pageArgs = append(pageArgs, opt.Limit+1)
+		if !hasCursor {
+			pageSQL += ` OFFSET ?`
+			pageArgs = append(pageArgs, opt.Offset) // 旧 offset 语义向后兼容（§11.4 deprecated）
 		}
 		rows, err := db.Query(pageSQL, pageArgs...)
 		if err != nil {
@@ -467,18 +469,13 @@ func searchViaLike(db *sql.DB, opt SearchOptions, keywords []string) (*SearchRes
 			return 0, nil, "", false, err
 		}
 		nextCursor, hasMore := "", false
-		if hasCursor {
-			if len(list) > opt.Limit {
-				hasMore = true
-				list = list[:opt.Limit]
-				nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
-			}
-		} else {
-			hasMore = opt.Offset+len(list) < total
-			if len(list) > 0 {
-				// offset 首页也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
-				nextCursor = encodeSearchCursor(cursors[len(list)-1])
-			}
+		if len(list) > opt.Limit {
+			hasMore = true
+			list = list[:opt.Limit]
+			nextCursor = encodeSearchCursor(cursors[opt.Limit-1])
+		} else if len(list) > 0 {
+			// 末批也回带游标：客户端「首屏 offset、加载更多切 cursor」可无缝衔接。
+			nextCursor = encodeSearchCursor(cursors[len(list)-1])
 		}
 		return total, list, nextCursor, hasMore, nil
 	}

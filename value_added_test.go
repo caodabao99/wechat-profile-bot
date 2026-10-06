@@ -242,7 +242,7 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	vaMsg(t, db, a, "me", "好啊，礼物我准备好了", base.Add(time.Hour))
 	vaMsg(t, db, b, "other", "今天天气不错", base.AddDate(0, 0, -20))
 
-	res, err := SearchMessages(db, SearchOptions{Query: "生日", Limit: 10})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "生日", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	}
 
 	// 联系人过滤
-	res, err = SearchMessages(db, SearchOptions{Query: "我", ContactID: b})
+	res, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "我", ContactID: b})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	}
 
 	// 时间范围（只给日期时上界含当天）
-	res, err = SearchMessages(db, SearchOptions{Query: "天气", From: "2026-02-18", To: "2026-02-18"})
+	res, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "天气", From: "2026-02-18", To: "2026-02-18"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	}
 
 	// 分页
-	res, err = SearchMessages(db, SearchOptions{Query: "我", Offset: 0, Limit: 1})
+	res, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "我", Offset: 0, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	}
 
 	// 归档表不存在时必须降级而不是报错
-	res, err = SearchMessages(db, SearchOptions{Query: "生日", IncludeArchive: true})
+	res, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "生日", IncludeArchive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,14 +300,14 @@ func TestSearchMessagesFiltersAndArchiveDegrade(t *testing.T) {
 	}
 
 	// 空结果返回空切片而非 nil
-	res, err = SearchMessages(db, SearchOptions{Query: "不存在的词"})
+	res, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "不存在的词"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.List == nil {
 		t.Fatal("空结果应返回空切片")
 	}
-	if _, err = SearchMessages(db, SearchOptions{Query: ""}); err == nil {
+	if _, err = SearchMessages(db, SearchOptions{IncludeTotal: true, Query: ""}); err == nil {
 		t.Fatal("空查询应报错")
 	}
 }
@@ -319,7 +319,7 @@ func TestSearchAfterArchiveTablesReady(t *testing.T) {
 	}
 	a := regressionContact(t, db, "张三")
 	vaMsg(t, db, a, "other", "老照片里的生日会", time.Date(2026, 3, 10, 9, 0, 0, 0, time.Local))
-	res, err := SearchMessages(db, SearchOptions{Query: "生日", IncludeArchive: true})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "生日", IncludeArchive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1269,7 +1269,7 @@ func TestValueAddedTablesMissingDoesNotBreakCore(t *testing.T) {
 		t.Fatal("事件表不存在时仍应给出派生节点")
 	}
 	// 只读的统计类功能不依赖增值表，必须照常工作
-	if _, err := SearchMessages(db, SearchOptions{Query: "老库"}); err != nil {
+	if _, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "老库"}); err != nil {
 		t.Fatalf("搜索不应依赖增值表: %v", err)
 	}
 	if _, err := ComputeSocialStats(db, 30); err != nil {

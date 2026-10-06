@@ -55,7 +55,7 @@ func TestPhase2FTSUsedForLongKeyword(t *testing.T) {
 		t.Fatalf("messages_fts 应命中 1 条, got %d", cnt)
 	}
 
-	res, err := SearchMessages(db, SearchOptions{Query: "科技园区"})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "科技园区"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestPhase2ShortKeywordFallsBackToLike(t *testing.T) {
 		t.Fatalf("2 字关键词在 trigram FTS 里应匹配不到, got %d", cnt)
 	}
 
-	res, err := SearchMessages(db, SearchOptions{Query: "北京"})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "北京"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestPhase2MixedKeywordsAndFilter(t *testing.T) {
 	saveAt(t, db, a, "other", "深圳湾科技园区的供应链项目", time.Now()) // 含 科技园区(FTS) + 深圳(LIKE)
 	saveAt(t, db, b, "other", "科技园区里只字未提北方", time.Now())   // 含 科技园区，但不含“深圳”
 
-	res, err := SearchMessages(db, SearchOptions{Query: "科技园区 深圳"})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "科技园区 深圳"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestPhase2DegradeWhenDisabled(t *testing.T) {
 	ftsMessagesEnabled.Store(false)
 	t.Cleanup(func() { ftsMessagesEnabled.Store(true) })
 
-	res, err := SearchMessages(db, SearchOptions{Query: "供应链"})
+	res, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "供应链"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestPhase2ArchiveKeepsFTSSynced(t *testing.T) {
 	}
 
 	// 不搜归档：搜不到
-	if r, err := SearchMessages(db, SearchOptions{Query: "供应链"}); err != nil || r.Total != 0 {
+	if r, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "供应链"}); err != nil || r.Total != 0 {
 		t.Fatalf("默认不搜归档应 0 命中, total=%d err=%v", func() int {
 			if r == nil {
 				return -1
@@ -181,7 +181,7 @@ func TestPhase2ArchiveKeepsFTSSynced(t *testing.T) {
 		}(), err)
 	}
 	// 搜归档：命中且标记 archived
-	r, err := SearchMessages(db, SearchOptions{Query: "供应链", IncludeArchive: true})
+	r, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "供应链", IncludeArchive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestPhase2PhraseMatchSafety(t *testing.T) {
 	db := regressionDB(t)
 	id := regressionContact(t, db, "丙")
 	saveAt(t, db, id, "other", "这是一条正常消息", time.Now())
-	if _, err := SearchMessages(db, SearchOptions{Query: `不存在XYZ单词`}); err != nil {
+	if _, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: `不存在XYZ单词`}); err != nil {
 		t.Fatalf("异常关键词不应导致错误: %v", err)
 	}
 }
@@ -224,7 +224,7 @@ func TestPhase2RebuildIdempotent(t *testing.T) {
 			t.Fatalf("第 %d 次 rebuild 后 messages FTS 应可用", i+1)
 		}
 	}
-	r, err := SearchMessages(db, SearchOptions{Query: "供应链"})
+	r, err := SearchMessages(db, SearchOptions{IncludeTotal: true, Query: "供应链"})
 	if err != nil || r.Total != 1 {
 		t.Fatalf("rebuild 后应能搜到, total=%d err=%v", r.Total, err)
 	}
