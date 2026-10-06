@@ -259,14 +259,14 @@ func BuildPeriodReport(db *sql.DB, period string, anchor time.Time) (*PeriodRepo
 	var msgs []rawMsg
 
 	dbMu.Lock()
-	rows, err := db.Query(`
-		SELECT contact_id, sender, strftime('%s', msg_time)
-		FROM messages
-		WHERE msg_time IS NOT NULL AND msg_time != ''
-		  AND strftime('%s', msg_time) >= strftime('%s', ?)
-		  AND strftime('%s', msg_time) <  strftime('%s', ?)
-		ORDER BY strftime('%s', msg_time) DESC, id DESC
-		LIMIT ?`, fromStr, toStr, periodScanCap+1)
+	// 窗口取数走统一历史层（P9）：只查 messages 会把已归档的那段静默丢掉。
+	winFilter := HistoryFilter{SinceUnix: w.From.Unix(), UntilUnix: w.To.Unix(), WithTimeOnly: true}
+	msgQ, msgArgs := historySelectLocked(db,
+		"contact_id, sender, "+historyTimeExpr+" AS ts, id",
+		"contact_id, sender, ts",
+		winFilter, "ORDER BY ts DESC, id DESC LIMIT ?")
+	msgArgs = append(msgArgs, periodScanCap+1)
+	rows, err := db.Query(msgQ, msgArgs...)
 	if err != nil {
 		dbMu.Unlock()
 		return nil, err
@@ -336,14 +336,11 @@ func BuildPeriodReport(db *sql.DB, period string, anchor time.Time) (*PeriodRepo
 	collectEvents(db, fromStr, toStr, &evts)
 
 	var texts []string
-	if trs, terr := db.Query(`
-			SELECT content FROM messages
-			WHERE msg_time IS NOT NULL AND msg_time != ''
-			  AND strftime('%s', msg_time) >= strftime('%s', ?)
-			  AND strftime('%s', msg_time) <  strftime('%s', ?)
-			  AND length(content) BETWEEN 4 AND 200
-			ORDER BY strftime('%s', msg_time) DESC
-			LIMIT 30000`, fromStr, toStr); terr == nil {
+	textQ, textArgs := historySelectLocked(db,
+		"content, "+historyTimeExpr+" AS ts",
+		"content",
+		winFilter, "WHERE length(content) BETWEEN 4 AND 200 ORDER BY ts DESC LIMIT 30000")
+	if trs, terr := db.Query(textQ, textArgs...); terr == nil {
 		for trs.Next() {
 			var c string
 			if err := trs.Scan(&c); err != nil {

@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,53 +144,35 @@ func SummarizeContact(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 	return base, nil
 }
 
-// loadSummaryInputs 单次锁内取联系人 + 窗口内消息（时间正序）。
+// loadSummaryInputs 取联系人 + 窗口内消息（时间正序）。
 // 与 ask.go 不同：这里刻意把取名字与取消息合到同一函数、但分成两次 dbMu.Lock
 // （GetContactByID 与后续消息查询各自加锁），避免嵌套锁；也不改动 GetContactByID 签名。
-func loadSummaryInputs(db *sql.DB, contactID int64, days int) (*Contact, string, []Message, error) {
+//
+// 取数走统一历史访问层（P9）：必须并上 messages_archive。之前只查 messages，
+// 用户点一次「立即归档」，下次摘要就会基于被截断的语料生成——不报错、不提示，属于静默失真。
+func loadSummaryInputs(db *sql.DB, contactID int64, days int) (*Contact, string, []HistoryMessage, error) {
 	c, err := GetContactByID(db, contactID)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	since := time.Now().AddDate(0, 0, -days)
-
-	dbMu.Lock()
-	rows, err := db.Query(
-		`SELECT id, sender, content, COALESCE(msg_time,'') FROM messages
-		 WHERE contact_id = ?
-		   AND strftime('%s', msg_time) >= strftime('%s', ?)
-		 ORDER BY id DESC
-		 LIMIT ?`,
-		contactID, since.Format("2006-01-02 15:04:05"), summaryScanCap)
+	f := HistoryFilter{
+		ContactID:    contactID,
+		SinceUnix:    time.Now().AddDate(0, 0, -days).Unix(),
+		WithTimeOnly: true,
+	}
+	// 层的 limit 是每张表各取这么多（归档后语料分散在两表），后面再按 prompt 上限裁。
+	msgs, err := HistoryMessages(db, f, summaryScanCap)
 	if err != nil {
-		dbMu.Unlock()
 		return nil, "", nil, err
 	}
-	var list []Message
-	for rows.Next() {
-		var m Message
-		var msgTime string
-		if err := rows.Scan(&m.ID, &m.Sender, &m.Content, &msgTime); err != nil {
-			rows.Close()
-			dbMu.Unlock()
-			return nil, "", nil, err
-		}
-		m.Timestamp = parseMsgTime(msgTime)
-		list = append(list, m)
+	if len(msgs) > summaryMaxForPrompt {
+		msgs = msgs[len(msgs)-summaryMaxForPrompt:] // 保留最近的若干条（已按时间正序）
 	}
-	rows.Close()
-	dbMu.Unlock()
-
-	// 查询是 id DESC（最新在前），此处翻成时间正序（最早在前），与 ask.go 编号口径一致
-	sort.SliceStable(list, func(i, j int) bool { return list[i].Timestamp.Before(list[j].Timestamp) })
-	if len(list) > summaryMaxForPrompt {
-		list = list[len(list)-summaryMaxForPrompt:] // 保留最近的若干条
-	}
-	return c, c.ProfileSummary, list, nil
+	return c, c.ProfileSummary, msgs, nil
 }
 
 // numberMessagesForSummary 把窗口内的消息按时间正序编号 [1..N]，返回带编号的出处列表 + prompt 行文本。
-func numberMessagesForSummary(msgs []Message) ([]AskSource, []string) {
+func numberMessagesForSummary(msgs []HistoryMessage) ([]AskSource, []string) {
 	sources := make([]AskSource, 0, len(msgs))
 	lines := make([]string, 0, len(msgs))
 	for i, m := range msgs {
@@ -206,6 +187,9 @@ func numberMessagesForSummary(msgs []Message) ([]AskSource, []string) {
 		snippet := truncateRunes(strings.Join(strings.Fields(m.Content), " "), summarySnippetRunes)
 		sources = append(sources, AskSource{
 			N: i + 1, MessageID: m.ID, Sender: m.Sender, Who: who, MsgTime: ts, Snippet: snippet,
+			// 归档行的 id 属于 messages_archive，与 messages 的 id 序列互不相干；
+			// 带上来源标记，前端才能判断这条出处能否直跳到高亮节点。
+			Archived: m.Archived,
 		})
 		lines = append(lines, fmt.Sprintf("[%d] %s（%s）：%s", i+1, who, ts, snippet))
 	}
@@ -253,7 +237,7 @@ func parseSummaryJSON(raw string) (overview string, topics []string, todos []Sum
 
 // fallbackOverviewFromMessages 坏 JSON 时的兜底：只拼接原文前若干条首行，
 // 明确不新增信息、不做主观总结。
-func fallbackOverviewFromMessages(msgs []Message) string {
+func fallbackOverviewFromMessages(msgs []HistoryMessage) string {
 	var sb strings.Builder
 	sb.WriteString("（模型未返回有效结构化摘要，以下为窗口内原文摘录，非自动总结）\n")
 	used := 0

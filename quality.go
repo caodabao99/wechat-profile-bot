@@ -144,16 +144,14 @@ func ComputeContactQuality(db *sql.DB, contactID int64, windowDays int) (*Contac
 		dbMu.Unlock()
 		return nil, err
 	}
-	rows, err := db.Query(
-		`SELECT sender,
-		        COALESCE(msg_unix, CAST(strftime('%s', msg_time) AS INTEGER)) AS ts,
-		        COALESCE(LENGTH(content), 0)
-		 FROM messages
-		 WHERE contact_id = ?
-		   AND msg_time IS NOT NULL AND msg_time != ''
-		   AND strftime('%s', msg_time) >= strftime('%s', ?)
-		 ORDER BY ts ASC, id ASC
-		 LIMIT ?`, contactID, sinceStr, qualityMaxScan+1)
+	// 时间线走统一历史层（P9）：归档后窗口语料分散在两表，只查 messages 会静默少一段。
+	tlQ, tlArgs := historySelectLocked(db,
+		"sender, id, "+historyTimeExpr+" AS ts, COALESCE(LENGTH(content), 0) AS clen",
+		"sender, ts, clen",
+		HistoryFilter{ContactID: contactID, SinceUnix: now.AddDate(0, 0, -windowDays).Unix(), WithTimeOnly: true},
+		"ORDER BY ts ASC, id ASC LIMIT ?")
+	tlArgs = append(tlArgs, qualityMaxScan+1)
+	rows, err := db.Query(tlQ, tlArgs...)
 	if err != nil {
 		dbMu.Unlock()
 		return nil, err

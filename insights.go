@@ -230,8 +230,10 @@ func loadDuplicateCandidates(db *sql.DB) (int, []DuplicateContact, map[int64][]s
 	}
 
 	// 真实消息条数（other_msg_count 只是画像用的近似值）
+	// 必须并上归档表（P9）：否则归档过的联系人会被报成「消息很少」，条数与详情页不一致。
 	cntMap := map[int64]int{}
-	if crows, cerr := db.Query(`SELECT contact_id, COUNT(*) FROM messages GROUP BY contact_id`); cerr == nil {
+	cntQ, cntArgs := historySelectLocked(db, "contact_id", "contact_id, COUNT(*)", HistoryFilter{}, "GROUP BY contact_id")
+	if crows, cerr := db.Query(cntQ, cntArgs...); cerr == nil {
 		for crows.Next() {
 			var cid, n int64
 			if err := crows.Scan(&cid, &n); err != nil {

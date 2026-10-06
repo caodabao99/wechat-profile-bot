@@ -156,12 +156,13 @@ func gatherLifeRaw(db *sql.DB, now time.Time) (*lifeRaw, error) {
 	defer dbMu.Unlock()
 
 	// 2) 生命周期聚合：总数、首末时间跨度、最后联系时间。
-	if rows, err := db.Query(`
-		SELECT contact_id, COUNT(*),
-			MIN(strftime('%s', msg_time)), MAX(strftime('%s', msg_time))
-		FROM messages
-		WHERE msg_time IS NOT NULL AND msg_time != ''
-		GROUP BY contact_id`); err == nil {
+	// 走统一历史层（P9）：归档的老消息同样是这段关系生命周期的一部分，漏算会把
+	// 「认识很久的人」算成「刚认识」，而且不报错。
+	lifeQ, lifeArgs := historySelectLocked(db,
+		"contact_id, "+historyTimeExpr+" AS su",
+		"contact_id, COUNT(*), MIN(su), MAX(su)",
+		HistoryFilter{WithTimeOnly: true}, "GROUP BY contact_id")
+	if rows, err := db.Query(lifeQ, lifeArgs...); err == nil {
 		for rows.Next() {
 			var cid int64
 			var cnt int
@@ -225,11 +226,13 @@ func gatherLifeRaw(db *sql.DB, now time.Time) (*lifeRaw, error) {
 		n   int
 	}
 	var daily []dayCount
-	if rows, err := db.Query(`
-		SELECT contact_id, substr(msg_time,1,10) d, COUNT(*)
-		FROM messages
-		WHERE msg_time IS NOT NULL AND msg_time != '' AND substr(msg_time,1,10) >= ?
-		GROUP BY contact_id, d`, since90); err == nil {
+	// 同样必须并归档表：90 天斜率是「关系冷热」的核心信号，少算一段会误判走向。
+	// 下界用当日零点（与原先的日期字串比较同口径，不是当前时刻）。
+	slopeQ, slopeArgs := historySelectLocked(db,
+		"contact_id, substr(msg_time,1,10) AS d",
+		"contact_id, d, COUNT(*)",
+		HistoryFilter{SinceUnix: mustParseDate(since90).Unix(), WithTimeOnly: true}, "GROUP BY contact_id, d")
+	if rows, err := db.Query(slopeQ, slopeArgs...); err == nil {
 		for rows.Next() {
 			var dc dayCount
 			if rows.Scan(&dc.cid, &dc.day, &dc.n) == nil {
@@ -256,12 +259,12 @@ func gatherLifeRaw(db *sql.DB, now time.Time) (*lifeRaw, error) {
 		r.slope[cid] = weeklySlope(s)
 	}
 
-	// 6) 近 30 天小时/周几分布。
-	since30 := now.AddDate(0, 0, -30).Format(time.RFC3339)
-	if rows, err := db.Query(`
-		SELECT CAST(strftime('%H', msg_time) AS INT), CAST(strftime('%w', msg_time) AS INT), COUNT(*)
-		FROM messages
-		WHERE msg_time IS NOT NULL AND msg_time != '' AND strftime('%s', msg_time) >= strftime('%s', ?)`, since30); err == nil {
+	// 6) 近 30 天小时/周几分布（并上归档表，否则作息样本会被归档抹掉一部分）。
+	hourQ, hourArgs := historySelectLocked(db,
+		"CAST(strftime('%H', msg_time) AS INT) AS hh, CAST(strftime('%w', msg_time) AS INT) AS ww",
+		"hh, ww, COUNT(*)",
+		HistoryFilter{SinceUnix: now.AddDate(0, 0, -30).Unix(), WithTimeOnly: true}, "GROUP BY hh, ww")
+	if rows, err := db.Query(hourQ, hourArgs...); err == nil {
 		for rows.Next() {
 			var h, w, n int
 			if rows.Scan(&h, &w, &n) == nil {
