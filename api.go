@@ -349,6 +349,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "today":
 		// v6.3 §P11：Action Center 2.0 聚合 /api/today + /api/today/snooze
 		s.routeToday(w, r, parts[1:])
+	case parts[0] == "command-center":
+		// 蓝图 §13：Relationship Command Center 2.0（首页六栏 Top3）/api/command-center
+		s.routeCommandCenter(w, r, parts[1:])
 	case parts[0] == "risks":
 		// 蓝图 §13 P9：Relationship Risk Center /api/risks
 		s.routeRisks(w, r, parts[1:])
@@ -411,6 +414,9 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 	case "session":
 		// 蓝图 §7 P1：Relationship Session 编排层 /api/contacts/{id}/session[/execute|/outcome]
 		s.routeContactSession(w, r, id, sub[1:])
+	case "brief":
+		// 蓝图 §14 P2：Contact Brief 联系前简报（纯确定性）/api/contacts/{id}/brief
+		s.hContactBrief(w, r, id)
 	case "tags":
 		s.routeContactTags(w, r, id)
 	case "timeline":
