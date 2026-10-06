@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 19 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v19）
+	backupCurrentDBVer  = 20 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v20）
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
@@ -91,6 +91,7 @@ var derivedTables = []string{
 	"self_portrait_cache",
 	"intervention_cache",
 	"briefing_cache",
+	"ai_response_cache",
 	"insight_trend_history",
 }
 

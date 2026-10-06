@@ -632,6 +632,30 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 20 {
+		// v20: AI 响应缓存（蓝图 §4.2）——语义键 (contact_id, task, context_version, model, prompt_version)。
+		// 同认知版本 + 同模型 + 同提示词模板版本才复用，命中即跳过一次 LLM 调用；因 LLM 非确定，
+		// 缓存同时把「相同输入→相同输出」变成保证，契合确定性铁律。context_version 覆盖认知输入变化、
+		// prompt_version 覆盖提示词模板变化，任一变→键变→自动失效。派生/缓存：可整表清空自愈重建，删联系人按 contact_id 级联。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ai_response_cache (
+			contact_id      INTEGER NOT NULL,
+			task            TEXT    NOT NULL,
+			context_version TEXT    NOT NULL,
+			model           TEXT    NOT NULL,
+			prompt_version  TEXT    NOT NULL,
+			response        TEXT    NOT NULL,
+			created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (contact_id, task, context_version, model, prompt_version)
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ai_response_cache_created ON ai_response_cache(created_at)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 20`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

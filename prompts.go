@@ -87,6 +87,18 @@ func RenderPrompt(db *sql.DB, key string, vars map[string]string) (string, error
 	return renderTokens(content, spec.Vars, vars), nil
 }
 
+// PromptVersion 计算某提示词模板的版本指纹（蓝图 §4.2）：对「解析后的模板正文」
+// （DB 覆盖优先→内嵌默认）取短哈希。编辑/热改模板即改变此值，从而精确失效相关缓存，
+// 无需手工维护版本号。取模板正文（非填充后全文），与 context_version 职责正交。
+// 约束：内部经 resolvePromptContent 取 dbMu 读覆盖，调用点须处于「锁外」。
+func PromptVersion(db *sql.DB, key string) (string, error) {
+	spec, ok := promptRegistry[key]
+	if !ok {
+		return "", fmt.Errorf("未知提示词模板: %s", key)
+	}
+	return shortHash(resolvePromptContent(db, key, spec)), nil
+}
+
 // resolvePromptContent 取覆盖内容并校验，非法/缺失回退内嵌默认。
 func resolvePromptContent(db *sql.DB, key string, spec PromptSpec) string {
 	content, ok := getPromptOverride(db, key)
