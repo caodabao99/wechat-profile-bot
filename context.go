@@ -52,22 +52,10 @@ type ContextBudget struct {
 	MaxTokens   int // 渲染文本 token 预算（近似：rune 数 / 2）
 }
 
-// budgetFor 任务 → 预算。不同任务侧重不同，杜绝「所有任务都送 100 条消息」。
+// budgetFor 任务 → 预算。单一事实来源为 Context Task Registry（context_registry.go）。
+// 不同任务侧重不同，杜绝「所有任务都送 100 条消息」；未知任务回落默认预算。
 func budgetFor(task ContextTask) ContextBudget {
-	switch task {
-	case TaskAsk:
-		return ContextBudget{MaxMessages: 8, MaxRelevant: 24, MaxEvidence: 12, MaxEvents: 10, MaxTopics: 6, MaxWeeks: 4, MaxTokens: 1400}
-	case TaskNarrative, TaskReplay:
-		return ContextBudget{MaxMessages: 24, MaxRelevant: 12, MaxEvidence: 14, MaxEvents: 40, MaxTopics: 12, MaxWeeks: 12, MaxTokens: 2000}
-	case TaskSimulation:
-		return ContextBudget{MaxMessages: 48, MaxRelevant: 8, MaxEvidence: 6, MaxEvents: 8, MaxTopics: 6, MaxWeeks: 4, MaxTokens: 1600}
-	case TaskDecision:
-		return ContextBudget{MaxMessages: 6, MaxRelevant: 6, MaxEvidence: 8, MaxEvents: 6, MaxTopics: 4, MaxWeeks: 2, MaxTokens: 900}
-	case TaskCoach, TaskBriefing:
-		return ContextBudget{MaxMessages: 12, MaxRelevant: 8, MaxEvidence: 8, MaxEvents: 10, MaxTopics: 6, MaxWeeks: 4, MaxTokens: 1000}
-	default: // profile 及未知任务
-		return ContextBudget{MaxMessages: 20, MaxRelevant: 10, MaxEvidence: 12, MaxEvents: 16, MaxTopics: 8, MaxWeeks: 8, MaxTokens: 1400}
-	}
+	return taskSpec(task).Budget
 }
 
 // ContactContext 一个联系人的分层认知快照（规格第九章 ContactContext 全字段）。
