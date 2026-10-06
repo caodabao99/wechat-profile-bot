@@ -352,6 +352,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "command-center":
 		// 蓝图 §13：Relationship Command Center 2.0（首页六栏 Top3）/api/command-center
 		s.routeCommandCenter(w, r, parts[1:])
+	case parts[0] == "opportunity":
+		// 蓝图 §15：Network Opportunity Discovery（“谁可能帮我？”）/api/opportunity?q=..&top=..
+		s.routeOpportunity(w, r, parts[1:])
 	case parts[0] == "risks":
 		// 蓝图 §13 P9：Relationship Risk Center /api/risks
 		s.routeRisks(w, r, parts[1:])
