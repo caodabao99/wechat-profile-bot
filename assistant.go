@@ -628,7 +628,7 @@ func analyzeContactEmotion(db *sql.DB, llm *LLMClient, contactID int64, now time
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskEmotion, "", prompt)
 	if err != nil {
 		return nil, err
 	}

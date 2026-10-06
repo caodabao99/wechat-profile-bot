@@ -55,6 +55,10 @@ const (
 	TaskRehearsalReview ContextTask = "rehearsal_review" // 预演后复盘（ReviewRehearsal）
 	TaskRewrite         ContextTask = "rewrite"          // 改写草稿风格（RewriteReply）
 	TaskDraftReview     ContextTask = "draft_review"     // 草稿歧义检查（ReviewDraft）
+	// 后台派生类任务（同一快照重跑幂等 → 缓存可省重复模型消耗）。
+	TaskFollowup ContextTask = "followup" // 待跟进抽取（extractFollowups）
+	TaskOutreach ContextTask = "outreach" // 每周维护开场白（generateOutreachDraft）
+	TaskEmotion  ContextTask = "emotion"  // 联系人情绪分析（analyzeContactEmotion）
 )
 
 // allBlocks 便捷全量块集合（画像等重任务需要几乎全部上下文）。
@@ -184,6 +188,27 @@ var contextTaskRegistry = map[ContextTask]contextTaskSpec{
 		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
 		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 800},
 		Cacheable: false, RequiresLLM: true, // 同上：交互式检查不入缓存
+	},
+	TaskFollowup: {
+		Task: TaskFollowup, Label: "待跟进抽取",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockProjects},
+		Budget:    ContextBudget{MaxMessages: 40, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 6, MaxTopics: 4, MaxWeeks: 6, MaxTokens: 1200},
+		Cacheable: true, RequiresLLM: true, // 后台抽取：同消息快照重跑幂等
+	},
+	TaskOutreach: {
+		Task: TaskOutreach, Label: "开场白草稿",
+		Required:  []ContextBlock{BlockIdentity, BlockRelationshipState},
+		Optional:  []ContextBlock{BlockFacts, BlockMetrics},
+		Budget:    ContextBudget{MaxMessages: 6, MaxRelevant: 0, MaxEvidence: 2, MaxEvents: 2, MaxTopics: 2, MaxWeeks: 2, MaxTokens: 400},
+		Cacheable: true, RequiresLLM: true, // 同联系人+同原因重复生成幂等
+	},
+	TaskEmotion: {
+		Task: TaskEmotion, Label: "情绪分析",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState, BlockMetrics},
+		Budget:    ContextBudget{MaxMessages: 20, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 4, MaxWeeks: 4, MaxTokens: 800},
+		Cacheable: true, RequiresLLM: true, // 后台派生：同消息快照重跑幂等
 	},
 }
 

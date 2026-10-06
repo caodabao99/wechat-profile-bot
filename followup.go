@@ -365,7 +365,7 @@ func extractFollowups(db *sql.DB, llm *LLMClient, contactID int64, now time.Time
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskFollowup, "", prompt)
 	if err != nil {
 		return 0, err
 	}

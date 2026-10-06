@@ -352,7 +352,7 @@ func generateOutreachDraft(db *sql.DB, llm *LLMClient, contactID int64, kind str
 		return ""
 	}
 
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskOutreach, "", prompt)
 	if err != nil || raw == "" {
 		return ""
 	}
