@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.1.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.2.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.1.0.tar.gz`，得到 `wechat-profile-bot:v6.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.2.0.tar.gz`，得到 `wechat-profile-bot:v6.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,18 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.2.0（2026-10-06）
+
+本版聚焦**模型与代理的运行时自助管理**：把原先只能在 `config.json` 里写死的对话模型，升级为网页可视化的一等公民——可在「模型与代理」页切换模型、适配国内外预设、开关推理/思考模式、添加自定义模型，统计真实调用量，并为一位国外模型配置**仅作用于模型调用**的网络代理与一键连通性自检。全部遵循：运行时解析、config.json 兜底（老部署零感知）；代理绝不外溢到微信同步/邮件等其他功能；密钥对外一律打码、绝不明文外泄；探测/调用失败当「数据」呈现、绝不 503。数据库新增两张表（`llm_settings` 配置、`llm_call_log` 用量），均为 `Backup:true`、恢复缺表则保留主库。
+
+- **模型档案与运行时切换（`llm_settings.go`/`llm.go`/`llm_api.go`）**：懒建 `llm_settings` 单行 JSON 配置表，多档案（label/provider/baseURL/apiKey/model/region/disableThinking/useProxy）；`LLMClient` 每次调用经 `resolveSpec` 读活动档案，未配置或无库时回落 `config.json`，缓存键含 model 故切模型天然不串用。`/api/llm/{settings,active,profile,profile/delete}` 全套端点，密钥 GET 一律打码、PUT 回传掩码按 ID 沿用旧值。
+- **国内外预设 + 自定义模型（`llm_presets.go`）**：内置国内（DeepSeek/通义/智谱/火山豆包/Kimi/硅基流动）、国外（OpenAI/Gemini/Groq/Mistral/xAI，默认走代理）与本地（Ollama，无需密钥）预设目录，`/api/llm/presets` 供前端一键带出接口与常用模型；亦可完全自定义。
+- **模型调用量统计（`llm_usage.go`）**：追加式 `llm_call_log`（真实 API 调用才记、缓存命中不计，口径=实际消耗），解析响应 `usage` 的 prompt/completion/total token 与延迟/是否经代理；`ComputeLLMUsage` 聚合今日/7 天/30 天三窗口 + 按模型分解，`/api/llm/usage`。
+- **仅模型调用的网络代理 + 连通性自检（`llm_proxytest.go`/`llm_api.go`）**：代理经 `clientFor` 注入 LLMClient 的 resty 客户端（`proxyMu` 保护、仅 URL 变化重建，绝不在调用中改传输层），只影响模型 HTTP 出口；`POST /api/llm/proxy/test` 测直连/代理出口 IP 与到代表性站点（Google 204/OpenAI/Cloudflare）的延迟，`POST /api/llm/model/test` 对活动模型发一次最小调用验可达。探测目标可注入（测试用 httptest，绝不依赖真实外网），结果落 `settings.Proxy` 供状态页展示。
+- **状态页概览 + 前端「模型与代理」页（`api.go`/`static/`）**：`/api/status` 增加 `llm` 块（活动模型/代理态/最近测试/用量摘要，全程降级不 500）；新增「模型与代理」导航页，覆盖档案增删改切换、推理开关、国内外预设、自定义、代理配置与连通性/模型可达测试、调用量图表。
+- **网页文案中文化**：关系状态（基态·动态态）、趋势、预警、事实类型等原先直出的英文枚举统一映射为中文，未知值保留原样不致空白。
+- **治理与测试**：全 Phase 过同一门禁——`gofmt`/`build`/`vet`、linux/amd64·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0、`node --check`；`-race -cover` 含治理回归（登记表/备份恢复/级联清理/FeatureSweep）全绿，覆盖率 70.2% → **70.5%**。新增模型设置/预设/用量/状态/代理测试（httptest 端到端，零真实外网依赖）。
 
 ### v6.1.0（2026-10-06）
 
