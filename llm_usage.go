@@ -22,12 +22,15 @@ type llmUsage struct {
 }
 
 // ensureLLMCallLogTable 懒建用量日志表（幂等 DDL，自持 dbMu）。
+// 老库已存在本表而无 task 列（v6.3 后才加）→ 用 pragma_table_info 守门做一次 ALTER，
+// 与仓内既有用量列迁移同一手法；失败只影响归因、绝不阻断主流程。
 func ensureLLMCallLogTable(db *sql.DB) error {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS llm_call_log (
 		id                INTEGER PRIMARY KEY AUTOINCREMENT,
 		ts                INTEGER NOT NULL,          -- unix 秒（时区无关，便于窗口统计）
+		task              TEXT    NOT NULL DEFAULT '', -- 所属 AI 任务（§6 归因；空=未接管路径的裸调）
 		profile_id        TEXT    NOT NULL DEFAULT '',
 		profile_label     TEXT    NOT NULL DEFAULT '',
 		provider          TEXT    NOT NULL DEFAULT '',
@@ -41,15 +44,29 @@ func ensureLLMCallLogTable(db *sql.DB) error {
 		latency_ms        INTEGER NOT NULL DEFAULT 0,
 		used_proxy        INTEGER NOT NULL DEFAULT 0
 	)`)
-	if err == nil {
-		_, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_call_log_ts ON llm_call_log(ts)`)
+	if err != nil {
+		return err
 	}
-	return err
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_call_log_ts ON llm_call_log(ts)`); err != nil {
+		return err
+	}
+	// 已存在旧版表（无 task 列）时安上该列
+	var colCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('llm_call_log') WHERE name='task'`).Scan(&colCount); err != nil {
+		return err
+	}
+	if colCount == 0 {
+		if _, err := db.Exec(`ALTER TABLE llm_call_log ADD COLUMN task TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // logLLMCall 记一次调用用量。db 为 nil（未接库的纯 config 客户端/测试）时静默跳过。
 // 任何写失败都不影响主流程（统计是尽力而为的观测层）。
-func (c *LLMClient) logLLMCall(spec llmSpec, ok bool, status int, u llmUsage, latencyMS int64) {
+// task 为本次调用的任务归因（§6）；空串表示未接管路径（无归因），据实记录而非伪造。
+func (c *LLMClient) logLLMCall(spec llmSpec, task string, ok bool, status int, u llmUsage, latencyMS int64) {
 	if c.db == nil {
 		return
 	}
@@ -67,9 +84,9 @@ func (c *LLMClient) logLLMCall(spec llmSpec, ok bool, status int, u llmUsage, la
 	dbMu.Lock()
 	defer dbMu.Unlock()
 	_, _ = c.db.Exec(
-		`INSERT INTO llm_call_log (ts, profile_id, profile_label, provider, model, region, ok, http_status, prompt_tokens, completion_tokens, total_tokens, latency_ms, used_proxy)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		time.Now().Unix(), spec.ProfileID, spec.Label, spec.Provider, spec.Model, spec.Region, okInt, status, u.Prompt, u.Completion, u.Total, latencyMS, usedProxy)
+		`INSERT INTO llm_call_log (ts, task, profile_id, profile_label, provider, model, region, ok, http_status, prompt_tokens, completion_tokens, total_tokens, latency_ms, used_proxy)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().Unix(), task, spec.ProfileID, spec.Label, spec.Provider, spec.Model, spec.Region, okInt, status, u.Prompt, u.Completion, u.Total, latencyMS, usedProxy)
 }
 
 // LLMWindowStats 一个时间窗内的调用汇总。
@@ -96,12 +113,24 @@ type LLMModelUsage struct {
 	LastUsedAt   int64  `json:"lastUsedAt"`
 }
 
-// LLMUsage 全量用量视图（三窗口 + 按模型分解）。
+// LLMUsage 全量用量视图（三窗口 + 按模型分解 + 按任务分解）。
 type LLMUsage struct {
 	Today   LLMWindowStats  `json:"today"`
 	Week    LLMWindowStats  `json:"week"`
 	Month   LLMWindowStats  `json:"month"`
 	ByModel []LLMModelUsage `json:"byModel"`
+	ByTask  []LLMTaskUsage  `json:"byTask"` // §6 任务级归因（未接管路径归入「未归因」，不隐去成本）
+}
+
+// LLMTaskUsage 按 AI 任务聚合的一行（供任务级预算/路由决策与成本面板）。
+type LLMTaskUsage struct {
+	Task         string `json:"task"`
+	Registered   bool   `json:"registered"` // 是否已在 Context Task Registry 登记（否则为裸调/遗留名）
+	Calls        int    `json:"calls"`
+	Success      int    `json:"success"`
+	TotalTokens  int64  `json:"totalTokens"`
+	AvgLatencyMS int64  `json:"avgLatencyMs"`
+	LastUsedAt   int64  `json:"lastUsedAt"`
 }
 
 // windowStats 统计 [sinceUnix, ∞) 窗口内的聚合。
@@ -157,6 +186,29 @@ func ComputeLLMUsage(db *sql.DB) (LLMUsage, error) {
 			m.AvgLatencyMS = sumLatency / int64(m.Calls)
 		}
 		out.ByModel = append(out.ByModel, m)
+	}
+
+	// 按任务分解（§6 归因）。空 task 统一映射为「未归因」而非丢掉，保证任务合计与窗口总量可对账。
+	taskRows, err := db.Query(
+		`SELECT COALESCE(NULLIF(task,''), ?), COUNT(*), COALESCE(SUM(ok),0),
+		        COALESCE(SUM(total_tokens),0), COALESCE(SUM(latency_ms),0), MAX(ts)
+		 FROM llm_call_log WHERE ts >= ?
+		 GROUP BY COALESCE(NULLIF(task,''), ?)
+		 ORDER BY COUNT(*) DESC, MAX(ts) DESC LIMIT 64`, unattributedTaskKey, now-30*day, unattributedTaskKey)
+	if err == nil {
+		defer taskRows.Close()
+		for taskRows.Next() {
+			var t LLMTaskUsage
+			var sumLatency int64
+			if err := taskRows.Scan(&t.Task, &t.Calls, &t.Success, &t.TotalTokens, &sumLatency, &t.LastUsedAt); err != nil {
+				continue
+			}
+			if t.Calls > 0 {
+				t.AvgLatencyMS = sumLatency / int64(t.Calls)
+			}
+			t.Registered = isTaskRegistered(ContextTask(t.Task))
+			out.ByTask = append(out.ByTask, t)
+		}
 	}
 	return out, nil
 }

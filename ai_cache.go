@@ -121,7 +121,8 @@ func callLLMCached(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 	if cached, ok := aiCacheGet(db, key); ok {
 		return cached, nil
 	}
-	raw, err := llm.CallContext(ctx, prompt)
+	// 把任务写进 ctx 后真调：使用量日志自带归因（§6），14 个接管点无需改任何签名。
+	raw, err := llm.CallContext(withLLMTask(ctx, task), prompt)
 	if err != nil {
 		return raw, err
 	}

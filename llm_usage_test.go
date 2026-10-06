@@ -20,9 +20,9 @@ func TestLLMUsageRecordAndAggregate(t *testing.T) {
 	spec := llmSpec{ProfileID: "a", Label: "DeepSeek", Provider: "deepseek", Model: "deepseek-chat", Region: regionDomestic}
 
 	// 2 成功 1 失败
-	c.logLLMCall(spec, true, 200, llmUsage{Prompt: 10, Completion: 5, Total: 15}, 100)
-	c.logLLMCall(spec, true, 200, llmUsage{Prompt: 20, Completion: 10, Total: 30}, 200)
-	c.logLLMCall(spec, false, 429, llmUsage{}, 50)
+	c.logLLMCall(spec, string(TaskProfile), true, 200, llmUsage{Prompt: 10, Completion: 5, Total: 15}, 100)
+	c.logLLMCall(spec, string(TaskProfile), true, 200, llmUsage{Prompt: 20, Completion: 10, Total: 30}, 200)
+	c.logLLMCall(spec, string(TaskProfile), false, 429, llmUsage{}, 50)
 
 	u, err := ComputeLLMUsage(db)
 	if err != nil {

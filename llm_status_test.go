@@ -55,7 +55,7 @@ func TestStatusIncludesLLMBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewLLMClient(&Config{}).WithDB(db)
-	c.logLLMCall(llmSpec{ProfileID: "m", Model: "gpt-4o", Provider: "openai"}, true, 200, llmUsage{Total: 10}, 100)
+	c.logLLMCall(llmSpec{ProfileID: "m", Model: "gpt-4o", Provider: "openai"}, "", true, 200, llmUsage{Total: 10}, 100)
 
 	cfg := &Config{APIToken: "test-rel-token"}
 	s := &apiServer{db: db, cfg: cfg, llm: c, sessions: &webSessionStore{sessions: map[string]time.Time{}}}

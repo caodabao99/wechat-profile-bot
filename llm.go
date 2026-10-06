@@ -120,7 +120,8 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 	spec := c.resolveSpec()
 	start := time.Now()
 	content, status, usage, err := c.doCallContext(ctx, spec, prompt)
-	c.logLLMCall(spec, err == nil, status, usage, time.Since(start).Milliseconds())
+	// 任务归因（§6）从 ctx 取：接管路径（callLLMCached）会写入，裸调点为空→记为未归因。
+	c.logLLMCall(spec, llmTaskFromContext(ctx), err == nil, status, usage, time.Since(start).Milliseconds())
 	return content, err
 }
 
