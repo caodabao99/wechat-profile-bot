@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.2.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.2.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.2.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.2.0.tar.gz`，得到 `wechat-profile-bot:v6.2.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.0.tar.gz`，得到 `wechat-profile-bot:v6.3.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,18 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.3.0（2026-10-06）
+
+本版是 **Personal Relationship OS 从「功能堆叠」走向「统一治理」的骨干加固版**：先把「谁在什么条件下取什么上下文、走哪条 AI 出口」这套底层纪律做扎实（可观测、可缓存、可校验），并对当前 `main` 代码做了一次以实测为准的架构审计。**遵循蓝图「骨干优先、不许假装完成」的纪律——本版只交付并验证下列能力，其余规划项见文末「路线图（尚未在本版本实施）」，未实现即未实现。**
+
+- **架构审计与发布一致性治理（`ARCHITECTURE_AUDIT_V6_2.md`）**：以 `main` 实测（非 README 声称）钉死版本基线——schema `user_version=25`、49 张登记表、逐模块 Context/LLM 出口接管矩阵、消息 SQL 分布、AI Cache 覆盖、Secret/SSRF 现状与 P0–P13 能力状态矩阵。并修复 GitHub `releases/latest` 因按 `created_at` 排序而仍指向旧版的问题（以 release-id + 布尔 `make_latest` 显式声明最新）。
+- **Context Task Registry 单一事实来源（`context_registry.go`，§5.3）**：把原先散落在 `budgetFor` switch 里的「每类任务取多少条消息/证据/事件/主题/周、预算多少 token、需要哪些上下文块、可否缓存」收敛为一张代码注册表；`budgetFor(task)` 改为委托 `taskSpec(task).Budget`。补齐 `summary`/`intent`/`memory_review`/`topic`/`experiment` 等任务登记。专测 `TestContextRegistryBudgetNoDrift` 逐一比对预算零漂移，未知任务安全回落。
+- **AI 响应缓存接管扩展（§5.2）**：5 个联系人内容生成任务（画像生成/补充/意图分析、关系叙事、往来摘要、主题演化）由裸 `llm.CallContext` 统一迁至 `callLLMCached` 单一原语——相同认知输入 + 相同 prompt 的二次调用命中缓存、跳过重复模型消耗，跨模型结果天然隔离，未配置时沿用各模块既有确定性降级。验收测 `TestNarrativeTakeoverHitsCache` 以「模型 HTTP 端点仅被触达一次」这一代码事实锁定接管（非 README 声称）。
+- **模型/代理端点入参校验（`llm_settings.go`，安全）**：唯一写库入口 `saveLLMSettings` 前置护栏——BaseURL 仅 `http/https` 且必须含主机名、禁止 `user:pass@host` 内嵌账号；代理仅 `http/https/socks5`；空值放行（回落 `config.json` 属合法语义）。非法值直接拒绝、不落库、不改活动配置，堵住协议处理器/SSRF 类误配。`TestSaveLLMSettingsRejectsBadURLEndToEnd` 断言非法值不污染库。
+- **治理与测试**：全增量过同一门禁——`gofmt`/`build`/`vet`、linux/{amd64,arm64}·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 含治理回归全绿，覆盖率 70.5% → **70.6%**（不降反升）。
+
+**路线图（尚未在本版本实施，据实标注、不充数）**：AI Model Router / Task Policy / 成本面板（P2）、Relationship Session 编排（P4）、Memory Consolidation（P5）、AI Evaluation Lab（P6）、Personal Calibration（P7）、Network Opportunity Discovery（P8）、Historical Message Repository 统一访问层全量收敛（P9，本版仅接管 5 个内容任务，其余 ~10 个裸调点与全局任务待后续）、Relationship Portfolio 2.0（P10）、Action Center 2.0（P11）、Smart Paste 增量去重统计（P12）、100K~10M 消息 Benchmark（P15）。桌面端本版无新增入口，维持 v3.2.0（不强升版本号）。
 
 ### v6.2.0（2026-10-06）
 

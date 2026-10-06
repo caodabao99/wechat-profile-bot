@@ -143,4 +143,21 @@
 3. 安全缺口 **P3（备份明文密钥 / SSRF）** 应与功能并行，风险最高。
 4. 禁止清单（自动采集/Redis/ES/向量库/第二套 Metrics-Context-Score-Ledger/LLM 替代确定性排序/INFERENCE 冒充 FACT/correlation 冒充 causation/AI 失败 503/明文 key）在既有代码中基本已被遵守，v6.3 继续守纪。
 
-*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新，并在 Phase 16 收敛为 `V6_3_ARCHITECTURE_AUDIT.md`。*
+---
+
+## 12. v6.3.0 增量交付与状态更新（实测）
+
+本版交付并过全门禁（`-race -cover` 70.5%→**70.6%**、linux/amd64·arm64 + windows/amd64 CGO=0、U+FFFD=0）：
+
+| 蓝图项 | 交付状态（v6.3.0） | 代码事实 / 证据 |
+|---|---|---|
+| P0 版本/审计治理 | **IMPLEMENTED** | 本文件 + `releases/latest` 已修正指向 v6.2.0；本版按同纪律发 v6.3.0 |
+| P1 §5.3 Context Task Registry | **IMPLEMENTED** | `context_registry.go`；`budgetFor` 委托；`TestContextRegistryBudgetNoDrift` 锁定零漂移 |
+| P1 §5.2 裸调点→`callLLMCached` 接管 | **PARTIAL**（推进中）| 5 个联系人内容任务（profile×3/narrative/summary/topics）已迁；`TestNarrativeTakeoverHitsCache` 锁定「二次调用不重触模型」。剩余 ~10 个裸调点多为全局/会话任务（weekly_plan/calendar/followup/assistant/assistance/simulate/rehearsal/relationship_api），非联系人上下文任务，留后续 |
+| P1 §5.4 Context Debug 完善 | **MISSING**（本版未做）| 沿用既有 `context_debug_gate`；token 估算/cache-hit 可视化待补 |
+| P3 SSRF/协议处理器护栏 | **IMPLEMENTED** | `saveLLMSettings` 前置 BaseURL/Proxy 校验；`TestSaveLLMSettingsRejectsBadURLEndToEnd` 断言非法值不落库 |
+| P3 备份明文凭据 | **INTENTIONAL 权衡（非本版修复）** | `data.db` 快照含 `llm_settings` 明文 key；旁路文件支持口令 AES-256、UI 明示「等同密码」——属可携性优先的刻意设计，改其加密链路风险波及重度回归的 restore，故本版仅在文档如实标注权衡，不动 |
+
+**矩阵订正**：§10 中 P1「仅 ask 走 cache」→ 现为「ask + 5 内容任务走 cache（6/16+）」；P3「SSRF MISSING」→ **IMPLEMENTED（协议/主机/userinfo 护栏）**；备份 secret 维持权衡说明。其余 P2/P4–P13 状态不变（未在本版实施，见 README v6.3.0 路线图）。
+
+*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新；本版为 v6.3.0 骨干加固增量。*
