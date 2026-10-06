@@ -3590,7 +3590,9 @@ createApp({
       loading: false, busy: false, error: '',
       settings: null,                 // {activeProfileId, profiles[], proxy{}}
       presets: [], domestic: [], foreign: [],
-      usage: null,                    // {today,week,month,byModel[]}
+      usage: null,                    // {today,week,month,byModel[],byTask[]}
+      budget: null,                   // {limit,usedToday,remaining,unlimited,over}（与 usage 同级返回）
+      budgetForm: { limit: 0 }, budgetSaving: false,
       editing: null, formIsNew: false, formNeedsKey: true, formError: '',
       proxyForm: { enabled: false, url: '', noProxy: '' }, proxySaving: false,
       proxyTesting: false, modelTesting: false,
@@ -3613,12 +3615,32 @@ createApp({
         mp.domestic = mp.presets.filter(p => p.region !== 'foreign');
         mp.foreign = mp.presets.filter(p => p.region === 'foreign');
         mp.usage = us.usage || null;
+        mp.budget = us.budget || null;
+        // 预算输入框以库里的上限为准（不限则显示 0）
+        mp.budgetForm.limit = (st.settings && st.settings.dailyTokenBudget) || 0;
       } catch (e) {
         mp.error = e.message || '加载失败';
       } finally { mp.loading = false; }
     }
     async function reloadUsage() {
-      try { const us = await api('/api/llm/usage'); mp.usage = us.usage || null; } catch (e) { /* 用量非关键，失败保留旧值 */ }
+      try {
+        const us = await api('/api/llm/usage');
+        mp.usage = us.usage || null;
+        mp.budget = us.budget || null;
+      } catch (e) { /* 用量非关键，失败保留旧值 */ }
+    }
+    // 保存日预算上限（0=不限制）。只拦后台批量派生，不拦用户当场发起的调用。
+    async function saveBudget() {
+      if (mp.budgetSaving) return;
+      mp.budgetSaving = true;
+      try {
+        const limit = Math.max(0, parseInt(mp.budgetForm.limit, 10) || 0);
+        const res = await api('/api/llm/budget', { method: 'POST', body: { dailyTokenBudget: limit } });
+        mp.budget = res.budget || null;
+        mp.budgetForm.limit = limit;
+        toast(limit > 0 ? ('日预算已设为 ' + limit + ' tokens') : '已取消日预算限制', 'ok');
+      } catch (e) { toast(e.message || '保存失败', 'error'); }
+      finally { mp.budgetSaving = false; }
     }
     function openNewForm() {
       mp.formIsNew = true; mp.formNeedsKey = true; mp.formError = '';
@@ -3679,6 +3701,8 @@ createApp({
           activeProfileId: mp.settings.activeProfileId,
           profiles: mp.settings.profiles,
           proxy: { enabled: mp.proxyForm.enabled, url: mp.proxyForm.url, noProxy: mp.proxyForm.noProxy },
+          // 整体 PUT 会覆写整行设置，必须带上预算，否则保存代理会莫名把限额清零
+          dailyTokenBudget: (mp.settings.dailyTokenBudget || 0),
         };
         const st = await api('/api/llm/settings', { method: 'PUT', body: payload });
         mp.settings = st.settings;
@@ -3938,7 +3962,7 @@ createApp({
       loadMergeLogs, undoMerge, fmtTime,
       sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
       // v6.2 模型与代理页
-      mp, regionLabel, activeProfile, loadModelPage, reloadUsage,
+      mp, regionLabel, activeProfile, loadModelPage, reloadUsage, saveBudget,
       openNewForm, openPresetForm, openEditForm, closeForm, saveProfile,
       activateProfile, deleteProfile, saveProxy, testProxy, testModel,
       // v5.4.0 #9 数据健康自检

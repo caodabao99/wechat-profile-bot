@@ -46,7 +46,15 @@ func (s *apiServer) routeLLM(w http.ResponseWriter, r *http.Request, sub []strin
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "usage": usage})
+		// 预算另作同级字段：ComputeLLMUsage 内部自持 dbMu，此处在其释锁后才读预算（不嵌套）。
+		// 不内嵌进 usage 结构体，是为了让其它不读预算的调用方（如状态快照）不会拿零值冒充「已用尽」。
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "usage": usage, "budget": llmBudgetStatus(s.db)})
+	case "budget":
+		if r.Method != http.MethodPost {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		hLLMSetBudget(w, r, s.db)
 	case "presets":
 		if r.Method != http.MethodGet {
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
@@ -120,6 +128,33 @@ func hLLMPutSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 	settings, _ := loadLLMSettings(db)
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "settings": maskLLMSettings(settings)})
+}
+
+// hLLMSetBudget POST /api/llm/budget {dailyTokenBudget}：设单日真实模型调用 token 上限（0=不限制）。
+// 用指针区分「没传」与「传了 0」——后者是有意义的动作（取消限制）。
+// 写库走 load→modify→save 既有入口，其余字段（含被掩码的密钥）原样保留。
+func hLLMSetBudget(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	var req struct {
+		DailyTokenBudget *int64 `json:"dailyTokenBudget"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	if req.DailyTokenBudget == nil {
+		writeErr(w, http.StatusBadRequest, "缺少 dailyTokenBudget（0 表示不限制）")
+		return
+	}
+	settings, err := loadLLMSettings(db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	settings.DailyTokenBudget = *req.DailyTokenBudget
+	if err := saveLLMSettings(db, settings); err != nil {
+		writeErr(w, http.StatusBadRequest, "保存失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "budget": llmBudgetStatus(db)})
 }
 
 // hLLMSetActive POST /api/llm/active {id}：切换活动模型档案。

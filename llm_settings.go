@@ -78,6 +78,10 @@ type LLMSettings struct {
 	ActiveProfileID string       `json:"activeProfileId"`
 	Profiles        []LLMProfile `json:"profiles"`
 	Proxy           LLMProxy     `json:"proxy"`
+	// DailyTokenBudget 单日「真实模型调用」的 token 上限（缓存命中不计）。
+	// 0（默认）= 不限制；负数在 normalize 里归零，不引入第三种语义。
+	// 只拦后台批量派生任务，用户当场发起的调用永远不被预算拦（见 llm_budget.go）。
+	DailyTokenBudget int64 `json:"dailyTokenBudget,omitempty"`
 }
 
 // llmSpec 是运行时解析出的、供单次调用使用的有效配置。
@@ -185,6 +189,9 @@ func (s *LLMSettings) normalize() {
 		s.ActiveProfileID = s.Profiles[0].ID
 	}
 	s.Proxy.URL = strings.TrimSpace(s.Proxy.URL)
+	if s.DailyTokenBudget < 0 {
+		s.DailyTokenBudget = 0 // 负数无意义，归零即「不限制」
+	}
 }
 
 // activeProfile 返回当前活动档案（找不到返回 nil）。

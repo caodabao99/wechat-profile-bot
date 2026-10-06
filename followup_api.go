@@ -145,7 +145,7 @@ func (s *apiServer) hFollowupScan(w http.ResponseWriter, r *http.Request) {
 	scanned, added := 0, 0
 	if req.ContactID > 0 {
 		scanned = 1
-		n, err := extractFollowups(s.db, s.llm, req.ContactID, now, window)
+		n, err := extractFollowups(r.Context(), s.db, s.llm, req.ContactID, now, window)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, "抽取失败: "+err.Error())
 			return

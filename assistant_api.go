@@ -332,7 +332,8 @@ func (s *apiServer) hAssistantAnalyzeEmotion(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusServiceUnavailable, "LLM 未配置，无法进行情绪分析")
 		return
 	}
-	res, err := analyzeContactEmotion(s.db, s.llm, req.ContactID, time.Now())
+	// 用户当场发起的分析：走请求 ctx（已带交互式标记），不会被日预算拦下。
+	res, err := analyzeContactEmotion(r.Context(), s.db, s.llm, req.ContactID, time.Now())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

@@ -125,12 +125,26 @@ type LLMUsage struct {
 // LLMTaskUsage 按 AI 任务聚合的一行（供任务级预算/路由决策与成本面板）。
 type LLMTaskUsage struct {
 	Task         string `json:"task"`
+	Label        string `json:"label"`      // 人类可读名（单一来源仍为 registry，不在前端另建映射）
 	Registered   bool   `json:"registered"` // 是否已在 Context Task Registry 登记（否则为裸调/遗留名）
 	Calls        int    `json:"calls"`
 	Success      int    `json:"success"`
 	TotalTokens  int64  `json:"totalTokens"`
 	AvgLatencyMS int64  `json:"avgLatencyMs"`
 	LastUsedAt   int64  `json:"lastUsedAt"`
+}
+
+// taskLabelFor 给聚合行配人类可读标签。标签唯一来源是 Context Task Registry；
+// 未登记任务与未归因调用**如实标注**，不回落成「默认」以免看起来像个真任务。
+func taskLabelFor(task string) string {
+	if task == unattributedTaskKey {
+		return "未接管调用（无任务归因）"
+	}
+	ct := ContextTask(task)
+	if !isTaskRegistered(ct) {
+		return task + "（未登记）"
+	}
+	return taskSpec(ct).Label
 }
 
 // windowStats 统计 [sinceUnix, ∞) 窗口内的聚合。
@@ -207,6 +221,7 @@ func ComputeLLMUsage(db *sql.DB) (LLMUsage, error) {
 				t.AvgLatencyMS = sumLatency / int64(t.Calls)
 			}
 			t.Registered = isTaskRegistered(ContextTask(t.Task))
+			t.Label = taskLabelFor(t.Task)
 			out.ByTask = append(out.ByTask, t)
 		}
 	}

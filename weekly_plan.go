@@ -323,6 +323,8 @@ func checkPendingOutcomes(db *sql.DB, now time.Time) {
 // ---------- LLM 开场白生成 ----------
 
 // generateOutreachDraft 为单个联系人生成一段 AI 开场白（锁外调用 LLM）。
+// 这里固定用裸 ctx（不标交互式）：周开场白本质是「最多 5 人的批量派生」，
+// 允许被日预算拦下；被拦时返回空串，计划项照常存在、仅少一段草稿（既有降级路径）。
 func generateOutreachDraft(db *sql.DB, llm *LLMClient, contactID int64, kind string) string {
 	ctx := context.Background()
 

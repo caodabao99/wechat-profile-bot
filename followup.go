@@ -328,7 +328,7 @@ type followupLLMItem struct {
 }
 
 // extractFollowups 让 LLM 从一个联系人的近期消息里挖待跟进事项，写入 followup_items，返回新增条数。
-func extractFollowups(db *sql.DB, llm *LLMClient, contactID int64, now time.Time, windowDays int) (int, error) {
+func extractFollowups(ctx context.Context, db *sql.DB, llm *LLMClient, contactID int64, now time.Time, windowDays int) (int, error) {
 	c, err := GetContactByID(db, contactID)
 	if err != nil {
 		return 0, err
@@ -363,7 +363,10 @@ func extractFollowups(db *sql.DB, llm *LLMClient, contactID int64, now time.Time
 		return 0, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	raw, err := callLLMCached(ctx, db, llm, contactID, TaskFollowup, "", prompt)
 	if err != nil {
@@ -439,7 +442,7 @@ func RefreshFollowups(db *sql.DB, llm *LLMClient, now time.Time, maxContacts, wi
 	targets := followupTargets(db, now, windowDays, maxContacts)
 	for _, id := range targets {
 		scanned++
-		n, err := extractFollowups(db, llm, id, now, windowDays)
+		n, err := extractFollowups(context.Background(), db, llm, id, now, windowDays)
 		if err != nil {
 			slog.Info("待跟进：抽取跳过", "contact", id, "err", err)
 			continue

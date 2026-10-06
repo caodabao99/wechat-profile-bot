@@ -663,7 +663,7 @@ func (b *Bot) supplementProfile(msg *ILinkMessage, args string) string {
 	// 这里先回执，结果异步推送。
 	userID := msg.FromUserID
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), botTaskTimeout)
+		ctx, cancel := context.WithTimeout(withInteractiveCall(context.Background()), botTaskTimeout)
 		defer cancel()
 
 		if err := SupplementProfile(ctx, b.db, b.llm, cid, contact.Name, note); err != nil {
@@ -706,7 +706,7 @@ func (b *Bot) mergeContacts(args string) string {
 		triggered = true
 		go func() {
 			defer profileInFlight.Delete(targetID)
-			ctx, cancel := context.WithTimeout(context.Background(), botTaskTimeout)
+			ctx, cancel := context.WithTimeout(withInteractiveCall(context.Background()), botTaskTimeout)
 			defer cancel()
 
 			target, err := GetContactByID(b.db, targetID)
@@ -956,7 +956,7 @@ func (b *Bot) handleChatLog(msg *ILinkMessage, text string) string {
 	contactID := outcome.Contact.ID
 	messages := outcome.Messages
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), botTaskTimeout)
+		ctx, cancel := context.WithTimeout(withInteractiveCall(context.Background()), botTaskTimeout)
 		defer cancel()
 
 		result, err := AnalyzeIntent(ctx, b.db, b.llm, contactID, latestOther, messages)

@@ -253,6 +253,10 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 日预算护栏标记（P2c）：能走到这里的请求都是「用户当场发起、正在等结果」，
+	// 统一打交互式标记，使其不被日预算拦下——预算只止后台自动派生，不让用户点击莫名报错。
+	r = r.WithContext(withInteractiveCall(r.Context()))
+
 	p := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/"), "/")
 	parts := strings.Split(p, "/")
 

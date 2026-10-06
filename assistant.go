@@ -571,7 +571,7 @@ type EmotionResult struct {
 
 // analyzeContactEmotion 取最近一周双方消息 + 画像情绪特征，让 LLM 判断对方近期情绪。
 // 结果写入 assistant_emotions；对方消息少于 3 条时跳过（样本不足不瞎猜）。
-func analyzeContactEmotion(db *sql.DB, llm *LLMClient, contactID int64, now time.Time) (*EmotionResult, error) {
+func analyzeContactEmotion(ctx context.Context, db *sql.DB, llm *LLMClient, contactID int64, now time.Time) (*EmotionResult, error) {
 	c, err := GetContactByID(db, contactID)
 	if err != nil {
 		return nil, err
@@ -626,7 +626,10 @@ func analyzeContactEmotion(db *sql.DB, llm *LLMClient, contactID int64, now time
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	raw, err := callLLMCached(ctx, db, llm, contactID, TaskEmotion, "", prompt)
 	if err != nil {
@@ -876,7 +879,8 @@ func runDailyCheck(db *sql.DB, llm *LLMClient, now time.Time, force bool) (strin
 	if s.EmotionAlert && llm != nil {
 		targets := emotionAnalysisTargets(db, now, 3, s.EmotionDailyMax)
 		for _, id := range targets {
-			if _, err := analyzeContactEmotion(db, llm, id, now); err != nil {
+			// 调度器路径用裸 ctx：这类批量派生可被日预算拦下（用户点击走 API，带交互式标记）。
+			if _, err := analyzeContactEmotion(context.Background(), db, llm, id, now); err != nil {
 				slog.Info("关系助手：情绪分析跳过", "contact", id, "err", err)
 			}
 		}

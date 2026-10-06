@@ -1240,5 +1240,7 @@ textarea.text-input { resize: vertical; }
 .mp-site-err { color: #c2410c; }
 .mp-form-err { color: #b91c1c; font-size: 13px; margin: 8px 0; }
 .mp-usage-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+/* 按任务表里「未登记」小徽标与任务名拉开间距（复用全局 .tag 样式，不另造组件） */
+.mp-usage-table .tag { margin-left: 6px; }
 .mp-usage-table th, .mp-usage-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .mp-usage-table th { color: var(--muted); font-weight: 500; }

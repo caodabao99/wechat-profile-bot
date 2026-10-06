@@ -121,7 +121,12 @@ func callLLMCached(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 	if cached, ok := aiCacheGet(db, key); ok {
 		return cached, nil
 	}
-	// 把任务写进 ctx 后真调：使用量日志自带归因（§6），14 个接管点无需改任何签名。
+	// 日预算护栏（P2c）：只在这一步之后生效——缓存命中零成本，不该被预算拦。
+	// 且只拦后台批量；用户当场发起的调用已在入口打上交互式标记（见 llm_budget.go）。
+	if !llmBudgetAllows(ctx, db) {
+		return "", errDailyBudgetExceeded
+	}
+	// 把任务写进 ctx 后真调：使用量日志自带归因（§6），13 个接管点无需改任何签名。
 	raw, err := llm.CallContext(withLLMTask(ctx, task), prompt)
 	if err != nil {
 		return raw, err

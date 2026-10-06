@@ -1,15 +1,17 @@
 package main
 
-// v6.3 P2a 任务级用量归因验收。
+// v6.3 P2a/P2b 任务级用量归因与成本面板验收。
 //
-// 钉死四件事（都是可执行断言，非文档声称）：
+// 钉死五件事（都是可执行断言，非文档声称）：
 //  1. task 经 ctx 传播，接管原语 callLLMCached 一行不改签名就让 14 个调用点带上归因；
 //  2. 缓存命中不产生用量日志（统计口径 = 真实 API 消耗），二次调用不应多出计数；
 //  3. 未接管的裸调点记为「未归因」并照常计入分组——不隐藏成本，且任务合计必须与窗口总量对得上；
-//  4. 老库（llm_call_log 无 task 列）经懒建路径自动补列，历史行回落空串而非报错。
+//  4. 老库（llm_call_log 无 task 列）经懒建路径自动补列，历史行回落空串而非报错；
+//  5. 聚合行带人类可读标签且源自 registry，未登记/未归因如实标注（前端不存在第二份映射）。
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -150,4 +152,50 @@ func taskCallsByName(u LLMUsage, name string) int {
 		}
 	}
 	return 0
+}
+
+// P2b 验收：任务聚合行带人类可读标签，且标签唯一来源是 registry；
+// 未登记任务与未归因调用如实标注，不伪装成正常任务——
+// 前端直显服务端标签，因此不得存在第二份映射。
+func TestTaskUsageRowsCarryHonestLabels(t *testing.T) {
+	db := regressionDB(t)
+	c := NewLLMClient(&Config{}).WithDB(db)
+	c.logLLMCall(llmSpec{Model: "m"}, string(TaskCoach), true, 200, llmUsage{Total: 3}, 5)
+	c.logLLMCall(llmSpec{Model: "m"}, "legacy_task", true, 200, llmUsage{Total: 3}, 5)
+	c.logLLMCall(llmSpec{Model: "m"}, "", true, 200, llmUsage{Total: 3}, 5)
+
+	u, err := ComputeLLMUsage(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := map[string]string{}
+	reg := map[string]bool{}
+	for _, row := range u.ByTask {
+		label[row.Task] = row.Label
+		reg[row.Task] = row.Registered
+	}
+	// 已登记：标签必等于 registry 的 Label
+	if got, want := label[string(TaskCoach)], taskSpec(TaskCoach).Label; got != want {
+		t.Fatalf("coach 标签 = %q，应为 registry 的 %q", got, want)
+	}
+	if !reg[string(TaskCoach)] {
+		t.Fatal("coach 应标为已登记")
+	}
+	// 未登记：保留原名并明确标注，不得显示为「默认」
+	if got := label["legacy_task"]; got != "legacy_task（未登记）" {
+		t.Fatalf("未登记任务标签 = %q，应带（未登记）后缀", got)
+	}
+	if reg["legacy_task"] {
+		t.Fatal("legacy_task 不应被判为已登记")
+	}
+	// 未归因：文案不伪装成一个真任务
+	if got := label[unattributedTaskKey]; got != "未接管调用（无任务归因）" {
+		t.Fatalf("未归因标签 = %q", got)
+	}
+	// 任何行不得空标签（前端会渲染空白行）
+	for _, row := range u.ByTask {
+		if strings.TrimSpace(row.Label) == "" {
+			t.Fatalf("任务 %q 标签为空", row.Task)
+		}
+	}
 }

@@ -2673,6 +2673,23 @@
             <div class="dr-row"><span class="dr-k">近 30 天总 tokens</span><span class="dr-v">{{ mp.usage.month.totalTokens }}</span></div>
             <div class="dr-row"><span class="dr-k">经代理调用（近 30 天）</span><span class="dr-v">{{ mp.usage.month.proxyCalls }}</span></div>
           </div>
+          <!-- 日预算护栏（v6.3 P2c）：只拦后台批量派生，不拦用户当场发起的调用 -->
+          <h3 class="life-sub">日预算</h3>
+          <div class="dr-rows">
+            <div class="dr-row"><span class="dr-k">今日已用 / 上限</span>
+              <span class="dr-v" v-if="!mp.budget || mp.budget.unlimited">{{ mp.usage.today.totalTokens }} / 不限制</span>
+              <span class="dr-v" v-else>{{ mp.budget.usedToday }} / {{ mp.budget.limit }}<span v-if="mp.budget.over" class="tag tag-red">已用尽</span></span>
+            </div>
+            <div class="dr-row" v-if="mp.budget && !mp.budget.unlimited && !mp.budget.over">
+              <span class="dr-k">剩余</span><span class="dr-v">{{ mp.budget.remaining }} tokens</span>
+            </div>
+          </div>
+          <div class="field"><label>每日 token 上限（0 = 不限制）</label>
+            <input type="number" min="0" step="1000" v-model="mp.budgetForm.limit" placeholder="留空或 0 表示不限制"></div>
+          <div class="mp-preset-row">
+            <button class="btn sm" @click="saveBudget" :disabled="mp.budgetSaving">{{ mp.budgetSaving ? '保存中…' : '保存预算' }}</button>
+          </div>
+          <p class="hint block">预算只止后台自动派生（情绪分析 / 待跟进抽取 / 周开场白等）；你手动点击的功能不受预算影响，已被跳过的后台任务次日会自动重试。</p>
           <template v-if="mp.usage.byModel && mp.usage.byModel.length">
             <h3 class="life-sub">按模型</h3>
             <table class="mp-usage-table">
@@ -2680,6 +2697,19 @@
               <tbody>
                 <tr v-for="m in mp.usage.byModel" :key="m.model">
                   <td>{{ m.label || m.model }}</td><td>{{ m.calls }}</td><td>{{ m.success }}</td><td>{{ m.totalTokens }}</td><td>{{ m.avgLatencyMs }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+          <!-- 按任务：V6.3 §5.4 / P2 任务级成本归因（含未接管调用，以免隐藏成本） -->
+          <template v-if="mp.usage.byTask && mp.usage.byTask.length">
+            <h3 class="life-sub">按任务</h3>
+            <table class="mp-usage-table">
+              <thead><tr><th>任务</th><th>调用</th><th>成功</th><th>tokens</th><th>均延(ms)</th></tr></thead>
+              <tbody>
+                <tr v-for="t in mp.usage.byTask" :key="t.task">
+                  <td>{{ t.label || t.task }}<span v-if="!t.registered" class="tag tag-gray">未登记</span></td>
+                  <td>{{ t.calls }}</td><td>{{ t.success }}</td><td>{{ t.totalTokens }}</td><td>{{ t.avgLatencyMs }}</td>
                 </tr>
               </tbody>
             </table>
