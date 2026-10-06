@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.1.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.2.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.1.tar.gz`，得到 `wechat-profile-bot:v6.3.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.2.tar.gz`，得到 `wechat-profile-bot:v6.3.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,18 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.3.2（2026-10-06）
+
+本版补齐 P1 骨干的最后一块——**§5.4 Context Debug 可观测层**：把「某个 AI 任务在这个联系人身上到底取了什么上下文、渲染后值多少 token、缓存里有没有、由哪个模型服务」从各模块的隐式行为变成**可查询的 API 事实**。无数据库 schema 变更、无破坏性 API 变更（仅向既有端点新增字段），桌面端维持 v3.2.0。
+
+- **块计划与实取对照（`block_plan` / `missing_required`）**：以 Context Task Registry（§5.3）为「计划」、以渲染前的上下文为「实取」，逐块输出该任务是否声明需要（required/optional）、实取条数与是否非空；单独列出「**声明必需却为空**」的块——这是排障时信号量最高的一项（如叙事任务 required `recent_messages` 却一条未取到）。
+- **token 估算（`token_estimate`）**：输出渲染后文本的 token 估算、预算上限、占比与是否被截断。项目内无分词器，故字段显式标 `estimate_only`——**不冒充模型侧真实用量**（CJK 逐字计 1、拉丁每 4 个非空白字符计 1）。
+- **缓存快照状态（`cache`）**：按 `(contact, task, context_version, model)` 分层返回已缓存快照计数与最新写入时间，并给出活动模型与 `llm_configured`。刻意不谎称命中：缓存主键含「最终 prompt 哈希」，而本端点不构建 prompt，故 `hit_can_be_asserted` **恒为 `false`** 并附原因，只报存在性、不宣称必然命中。
+- **任务登记告警（`registered`）**：未登记进注册表的任务会回落默认规格，此字段为 `false`，作为新 AI 任务忘记登记的迁移探针。
+- **隐私同纪律（§4.3）**：可观测层 `obs` 全部为**计数 / 指纹 / 布尔 / 估算**，不含任何消息正文；正文与 `rendered` 仍只由 `config.contextDebug` 闸门决定。验收测试不空转：先断言同一上下文渲染后**确实**含指定私密串，再断言 `obs` 序列化后完全不含它。订正 README 对本端点的旧描述（原文未提隐私门，默认并不返回正文）。
+- **不新增包袱**：不建表、不引入第二套 Context 引擎，全部消费既有 registry + `ContactContext` + `ai_response_cache`。
+- **门禁**：`gofmt`/`build`/`vet`、linux/{amd64,arm64}·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 全量绿，覆盖率 70.6% → **70.7%**（不降反升）。
 
 ### v6.3.1（2026-10-06）
 

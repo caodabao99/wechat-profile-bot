@@ -160,7 +160,7 @@
 
 **矩阵订正**：§10 中 P1「仅 ask 走 cache」→ 现为「ask + 5 内容任务走 cache（6/16+）」；P3「SSRF MISSING」→ **IMPLEMENTED（协议/主机/userinfo 护栏）**；备份 secret 维持权衡说明。其余 P2/P4–P13 状态不变（未在本版实施，见 README v6.3.0 路线图）。
 
-## 13. v6.3.1 接管收口增量（实测）
+## 13. v6.3.1 / v6.3.2 接管收口与可观测增量（实测）
 
 本版为纯增量补丁（无 schema / 无 API / 无用户可见行为变更），继续推进 P1 §5.2。门禁：`-race -cover` 维持 **70.6%**、linux/amd64·arm64 + windows/amd64 CGO=0、U+FFFD=0。
 
@@ -168,10 +168,10 @@
 |---|---|---|
 | P1 §5.2 裸调点→`callLLMCached` 接管 | **PARTIAL→接近收口**（联系人/幂等类已尽数接管）| 新增 8 处迁至单一原语：`simulate`(TaskSimulation)、`rehearsal`×2（TaskRehearsal/TaskRehearsalReview）、`followup`(TaskFollowup)、`weekly_plan`(TaskOutreach)、`assistant`(TaskEmotion)，叠加 v6.3.0 的 6 处——共 **14 处接管点 / 10 个文件** |
 | P1 §5.2 接管边界（新增结论）| **IMPLEMENTED（边界已明）** | 交互式操作刻意**不接管**并附代码注释：`assistance.go` `RewriteReply`/`ReviewDraft` 期望每次新鲜多样、且需取消能真实中断模型（缓存先查会绕过 `ctx`）；registry 中登记为 `Cacheable:false` 以记录决策而非遗漏。`llm_api.go:282` 连通性 ping 同理不缓存 |
-| P1 §5.4 Context Debug 可观测 | **IMPLEMENTED**（待随下一版发布）| 新增 `context_debug.go`，经 `GET /api/contacts/{id}/context` 的 `obs` 字段返回：① `block_plan`——注册表「计划」×实取「结果」逐项对照，并单列 `missing_required`（声明必需却为空）；② `token_estimate`（CJK 逐字 + 拉丁每 4 字符，**标明仅为估算**、不冒充真实用量）占预算百分比与 `truncated`；③ `cache` 快照状态（按 context_version/model 分层计数）；④ 活动 `model`与 `llm_configured`；⑤ `registered`（未登记任务回落默认规格的迁移告警）。与 §4.3 隐私一致：`obs` 全为计数/指纹，**不含任何正文**（有专测以「同上下文 rendered 确实含该私密串」对照「obs 序列化后不含它」，防空断言）；不建表、不新引第二套 Context 引擎 |
+| P1 §5.4 Context Debug 可观测 | **IMPLEMENTED**（v6.3.2 发布）| 新增 `context_debug.go`，经 `GET /api/contacts/{id}/context` 的 `obs` 字段返回：① `block_plan`——注册表「计划」×实取「结果」逐项对照，并单列 `missing_required`（声明必需却为空）；② `token_estimate`（CJK 逐字 + 拉丁每 4 字符，**标明仅为估算**、不冒充真实用量）占预算百分比与 `truncated`；③ `cache` 快照状态（按 context_version/model 分层计数）；④ 活动 `model`与 `llm_configured`；⑤ `registered`（未登记任务回落默认规格的迁移告警）。与 §4.3 隐私一致：`obs` 全为计数/指纹，**不含任何正文**（有专测以「同上下文 rendered 确实含该私密串」对照「obs 序列化后不含它」，防空断言）；不建表、不新引第二套 Context 引擎 |
 
 **剩余 `llm.CallContext` 实测清单（共 9 处，均为刻意豁免、非遭遗漏）**：`ai_cache.go:124`（原语自身的真调出口，必须保留）、`profile.go:302`（变化说明辅助调用，作入参的 profile 已变、无 `contactID`）、`assistance.go:92/117`（交互式，见上）、`llm_api.go:282`（ping）、`ask.go:116`（非联系人作用域、已走自有 cache）、`calendar.go:346` 与 `relationship.go:360`（全局/多联系人编排类，不是单联系人上下文任务）。
 
 > 因此，“§5.2 全量接管”的剩余净待办不再是一个调用点编号列表，而是一个架构前置：先把全局/多联系人任务纳入统一的 Context 构建与 `context_version` 语义（不能只靠 prompt 哈希作为锚点），否则缓存键无法安全描述这类任务。
 
-*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新；本版为 v6.3.1 §5.2 接管收口增量。*
+*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新；v6.3.1 为 §5.2 接管收口增量，v6.3.2 为 §5.4 可观测层增量（至此 P1 骨干 Registry→接管→可观测 闭环）。*
