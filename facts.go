@@ -149,19 +149,20 @@ func AttachFactEvidence(db *sql.DB, contactID int64) (int, error) {
 }
 
 func attachFactEvidenceLocked(db *sql.DB, contactID int64) (int, error) {
-	// 先取 active 事实清单（id + value）
-	rows, err := db.Query(`SELECT id, fact_value FROM profile_facts WHERE contact_id=? AND status='active'`, contactID)
+	// 先取 active 事实清单（id + type + value）
+	rows, err := db.Query(`SELECT id, fact_type, fact_value FROM profile_facts WHERE contact_id=? AND status='active'`, contactID)
 	if err != nil {
 		return 0, err
 	}
 	type factRow struct {
-		id    int64
-		value string
+		id       int64
+		factType string
+		value    string
 	}
 	var facts []factRow
 	for rows.Next() {
 		var f factRow
-		if err := rows.Scan(&f.id, &f.value); err != nil {
+		if err := rows.Scan(&f.id, &f.factType, &f.value); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -209,27 +210,33 @@ func attachFactEvidenceLocked(db *sql.DB, contactID int64) (int, error) {
 		}
 		n := 0
 		direct := 0
+		conf := 0.6 // Evidence Provenance 2.0（§7.4）：置信度按证据类型加权，纯关键词不再一票抬高
 		for _, h := range hits {
 			if n >= evidencePerFact {
 				break
 			}
-			// 命中即字面包含事实值 → direct 支撑；否则视为 context（当前召回均为字面，保留分类以供后续扩展）
-			isDirect := strings.Contains(h.Content, f.value) || strings.Contains(h.Snippet, f.value)
+			// §7.1：确定性分类每条命中消息的证据类型（direct/strong_context/weak_context/topic_related/conflict）
+			etype := classifyEvidenceType(f.factType, f.value, h.Content)
+			// 字面命中仍沿用旧 match_type(exact/contextual)，与 evidence_type 正交，不破坏既有读者
+			literal := strings.Contains(h.Content, f.value) || strings.Contains(h.Snippet, f.value)
 			mt, ss := "contextual", 0.4
-			if isDirect {
+			if literal {
 				mt, ss = "exact", 0.8
+			}
+			isDirectSupport := etype == EvDirect
+			if isDirectSupport {
 				direct++
 			}
+			conf += evidenceConfContrib(etype) // topic_related/weak_context/conflict → +0（§7.4）
 			if _, err := db.Exec(
-				`INSERT OR IGNORE INTO profile_fact_evidence (fact_id, contact_id, message_id, archived, snippet, msg_time, created_at, match_type, support_strength, quote, is_direct_support)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				f.id, contactID, h.ID, boolToInt(h.Archived), h.Snippet, h.MsgTime, now, mt, ss, h.Snippet, boolToInt(isDirect)); err != nil {
+				`INSERT OR IGNORE INTO profile_fact_evidence (fact_id, contact_id, message_id, archived, snippet, msg_time, created_at, match_type, support_strength, quote, is_direct_support, evidence_type)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				f.id, contactID, h.ID, boolToInt(h.Archived), h.Snippet, h.MsgTime, now, mt, ss, h.Snippet, boolToInt(isDirectSupport), etype); err != nil {
 				return total, err
 			}
 			n++
 			total++
 		}
-		conf := 0.6 + 0.08*float64(n)
 		if conf > 0.95 {
 			conf = 0.95
 		}
@@ -344,6 +351,7 @@ type FactEvidenceView struct {
 	SupportStrength float64 `json:"supportStrength"`
 	Quote           string  `json:"quote"`
 	IsDirectSupport bool    `json:"isDirectSupport"`
+	EvidenceType    string  `json:"evidenceType"` // §7.1 六档证据类型（direct/strong_context/…）
 }
 
 // GetFacts 读取某联系人的事实（含证据）。includeRetired=false 时只返回 active。
@@ -396,7 +404,7 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 			args[i] = id
 		}
 		er, err := db.Query(
-			`SELECT fact_id, message_id, archived, snippet, msg_time, match_type, support_strength, quote, is_direct_support
+			`SELECT fact_id, message_id, archived, snippet, msg_time, match_type, support_strength, quote, is_direct_support, evidence_type
 			 FROM profile_fact_evidence WHERE fact_id IN (`+placeholders+`)
 			 ORDER BY id DESC`, args...)
 		if err != nil {
@@ -407,7 +415,7 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 			var factID int64
 			var ev FactEvidenceView
 			var arch, isDirect int
-			if err := er.Scan(&factID, &ev.MessageID, &arch, &ev.Snippet, &ev.MsgTime, &ev.MatchType, &ev.SupportStrength, &ev.Quote, &isDirect); err != nil {
+			if err := er.Scan(&factID, &ev.MessageID, &arch, &ev.Snippet, &ev.MsgTime, &ev.MatchType, &ev.SupportStrength, &ev.Quote, &isDirect, &ev.EvidenceType); err != nil {
 				return nil, err
 			}
 			ev.Archived = arch == 1

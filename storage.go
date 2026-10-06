@@ -737,6 +737,32 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 23 {
+		// v23: Evidence Provenance 2.0（蓝图 §7 P3）。既有 profile_facts / profile_fact_evidence
+		// 全部保留；仅新增一列 evidence_type 承载 §7.1 六档证据类型，把「证据不能只靠
+		// fact_value LIKE message_content」落成可解释、可核对的分类：
+		//   direct/strong_context/weak_context/topic_related/conflict/insufficient。
+		// 与既有 match_type(exact/contextual) 正交并存（旧读者不受影响，纯附加）。
+		// 幂等：逐列先查 pragma_table_info（同 v19/v22），避免测试回卷 user_version 后重跑报 duplicate column。
+		for _, col := range []struct{ name, ddl string }{
+			{"evidence_type", `ALTER TABLE profile_fact_evidence ADD COLUMN evidence_type TEXT NOT NULL DEFAULT ''`},
+		} {
+			var exists int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('profile_fact_evidence') WHERE name=?`, col.name,
+			).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				if _, err := db.Exec(col.ddl); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 23`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
