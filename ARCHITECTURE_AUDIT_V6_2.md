@@ -160,4 +160,17 @@
 
 **矩阵订正**：§10 中 P1「仅 ask 走 cache」→ 现为「ask + 5 内容任务走 cache（6/16+）」；P3「SSRF MISSING」→ **IMPLEMENTED（协议/主机/userinfo 护栏）**；备份 secret 维持权衡说明。其余 P2/P4–P13 状态不变（未在本版实施，见 README v6.3.0 路线图）。
 
-*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新；本版为 v6.3.0 骨干加固增量。*
+## 13. v6.3.1 接管收口增量（实测）
+
+本版为纯增量补丁（无 schema / 无 API / 无用户可见行为变更），继续推进 P1 §5.2。门禁：`-race -cover` 维持 **70.6%**、linux/amd64·arm64 + windows/amd64 CGO=0、U+FFFD=0。
+
+| 蓝图项 | 交付状态（v6.3.1） | 代码事实 / 证据 |
+|---|---|---|
+| P1 §5.2 裸调点→`callLLMCached` 接管 | **PARTIAL→接近收口**（联系人/幂等类已尽数接管）| 新增 8 处迁至单一原语：`simulate`(TaskSimulation)、`rehearsal`×2（TaskRehearsal/TaskRehearsalReview）、`followup`(TaskFollowup)、`weekly_plan`(TaskOutreach)、`assistant`(TaskEmotion)，叠加 v6.3.0 的 6 处——共 **14 处接管点 / 10 个文件** |
+| P1 §5.2 接管边界（新增结论）| **IMPLEMENTED（边界已明）** | 交互式操作刻意**不接管**并附代码注释：`assistance.go` `RewriteReply`/`ReviewDraft` 期望每次新鲜多样、且需取消能真实中断模型（缓存先查会绕过 `ctx`）；registry 中登记为 `Cacheable:false` 以记录决策而非遗漏。`llm_api.go:282` 连通性 ping 同理不缓存 |
+
+**剩余 `llm.CallContext` 实测清单（共 9 处，均为刻意豁免、非遭遗漏）**：`ai_cache.go:124`（原语自身的真调出口，必须保留）、`profile.go:302`（变化说明辅助调用，作入参的 profile 已变、无 `contactID`）、`assistance.go:92/117`（交互式，见上）、`llm_api.go:282`（ping）、`ask.go:116`（非联系人作用域、已走自有 cache）、`calendar.go:346` 与 `relationship.go:360`（全局/多联系人编排类，不是单联系人上下文任务）。
+
+> 因此，“§5.2 全量接管”的剩余净待办不再是一个调用点编号列表，而是一个架构前置：先把全局/多联系人任务纳入统一的 Context 构建与 `context_version` 语义（不能只靠 prompt 哈希作为锚点），否则缓存键无法安全描述这类任务。
+
+*本文件由 Phase 0 生成，将随各 Phase 交付滚动更新；本版为 v6.3.1 §5.2 接管收口增量。*

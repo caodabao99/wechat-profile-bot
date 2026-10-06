@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.1.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.0.tar.gz`，得到 `wechat-profile-bot:v6.3.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.1.tar.gz`，得到 `wechat-profile-bot:v6.3.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,16 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.3.1（2026-10-06）
+
+本版是 v6.3.0 骨干加固的**接管收口补丁**——延续 §5.2「谁在什么条件下走哪条 AI 出口」的治理纪律，把剩余联系人作用域的 LLM 调用点接入统一缓存原语，并首次厘清「刻意不接管」的边界。纯增量成本/去重治理，无 schema、无 API、无用户可见行为变更（桌面端维持 v3.2.0）。
+
+- **§5.2 对话类接管第二批**：`simulate.go`（对话模拟，复用已登记 `TaskSimulation`）、`rehearsal.go`（彩排回一句 `RehearsalReply` / 预演复盘 `ReviewRehearsal`）迁至 `callLLMCached`——同输入同 prompt 二次调用命中缓存、跳过重复模型消耗。重跑幂等的对话模拟/彩排适合接管。
+- **§5.2 联系人类后台派生接管第三批**：`followup.extractFollowups`（待跟进抽取）、`weekly_plan.generateOutreachDraft`（每周维护开场白）、`assistant.analyzeContactEmotion`（联系人情绪分析）迁至 `callLLMCached`——均为联系人作用域、同一消息快照重跑幂等的后台派生任务，未变化的联系人在周期扫描中命中缓存、省重复消耗。
+- **接管边界厘清（关键决策）**：`assistance.go` 的 `RewriteReply`（草稿改写）/`ReviewDraft`（草稿检查）**刻意保持裸 `llm.CallContext`** 并在 `context_registry.go` 标 `Cacheable:false`——交互式操作期望每次新鲜多样，且 `callLLMCached` 先查缓存会绕过 `ctx`、使「请求取消须真实中断模型」的语义失效。判断准则固化为：幂等内容生成/派生 → 接管；即时交互改写/检查 → 不接管。
+- **Context Task Registry 同步登记**：新增 `TaskRehearsal`/`TaskRehearsalReview`/`TaskFollowup`/`TaskOutreach`/`TaskEmotion`（接管）与 `TaskRewrite`/`TaskDraftReview`（`Cacheable:false`，如实记录不接管决策）。
+- **门禁**：全增量过同一门禁——`gofmt`/`build`/`vet`、linux/{amd64,arm64}·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 全绿，覆盖率维持 **70.6%**（不降）。
 
 ### v6.3.0（2026-10-06）
 
