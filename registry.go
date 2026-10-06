@@ -80,6 +80,7 @@ func init() {
 		{Name: "intervention_cache", Type: "cache", Owner: "intervention", Backup: false, Rebuild: true, HasContactID: false, Note: "干预学习统计缓存"},
 		{Name: "briefing_cache", Type: "cache", Owner: "briefing", Backup: false, Rebuild: true, HasContactID: false, Note: "主动简报缓存"},
 		{Name: "ai_response_cache", Type: "cache", Owner: "context", Backup: false, Rebuild: true, HasContactID: true, Note: "AI 响应缓存，语义键=(contact_id,task,context_version,model,prompt_version)，蓝图 §4.2；按 contact_id 级联清理"},
+		{Name: "relationship_action_log", Type: "audit", Owner: "actions", Backup: true, Rebuild: false, HasContactID: true, Note: "行动账本（蓝图 §5 P1）：跨来源(decision/coach/goal/project/calendar/manual)+八态生命周期+outcome/provenance 分离；记真实用户行为不可重建，故参与备份、按 contact_id 级联清理"},
 		{Name: "insight_trend_history", Type: "derived", Owner: "trend", Backup: false, Rebuild: true, HasContactID: false, Note: "洞察趋势周历史"},
 
 		// —— 全局配置（不按联系人关联，恢复时缺表则保留主库现状）——

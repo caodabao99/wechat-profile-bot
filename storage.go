@@ -656,6 +656,54 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 21 {
+		// v21: Action Ledger（蓝图 §5 P1）。复用现有 relationship_action_suggestions /
+		// suggestion_outcomes 不动，只新增一张「跨来源、全生命周期」的行动账本：承载 §5.2
+		// 六来源(decision/coach/goal/project/calendar/manual) 的行动记录，以及 §5.1 八态生命周期
+		// (generated/viewed/accepted/deferred/dismissed/acted/completed/expired)。
+		//
+		// 为何新建而非扩展现有表（非「无理由第二套」）：
+		//   - suggestion_outcomes 用 FK suggestion_id 绑死到 relationship_action_suggestions，只能
+		//     描述「规则引擎建议→14 天趋势回测」，无法承载 goal/project/calendar/manual 等外部来源；
+		//   - relationship_action_suggestions.status CHECK 仅 open/done/dismissed，扩到八态需 rebuild
+		//     且会破坏既有读者；语义也不同（建议是「待办候选」，行动账本是「已决策/已执行的事实记录」）。
+		//
+		// outcome 与 outcome_provenance 分列（§5.3「不能混淆」）：outcome 记极性
+		// (positive/neutral/negative/unknown)，provenance 记来源(''/estimated=系统估算/confirmed=用户确认)，
+		// 系统估算永不冒充用户确认。本表记真实用户行为、不可从 messages/profile 重建，故属 audit 类：
+		// 参与备份恢复（不进 derivedTables）、按 contact_id 级联清理（进 contactCleanupTables）。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS relationship_action_log (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id         INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			source             TEXT NOT NULL CHECK(source IN ('decision','coach','goal','project','calendar','manual')),
+			source_ref         TEXT NOT NULL DEFAULT '',
+			action_type        TEXT NOT NULL DEFAULT '',
+			action_text        TEXT NOT NULL DEFAULT '',
+			status             TEXT NOT NULL DEFAULT 'generated' CHECK(status IN ('generated','viewed','accepted','deferred','dismissed','acted','completed','expired')),
+			deferred_until     TEXT NOT NULL DEFAULT '',
+			created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+			acted_at           TEXT NOT NULL DEFAULT '',
+			outcome            TEXT NOT NULL DEFAULT 'unknown' CHECK(outcome IN ('positive','neutral','negative','unknown')),
+			outcome_provenance TEXT NOT NULL DEFAULT '' CHECK(outcome_provenance IN ('','estimated','confirmed')),
+			outcome_observed_at TEXT NOT NULL DEFAULT '',
+			outcome_days       INTEGER NOT NULL DEFAULT 0,
+			outcome_note       TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_action_log_contact ON relationship_action_log(contact_id, status)`,
+			`CREATE INDEX IF NOT EXISTS idx_action_log_observed ON relationship_action_log(status, acted_at)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 21`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

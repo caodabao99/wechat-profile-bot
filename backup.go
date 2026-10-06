@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 20 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v20）
+	backupCurrentDBVer  = 21 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v21）
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
