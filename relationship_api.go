@@ -57,7 +57,7 @@ func (s *apiServer) routeContactFacts(w http.ResponseWriter, r *http.Request, id
 		})
 		return
 	}
-	if len(sub) == 2 && sub[0] == "confirm" {
+	if len(sub) == 2 && (sub[0] == "confirm" || sub[0] == "reject" || sub[0] == "defer") {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
@@ -78,9 +78,20 @@ func (s *apiServer) routeContactFacts(w http.ResponseWriter, r *http.Request, id
 			writeErr(w, http.StatusForbidden, "事实不属于该联系人")
 			return
 		}
-		if err := ConfirmFact(s.db, factID); err != nil {
-			writeErr(w, http.StatusInternalServerError, "确认事实失败: "+err.Error())
-			return
+		// §8.2 三种用户动作：确认/否定/暂不处理（defer 保持原状态、无副作用）。
+		switch sub[0] {
+		case "confirm":
+			if err := ConfirmFact(s.db, factID); err != nil {
+				writeErr(w, http.StatusInternalServerError, "确认事实失败: "+err.Error())
+				return
+			}
+		case "reject":
+			if err := RejectFact(s.db, factID); err != nil {
+				writeErr(w, http.StatusInternalServerError, "否定事实失败: "+err.Error())
+				return
+			}
+		case "defer":
+			// 保持原状态，下次仍会按启发式重新入选
 		}
 		facts, err := GetFacts(s.db, id, false)
 		if err != nil {

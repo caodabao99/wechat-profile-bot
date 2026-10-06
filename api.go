@@ -339,6 +339,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "decision":
 		// 规格二十推荐路径别名：/api/decision/today、/api/decision/refresh
 		s.routeDecision(w, r, parts[1:])
+	case parts[0] == "memory":
+		// 蓝图 §8 P4：待确认记忆队列 /api/memory/review
+		s.routeMemory(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

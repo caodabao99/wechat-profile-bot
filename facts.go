@@ -402,6 +402,22 @@ func ConfirmFact(db *sql.DB, factID int64) error {
 	return nil
 }
 
+// RejectFact 用户否定一条记忆（蓝图 §8.2 「否定」）：标 status='rejected'，从此退出当前态视图。
+// 与 ConfirmFact 对称；未命中任何行返回 sql.ErrNoRows。仅改 status，不动证据（溯源不断层）。
+func RejectFact(db *sql.DB, factID int64) error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	now := time.Now().Format(time.RFC3339)
+	res, err := db.Exec(`UPDATE profile_facts SET status='rejected', updated_at=? WHERE id=?`, now, factID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // tableExistsLocked 检查表是否存在，要求调用方已持 dbMu。
 func tableExistsLocked(db *sql.DB, name string) bool {
 	var n int
