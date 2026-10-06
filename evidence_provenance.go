@@ -76,3 +76,15 @@ func evidenceConfContrib(evType string) float64 {
 		return 0
 	}
 }
+
+// §7.5：各身份事实类型的「反转/否定」措辞（不含事实值、但表明旧值已不成立的信号）。
+// 集合型事实（兴趣等）无稳定反转措辞，故不在此表→不做冲突召回。
+var conflictMarkersByType = map[string][]string{
+	"occupation": {"辞职", "离职", "不做", "不干", "不当", "转行", "改行", "换工作", "换了工作", "创业", "下家", "不干了", "失业"},
+	"location":   {"搬走", "搬离", "搬出", "不住", "搬到", "换地方", "换了地方", "离开"},
+}
+
+// conflictMarkersForType 返回该事实类型的反转措辞列表（无则 nil）。
+func conflictMarkersForType(factType string) []string {
+	return conflictMarkersByType[factType]
+}

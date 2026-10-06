@@ -255,8 +255,98 @@ func attachFactEvidenceLocked(db *sql.DB, contactID int64) (int, error) {
 		if _, err := db.Exec(`UPDATE profile_facts SET confidence=?, evidence_strength=?, confidence_type=?, updated_at=? WHERE id=? AND source_type!='user'`, conf, strength, confType, now, f.id); err != nil {
 			return total, err
 		}
+		// §7.5 Evidence Provenance 2.0：对身份型事实做一次「不含事实值、但表明旧值已不成立」的
+		// 冲突召回（如事实职业=律师 vs 消息「我辞职创业了」），落成 evidence_type=conflict 证据行。
+		// 只新增证据、不改写事实 status/生命周期（取代仍由画像换值路径处理）；幂等：证据每轮全清重建。
+		if len(conflictMarkersForType(f.factType)) > 0 {
+			added, err := attachConflictEvidenceForFact(db, contactID, f.id, f.factType, f.value, now)
+			if err != nil {
+				return total, err
+			}
+			total += added
+		}
 	}
 	return total, nil
+}
+
+// attachConflictEvidenceForFact 为一条身份型事实召回「不含事实值、却表明旧值已不成立」的第
+// 一人称反转消息，落成 evidence_type=conflict 的证据行（§7.5）。去重靠 UNIQUE(fact_id,message_id,
+// archived)+INSERT OR IGNORE；只新增证据、不改写事实 status/生命周期。返回实际新增行数。
+func attachConflictEvidenceForFact(db *sql.DB, contactID, factID int64, factType, factValue, now string) (int, error) {
+	markers := conflictMarkersForType(factType)
+	if len(markers) == 0 {
+		return 0, nil
+	}
+	conds := make([]string, 0, len(markers))
+	likeArgs := make([]interface{}, 0, len(markers))
+	for _, m := range markers {
+		conds = append(conds, `content LIKE ? ESCAPE '\'`)
+		likeArgs = append(likeArgs, "%"+escapeLike(m)+"%")
+	}
+	where := `contact_id=? AND (` + strings.Join(conds, " OR ") + `)`
+	added := 0
+	type cand struct {
+		mid     int64
+		msgTime string
+		content string
+	}
+	query := func(table string, archFlag int) error {
+		q := `SELECT id, COALESCE(msg_time,''), content FROM ` + table + ` WHERE ` + where + ` ORDER BY id DESC LIMIT ?`
+		full := append([]interface{}{contactID}, likeArgs...)
+		full = append(full, evidencePerFact)
+		rs, err := db.Query(q, full...)
+		if err != nil {
+			return err
+		}
+		// 先把候选一次性读尽并关闭游标，再逐条写入——单连接池(MaxOpenConns(1))下，
+		// 边遍历 open rows 边 Exec 会等第二个连接而死锁。
+		var cands []cand
+		for rs.Next() {
+			var c cand
+			if err := rs.Scan(&c.mid, &c.msgTime, &c.content); err != nil {
+				continue
+			}
+			cands = append(cands, c)
+		}
+		err = rs.Err()
+		rs.Close()
+		if err != nil {
+			return err
+		}
+		for _, c := range cands {
+			// 含事实值者交由主分类处理（含否定会被判 conflict）；此处只收「不含值」的反转
+			if factValue != "" && strings.Contains(c.content, factValue) {
+				continue
+			}
+			// 需第一人称，避免「他辞职了」这类他人事件误判为本人冲突
+			if !containsAny(c.content, evSelf...) {
+				continue
+			}
+			snippet := buildSnippet(c.content, markers)
+			res, err := db.Exec(
+				`INSERT OR IGNORE INTO profile_fact_evidence (fact_id, contact_id, message_id, archived, snippet, msg_time, created_at, match_type, support_strength, quote, is_direct_support, evidence_type)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				factID, contactID, c.mid, archFlag, snippet, c.msgTime, now, "contextual", 0.0, snippet, 0, EvConflict)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				added++
+			}
+		}
+		return nil
+	}
+	if err := query("messages", 0); err != nil {
+		return added, err
+	}
+	// 归档表只在确实存在时查（ftsArchiveEnabled 为进程级全局标志，可能被其他测试置 true
+	// 而本库并无 messages_archive，故以 pragma 存在性为权威判据）。
+	if tableExistsLocked(db, "messages_archive") {
+		if err := query("messages_archive", 1); err != nil {
+			return added, err
+		}
+	}
+	return added, nil
 }
 
 // RebuildFactsAndEvidence 一次性重建某联系人的事实 + 证据（自愈入口：视图发现事实缺失时调用）。
@@ -338,6 +428,7 @@ type FactView struct {
 	ValidUntil       string             `json:"validUntil"`
 	LastConfirmedAt  string             `json:"lastConfirmedAt"`
 	SupersededBy     *int64             `json:"supersededBy,omitempty"`
+	HasConflict      bool               `json:"hasConflict"` // §7.5：是否挂了矛盾证据（视图级派生，不改 status）
 	Evidence         []FactEvidenceView `json:"evidence"`
 }
 
@@ -420,6 +511,11 @@ func GetFacts(db *sql.DB, contactID int64, includeRetired bool) ([]FactView, err
 			}
 			ev.Archived = arch == 1
 			ev.IsDirectSupport = isDirect == 1
+			if ev.EvidenceType == EvConflict {
+				if pos, ok := idx[factID]; ok {
+					out[pos].HasConflict = true
+				}
+			}
 			if pos, ok := idx[factID]; ok {
 				out[pos].Evidence = append(out[pos].Evidence, ev)
 			}

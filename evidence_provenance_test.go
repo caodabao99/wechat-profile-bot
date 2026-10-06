@@ -146,3 +146,49 @@ func TestMixedEvidenceWeightsOnlyDirect(t *testing.T) {
 	}
 	t.Fatal("未找到律师事实")
 }
+
+// §7.5：不含事实值、却表明旧值不成立的第一人称反转→conflict 证据；不抬高置信度、不改 status。
+func TestConflictRecallSurfacesContradiction(t *testing.T) {
+	db := regressionDB(t)
+	cid := regressionContact(t, db, "转行的人")
+	if err := SaveProfile(db, cid, `{"basic_info":{"occupation":"律师"},"summary":"s"}`, "s", "i"); err != nil {
+		t.Fatal(err)
+	}
+	// 一条直接断言（含值）+ 一条反转（不含值、含「辞职」）
+	regressionMessages(t, db, cid, "我是律师", "我后来辞职创业了")
+	if _, _, err := RebuildFactsAndEvidence(db, cid); err != nil {
+		t.Fatal(err)
+	}
+	fs, err := GetFacts(db, cid, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range fs {
+		if f.Type == "occupation" && f.Value == "律师" {
+			if !f.HasConflict {
+				t.Fatal("§7.5：含反转消息应标记 HasConflict")
+			}
+			if f.Status != "active" {
+				t.Errorf("conflict 证据不应改写事实 status, got %s", f.Status)
+			}
+			var sawDirect, sawConflict bool
+			for _, ev := range f.Evidence {
+				switch ev.EvidenceType {
+				case EvDirect:
+					sawDirect = true
+				case EvConflict:
+					sawConflict = true
+				}
+			}
+			if !sawDirect || !sawConflict {
+				t.Fatalf("应同时有 direct(含值断言) 与 conflict(不含值反转) 证据, got %+v", f.Evidence)
+			}
+			// 仅 1 条 direct 计入置信度；conflict 不抬高 → 仍为 0.68
+			if math.Abs(f.Confidence-0.68) > 1e-6 {
+				t.Fatalf("conflict 不得影响置信度, got %f want 0.68", f.Confidence)
+			}
+			return
+		}
+	}
+	t.Fatal("未找到律师事实")
+}
