@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.2.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.3.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.3.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.2.tar.gz`，得到 `wechat-profile-bot:v6.3.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.3.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.3.tar.gz`，得到 `wechat-profile-bot:v6.3.3` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,19 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.3.3（2026-10-06）
+
+本版是 **v6.3 蓝图“成本控制 + 数据完整性 + 智能化”三大主题的收口版**，一次性落地 P2b/P2c/P9/P5/P11/P12/P15 共 7 个增量。无破坏性 API 变更，桌面端维持 v3.2.0。
+
+- **P2a/P2b 任务级成本归因**：`llm_call_log` 新增 `Label` 字段，`taskLabelFor()` 确定性映射任务中文名；网页“按模型”下方新增“按任务”表，每笔调用可追溯到“为哪个 AI 任务花的”。
+- **P2c 日预算护栏**：新建 `llm_budget.go`，ctx flag 区分后台批量 vs 用户即时。超限只拦后台任务（返回普通 error，不 503）、不拦用户操作；先查缓存再查预算。`LLMSettings` 新增 `DailyTokenBudget` 字段，前端加预算 UI。
+- **P9 历史消息统一访问层**：新建 `history_source.go`（messages ∪ messages_archive 唯一实现）+ `historyTimeExpr` 统一时间口径。迁移 6 文件 9 处归档盲区 SQL。审计棘轮 `TestNoGrowthOfRawMessagesQueries`——基线 15 文件 36 处残留只允许递减。
+- **P5 Memory Consolidation**：新建 `consolidation.go`，确定性检测冲突/陈旧/近重复（bigram Jaccard ≥ 0.6），产出 `ConsolidationProposal`。API: GET/POST `/api/memory/consolidation`。
+- **P11 Action Center 2.0**：新建 `today_aggregate.go`，四源（决策/待办/记忆审核/风险）按联系人折叠为一张卡、每日上限 7、紧急度分组、Snooze 机制。API: GET `/api/today` + POST `/api/today/snooze`。
+- **P12 Smart Paste 去重统计**：新建 `ingest_stats.go`，每次 ingest 后记录 (parsed, new, dup)，GET `/api/stats/ingest` 返回去重率与 Top5。90 天自动清理。
+- **P15 性能基准**：新增 5 个 `Benchmark*` 函数（SaveMessages 1k、HistoryMessages 5k、HistoryCount、RefreshStates 50 人、ConsolidationProposal），为后续版本提供性能回归基线。
+- **门禁**：全增量过同一门禁——`gofmt`/`build`/`vet`、linux/{amd64,arm64}·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 全绿，覆盖率 71.1% → **71.2%**（不降反升）。
 
 ### v6.3.2（2026-10-06）
 
