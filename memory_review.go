@@ -160,7 +160,11 @@ func BuildMemoryReviewQueue(db *sql.DB, now time.Time, systemLimit int) ([]Memor
 	return out, nil
 }
 
-// routeMemory 顶层路由：GET /api/memory/review?limit=N 返回待确认记忆队列。
+// routeMemory 顶层路由：
+//
+//	GET  /api/memory/review?limit=N      待确认记忆队列
+//	GET  /api/memory/consolidation       获取整合提案
+//	POST /api/memory/consolidation       执行用户决策（supersede / stale）
 func (s *apiServer) routeMemory(w http.ResponseWriter, r *http.Request, sub []string) {
 	if len(sub) == 1 && sub[0] == "review" && r.Method == http.MethodGet {
 		limit := reviewSystemDefault
@@ -175,6 +179,22 @@ func (s *apiServer) routeMemory(w http.ResponseWriter, r *http.Request, sub []st
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "count": len(list), "items": list})
+		return
+	}
+	if len(sub) == 1 && sub[0] == "consolidation" {
+		switch r.Method {
+		case http.MethodGet:
+			p, err := BuildConsolidationProposal(s.db, time.Now())
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "构建整合提案失败: "+err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "proposal": p})
+		case http.MethodPost:
+			hApplyConsolidation(w, r, s.db)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 	writeErr(w, http.StatusNotFound, "未知接口")
