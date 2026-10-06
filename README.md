@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.0.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.1.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.0.0.tar.gz`，得到 `wechat-profile-bot:v6.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.1.0.tar.gz`，得到 `wechat-profile-bot:v6.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,24 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v6.1.0（2026-10-06）
+
+本版把 **Personal Relationship OS** 从「能算出洞察」推进到「能闭环行动」——在 v6.0 已有的 `记忆 → 可信事实 → 关系状态 → 决策` 链路之后，补齐 `决策 → 行动 → 结果 → 学习 → 记忆更新` 的**执行与学习**半环，并把首页主入口从分散的洞察模块收敛为**行动中心（Action Center）**。全部遵循增量复用、不重写既有能力；确定性优先、LLM 缺席也能完整运行；AI 结论一律分层 FACT/INFERENCE，估算标 estimate、不声称因果，宁可 Unknown 也不臆断。数据库支持版本升至 **v25**。
+
+- **P0 · AI Context Engine 全面接管（`context.go`/`context_adapters.go`）**：`ContactContext` 新增确定性内容指纹 `context_version`（同输入同版本，可缓存/可观测）；建立 AI 响应缓存基础设施与 `prompt_version`，渐进影子接管——首个模块改造为经统一 Context Adapter + `callLLMCached` 取数，命中缓存不重算、LLM 缺席降级不 503。新 prompt 一律走 `RenderPrompt`。
+- **P1 · Action Ledger 行动账本（`action_log.go`/`action_api.go`/`decision_ledger.go`，`relationship_action_log` v21）**：为每条被采纳的决策建立可追溯行动记录，八态生命周期（generated/viewed/accepted/deferred/dismissed/acted/completed/expired）；**行动与结果分离**——§5.4 自动结果观察在 7/14/30 天窗口回填互动变化，`estimated` 口径只描述观测、不声称因果；CRUD + 治理三处同步（登记表/备份/级联清理）。账本状态接入 AI Context 的 `PreviousActions`，让「为什么现在做」看得见历史。
+- **P2/P3 · Decision→Action→Outcome 闭环（`decision.go`/`decision_ledger.go`）**：决策候选带 `action_log_id`/`ledger_status`/`decision_fingerprint`，指纹防重复开行动；决策被接受即落账本、观测周期到自动记结果、结果回流影响后续优先级——闭环真正打通。
+- **P3 · Evidence Provenance 2.0（`evidence_provenance.go`）**：证据分六档 `evidence_type`，§7.4 关键词命中不再自动抬升置信度；§7.5 冲突证据召回——第一人称反转且不含值的判为 `conflict`、视图级 `HasConflict`（不改事实生命周期）。
+- **P4 · Memory Review 待确认记忆（`memory_review.go`）**：§8 用确定性打分构建「需要确认的记忆」Top 队列（含冲突/低置信/久未确认），支持确认/否定/暂不三种处置；只读端点 `GET /api/memory/review?limit=N`。
+- **P5 · Relationship Experiment 关系实验（`experiment.go`/`experiment_measure.go`/`experiment_api.go`，`relationship_experiment` v24）**：把「我做了某改变，关系是否更好」变成可对照的实验——§9.2/§9.3 前后对照日均互动、给出四类结论（明确标非因果），建/列/start/abandon/cancel/measure 全套端点。
+- **P6 · Archive-aware 一致性审计（`audit`）**：修复 4 处日聚合重建门槛只数活跃表的问题——已整体归档的联系人在读路径误得 0；新增共享门槛 `hasMessagesForRebuildLocked`，并以 §10.3 归档前/后/恢复三阶段回归锁定。
+- **P7 · Search / Contacts 深分页二阶段（`search`/`contact.go`）**：§11.1 Search 默认不再执行全表 `COUNT(*)`，`hasMore` 由多取一条推断、总数改 `includeTotal` 显式 opt-in；§11.3 Contacts 引入 keyset 游标（v25 `last_updated_unix` 普通列 + 触发器、`idx_contacts_updated_unix`、`GetContactsPageCursor`），深页不再随页深退化；旧 offset 版标 `Deprecated` 保留（§11.4），前端改走 cursor。
+- **P8 · Relationship Risk Center 关系风险中心（`risk.go`/`risk_api.go`）**：§13 **不新建分数**，把 Health / State + 日聚合 + projects/followups 逾期 + §7.5 事实冲突 + 维护日历重要日子聚合为七类风险；§13.2 每条带数据来源/最近变化/涉及联系人/建议行动；降温/失衡/错过/冲突标 INFERENCE、不臆断因果；`severity` 分类排序；只读聚合端点 `GET /api/risks`（支持 type/severity 过滤），增值表缺失优雅跳过不 500。
+- **P9 · Relationship Portfolio 关系投资组合（`portfolio.go`/`portfolio_api.go`）**：§12 用户设定每周关系时间预算，按既有信号（类别权重 × 亲密度 × 风险/机会/健康调节）建议本周投入分配；§12.2 只给建议——预算/类别权重/手指定均可覆盖，手指定优先占预算、余量以最大余数法整数分配；已使用为近 7 天行动名义分钟**估算**（`UsedIsEstimate`，不谎称精确）；`GET /api/portfolio`、`GET/PUT/POST /api/portfolio/settings`。
+- **P10 · Action Center UI（`static/`）**：§14 首页主入口从「十几个洞察模块」改为**行动中心**——Today Top3 卡片（谁 / 为什么现在 / 做什么 / 最佳时机 / 相关目标与待跟进）配 [接受][稍后][已完成][忽略] 四操作，另加三条摘要 strip：待确认记忆（§14.1）/ 关系风险（§14.2）/ 本周时间建议（§14.3）。纯复用既有只读端点，静默降级，零第三方依赖。
+- **桌面端 v3.2.0（独立仓库 caodabao99/wechat-profile）**：§15 在已有 Relationship State、Today Action 之外补齐第三入口 **Memory Review**（`remote.go`/`ui_relationship.go`）；远程模式调服务器 API，本地模式缺派生能力时明确提示「此功能需要连接 Relationship OS Server」、绝不静默失败。
+- **治理与测试**：全 Phase 过同一门禁——`gofmt`/`build`/`vet`、linux/amd64·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 全绿，覆盖率 69.9% → **70.2%**；新增 §22 回归（context 版本/接管/缓存/行动账本/决策生命周期/指纹/outcome/证据溯源/事实冲突/记忆复核/实验/归档感知/游标分页/组合排序/风险聚合/合并撤销/删除级联/备份恢复）与 §23 深分页 Benchmark（场景5：keyset 深页 0.67ms vs OFFSET 14.29ms，约 21×，且 `includeTotal` 成本量化）。
 
 ### v6.0.0（2026-10-05）
 
