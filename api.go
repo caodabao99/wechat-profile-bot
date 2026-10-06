@@ -402,6 +402,9 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 		s.hAssistance(w, r, id, sub[0])
 	case "analyze":
 		s.hAnalyze(w, r, id)
+	case "session":
+		// 蓝图 §7 P1：Relationship Session 编排层 /api/contacts/{id}/session[/execute|/outcome]
+		s.routeContactSession(w, r, id, sub[1:])
 	case "tags":
 		s.routeContactTags(w, r, id)
 	case "timeline":

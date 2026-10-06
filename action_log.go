@@ -59,6 +59,8 @@ var (
 	validActionSources = map[string]bool{
 		"decision": true, "coach": true, "goal": true,
 		"project": true, "calendar": true, "manual": true,
+		// v7.0 §7.4：Relationship Session 点「执行」自动落账的行动来源（编排层复用本账本）。
+		ActionSourceSession: true,
 	}
 	validActionStatuses = map[string]bool{
 		ActionStatusGenerated: true, ActionStatusViewed: true, ActionStatusAccepted: true,

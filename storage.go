@@ -842,6 +842,73 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 26 {
+		// v26: Relationship Session 编排层落账来源（蓝图 §7.4）。行动账本 source 列的 DB 级
+		// CHECK 原本写死六来源，新增来源 'relationship_session' 需 SQLite 表重建（CHECK 不可 ALTER）。
+		// 数据、列、默认值、索引全部原样保留，仅把 source 的 CHECK 加宽一项——非新表、非新真相，
+		// 是把已有 audit 表接住编排层这一个新来源。幂等：若现表 CHECK 已含 relationship_session 则跳过
+		// （测试回卷 user_version 后重跑安全）。
+		var curSQL string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='relationship_action_log'`).Scan(&curSQL); err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if curSQL != "" && !strings.Contains(curSQL, "'relationship_session'") {
+			// 主库连接 DSN 未开 foreign_keys（SQLite 默认 OFF，同 v19 profile_facts 重建先例），
+			// 故 DROP+RENAME 不会因级联误伤；逐条 Exec 自动提交。
+			if _, err := db.Exec(`CREATE TABLE relationship_action_log_new (
+				id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+				contact_id         INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+				source             TEXT NOT NULL CHECK(source IN ('decision','coach','goal','project','calendar','manual','relationship_session')),
+				source_ref         TEXT NOT NULL DEFAULT '',
+				action_type        TEXT NOT NULL DEFAULT '',
+				action_text        TEXT NOT NULL DEFAULT '',
+				status             TEXT NOT NULL DEFAULT 'generated' CHECK(status IN ('generated','viewed','accepted','deferred','dismissed','acted','completed','expired')),
+				deferred_until     TEXT NOT NULL DEFAULT '',
+				created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+				acted_at           TEXT NOT NULL DEFAULT '',
+				outcome            TEXT NOT NULL DEFAULT 'unknown' CHECK(outcome IN ('positive','neutral','negative','unknown')),
+				outcome_provenance TEXT NOT NULL DEFAULT '' CHECK(outcome_provenance IN ('','estimated','confirmed')),
+				outcome_observed_at TEXT NOT NULL DEFAULT '',
+				outcome_days       INTEGER NOT NULL DEFAULT 0,
+				outcome_note       TEXT NOT NULL DEFAULT '',
+				decision_fingerprint TEXT NOT NULL DEFAULT '',
+				dismiss_reason     TEXT NOT NULL DEFAULT ''
+			)`); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`INSERT INTO relationship_action_log_new
+				(id, contact_id, source, source_ref, action_type, action_text, status, deferred_until,
+				 created_at, updated_at, acted_at, outcome, outcome_provenance, outcome_observed_at,
+				 outcome_days, outcome_note, decision_fingerprint, dismiss_reason)
+				SELECT
+				 id, contact_id, source, source_ref, action_type, action_text, status, deferred_until,
+				 created_at, updated_at, acted_at, outcome, outcome_provenance, outcome_observed_at,
+				 outcome_days, outcome_note, decision_fingerprint, dismiss_reason
+				FROM relationship_action_log`); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`DROP TABLE relationship_action_log`); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`ALTER TABLE relationship_action_log_new RENAME TO relationship_action_log`); err != nil {
+				return err
+			}
+		}
+		// 重建后索引需重指（DROP TABLE 连带删索引）；IF NOT EXISTS 幂等。
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_action_log_contact ON relationship_action_log(contact_id, status)`,
+			`CREATE INDEX IF NOT EXISTS idx_action_log_observed ON relationship_action_log(status, acted_at)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_decision_fp ON relationship_action_log(decision_fingerprint) WHERE decision_fingerprint != ''`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 26`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
