@@ -8,7 +8,11 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
+	"time"
 )
 
 // maskLLMSettings 返回密钥打码后的副本，供 GET 展示。
@@ -74,6 +78,18 @@ func (s *apiServer) routeLLM(w http.ResponseWriter, r *http.Request, sub []strin
 			return
 		}
 		hLLMUpsertProfile(w, r, s.db)
+	case "proxy":
+		if len(sub) == 2 && sub[1] == "test" && r.Method == http.MethodPost {
+			s.hLLMProxyTest(w, r)
+			return
+		}
+		writeErr(w, http.StatusNotFound, "未知接口: /api/llm/proxy")
+	case "model":
+		if len(sub) == 2 && sub[1] == "test" && r.Method == http.MethodPost {
+			s.hLLMModelTest(w, r)
+			return
+		}
+		writeErr(w, http.StatusNotFound, "未知接口: /api/llm/model")
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/llm/"+sub[0])
 	}
@@ -210,4 +226,66 @@ func hLLMDeleteProfile(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "activeProfileId": settings.ActiveProfileID})
+}
+
+// hLLMProxyTest POST /api/llm/proxy/test：代理连通性测试。
+// 可选 body 携带未保存的代理配置（{enabled,url,noProxy}）：提供则先落库再测（“配好即测”），
+// 不提供则直接测当前已保存配置。探测目标走默认公网地址。失败不 503：单项失败作为数据记入结果。
+func (s *apiServer) hLLMProxyTest(w http.ResponseWriter, r *http.Request) {
+	settings, err := loadLLMSettings(s.db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 可选覆盖：允许测试尚未保存的代理配置（空 body 则保持已存配置）。
+	var override struct {
+		Enabled *bool   `json:"enabled"`
+		URL     *string `json:"url"`
+		NoProxy *string `json:"noProxy"`
+	}
+	if dec := json.NewDecoder(r.Body); dec.Decode(&override) != io.EOF {
+		if override.Enabled != nil {
+			settings.Proxy.Enabled = *override.Enabled
+		}
+		if override.URL != nil {
+			settings.Proxy.URL = strings.TrimSpace(*override.URL)
+		}
+		if override.NoProxy != nil {
+			settings.Proxy.NoProxy = strings.TrimSpace(*override.NoProxy)
+		}
+	}
+	outcome := runProxyTest(settings.Proxy, proxyTestOptionsFn())
+	settings.Proxy.TestedAt = outcome.TestedAt
+	settings.Proxy.EgressIP = outcome.EgressIP
+	settings.Proxy.DirectIP = outcome.DirectIP
+	settings.Proxy.Sites = outcome.Sites
+	// 持久化最近一次测试结果（含本次生效的代理配置），供状态页展示。
+	if err := saveLLMSettings(s.db, settings); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存测试结果失败: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"proxy":    settings.Proxy,
+		"settings": maskLLMSettings(settings),
+	})
+}
+
+// hLLMModelTest POST /api/llm/model/test：对当前活动模型发一次最小调用，验证接口可达。
+// 未配置模型时返回 ok=false 不报错；调用失败也作 200 结构化结果（失败是数据）。
+func (s *apiServer) hLLMModelTest(w http.ResponseWriter, r *http.Request) {
+	if s.llm == nil || !s.llm.configured() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": "未配置可用的活动模型"})
+		return
+	}
+	start := time.Now()
+	_, err := s.llm.CallContext(r.Context(), "ping")
+	res := map[string]interface{}{
+		"ok":        err == nil,
+		"latencyMs": time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		res["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, res)
 }
