@@ -120,6 +120,21 @@ func (s *apiServer) routeContactActions(w http.ResponseWriter, r *http.Request, 
 		}
 		refreshed, _ := GetActionLog(s.db, aid)
 		writeJSON(w, http.StatusOK, map[string]any{"action": refreshed})
+	case "dismiss":
+		var req struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRehearsalBodyBytes)).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求体解析失败")
+			return
+		}
+		// §6.3 忽略：记录原因、只屏蔽当前窗，绝不永久屏蔽。
+		if err := DismissAction(s.db, aid, req.Reason, now); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		refreshed, _ := GetActionLog(s.db, aid)
+		writeJSON(w, http.StatusOK, map[string]any{"action": refreshed})
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口")
 	}

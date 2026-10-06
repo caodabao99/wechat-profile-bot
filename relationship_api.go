@@ -354,7 +354,7 @@ func (s *apiServer) routeTodayDecisions(w http.ResponseWriter, r *http.Request) 
 			top = n
 		}
 	}
-	list, err := TodayDecisions(s.db, time.Now(), top)
+	list, err := SurfaceDecisions(s.db, time.Now(), top)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "决策计算失败: "+err.Error())
 		return

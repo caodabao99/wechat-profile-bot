@@ -89,6 +89,8 @@ type ActionLogEntry struct {
 	OutcomeObservedAt string `json:"outcome_observed_at"`
 	OutcomeDays       int    `json:"outcome_days"`
 	OutcomeNote       string `json:"outcome_note"`
+	DecisionFingerp   string `json:"decision_fingerprint"`
+	DismissReason     string `json:"dismiss_reason"`
 }
 
 // LogAction 新增一条行动记录（生命周期起点 status=generated）。
@@ -178,9 +180,10 @@ func TransitionActionStatus(db *sql.DB, id int64, to, deferredUntil string, now 
 	}
 	if _, err := db.Exec(`
 		UPDATE relationship_action_log
-		SET status = ?, acted_at = ?, deferred_until = ?, updated_at = ?
+		SET status = ?, acted_at = ?, deferred_until = ?, updated_at = ?,
+		    dismiss_reason = CASE WHEN ? = 'dismissed' THEN dismiss_reason ELSE '' END
 		WHERE id = ?`,
-		to, newActed, du, nowStr, id); err != nil {
+		to, newActed, du, nowStr, to, id); err != nil {
 		return err
 	}
 	return nil
@@ -249,7 +252,7 @@ func ListActionLog(db *sql.DB, contactID int64, limit int) ([]ActionLogEntry, er
 	}
 	q := `SELECT id, contact_id, source, source_ref, action_type, action_text, status,
 		deferred_until, created_at, updated_at, acted_at, outcome, outcome_provenance,
-		outcome_observed_at, outcome_days, outcome_note
+		outcome_observed_at, outcome_days, outcome_note, decision_fingerprint, dismiss_reason
 		FROM relationship_action_log WHERE contact_id = ? ORDER BY id DESC`
 	args := []any{contactID}
 	if limit > 0 {
@@ -267,7 +270,7 @@ func ListActionLog(db *sql.DB, contactID int64, limit int) ([]ActionLogEntry, er
 		if err := rows.Scan(&e.ID, &e.ContactID, &e.Source, &e.SourceRef, &e.ActionType,
 			&e.ActionText, &e.Status, &e.DeferredUntil, &e.CreatedAt, &e.UpdatedAt,
 			&e.ActedAt, &e.Outcome, &e.OutcomeProvenance, &e.OutcomeObservedAt,
-			&e.OutcomeDays, &e.OutcomeNote); err != nil {
+			&e.OutcomeDays, &e.OutcomeNote, &e.DecisionFingerp, &e.DismissReason); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -285,10 +288,11 @@ func GetActionLog(db *sql.DB, id int64) (*ActionLogEntry, error) {
 	var e ActionLogEntry
 	err := db.QueryRow(`SELECT id, contact_id, source, source_ref, action_type, action_text, status,
 		deferred_until, created_at, updated_at, acted_at, outcome, outcome_provenance,
-		outcome_observed_at, outcome_days, outcome_note
+		outcome_observed_at, outcome_days, outcome_note, decision_fingerprint, dismiss_reason
 		FROM relationship_action_log WHERE id = ?`, id).Scan(&e.ID, &e.ContactID, &e.Source, &e.SourceRef,
 		&e.ActionType, &e.ActionText, &e.Status, &e.DeferredUntil, &e.CreatedAt, &e.UpdatedAt,
-		&e.ActedAt, &e.Outcome, &e.OutcomeProvenance, &e.OutcomeObservedAt, &e.OutcomeDays, &e.OutcomeNote)
+		&e.ActedAt, &e.Outcome, &e.OutcomeProvenance, &e.OutcomeObservedAt, &e.OutcomeDays, &e.OutcomeNote,
+		&e.DecisionFingerp, &e.DismissReason)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -119,6 +119,12 @@ type DecisionCandidate struct {
 	Confidence   string   `json:"confidence"`          // 置信度档
 	ReasonCodes  []string `json:"reason_codes"`
 	WhyNow       []string `json:"why_now"` // 人类可读「为什么是现在」
+
+	// —— 行动账本闭环（蓝图 §6 P2）：候选被幂等落入 relationship_action_log 后回填，供首页
+	// [接受/稍后/忽略/已完成] 走 /actions/{id}/... 生命周期；指纹用于 §6.1 防重复。
+	ActionLogID         int64  `json:"action_log_id,omitempty"`
+	DecisionFingerprint string `json:"decision_fingerprint,omitempty"`
+	LedgerStatus        string `json:"ledger_status,omitempty"`
 }
 
 // decisionRiskLevel 把 alert 归一到 0/1/2 风险档。

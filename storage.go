@@ -704,6 +704,39 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 22 {
+		// v22: Decision→Action→Outcome 闭环（蓝图 §6 P2）——为行动账本补两列，把 Decision Engine
+		// 产出的候选与账本记录绑成一个可去重、可回哺的闭环：
+		//   - decision_fingerprint：§6.1 防重复指纹（contact+action_type+reason_codes+context_version+time_window
+		//     的哈希）。非空时唯一，相同指纹不得重复生成（DB 级部分唯一索引保证）。
+		//   - dismiss_reason：§6.3 忽略原因（只记录、不永久屏蔽）。
+		// 幂等：逐列先查 pragma_table_info（同 v19），避免测试回卷后重跑报 duplicate column。
+		for _, col := range []struct{ name, ddl string }{
+			{"decision_fingerprint", `ALTER TABLE relationship_action_log ADD COLUMN decision_fingerprint TEXT NOT NULL DEFAULT ''`},
+			{"dismiss_reason", `ALTER TABLE relationship_action_log ADD COLUMN dismiss_reason TEXT NOT NULL DEFAULT ''`},
+		} {
+			var exists int
+			if err := db.QueryRow(
+				`SELECT COUNT(*) FROM pragma_table_info('relationship_action_log') WHERE name=?`, col.name,
+			).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				if _, err := db.Exec(col.ddl); err != nil {
+					return err
+				}
+			}
+		}
+		// 部分唯一索引：仅当 decision_fingerprint 非空时约束唯一（手工/非决策来
+		// 源指纹为空，不互斥）。同指纹重复插入 → 冲突→不生成。
+		if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_decision_fp
+			ON relationship_action_log(decision_fingerprint) WHERE decision_fingerprint != ''`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 22`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
