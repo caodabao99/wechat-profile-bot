@@ -151,6 +151,61 @@ func TestLLMResolveSpec(t *testing.T) {
 	}
 }
 
+// ── 预设目录 ──
+
+func TestLLMPresetsCatalog(t *testing.T) {
+	ps := llmPresets()
+	if len(ps) == 0 {
+		t.Fatal("预设目录不应为空")
+	}
+	for _, p := range ps {
+		if p.Key == "" || p.Label == "" || p.BaseURL == "" {
+			t.Fatalf("预设字段缺失：%#v", p)
+		}
+		if p.BaseURL[len(p.BaseURL)-1] == '/' {
+			t.Fatalf("预设 baseURL 不应以斜杠结尾：%s", p.BaseURL)
+		}
+		if len(p.Models) == 0 {
+			t.Fatalf("预设应含默认模型：%s", p.Key)
+		}
+		if p.Region == regionForeign && !p.UseProxy {
+			t.Fatalf("国外预设应默认建议走代理：%s", p.Key)
+		}
+	}
+	// 按 key 命中 + 映射为档案草稿
+	openai, ok := presetByKey("openai")
+	if !ok {
+		t.Fatal("应能找到 openai 预设")
+	}
+	draft := presetToProfile(openai, "")
+	if draft.Model != "gpt-4o-mini" || !draft.UseProxy || draft.Region != regionForeign || !draft.DisableThinking {
+		t.Fatalf("预设→档案草稿不符：%#v", draft)
+	}
+	if _, ok := presetByKey("nope"); ok {
+		t.Fatal("不存在的 key 不应命中")
+	}
+}
+
+func TestLLMPresetsAPI(t *testing.T) {
+	db := regressionDB(t)
+	cfg := &Config{APIToken: "test-rel-token"}
+	s := &apiServer{db: db, cfg: cfg, sessions: &webSessionStore{sessions: map[string]time.Time{}}}
+	w := callAPI(s, http.MethodGet, "/api/llm/presets", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET presets: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		OK      bool          `json:"ok"`
+		Presets []ModelPreset `json:"presets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Presets) != len(llmPresets()) {
+		t.Fatalf("API 返回预设数应等于目录，得 %d", len(resp.Presets))
+	}
+}
+
 func TestLLMAPIEndToEnd(t *testing.T) {
 	db := regressionDB(t)
 	cfg := &Config{APIToken: "test-rel-token"}

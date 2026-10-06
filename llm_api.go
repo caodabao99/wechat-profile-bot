@@ -32,6 +32,12 @@ func (s *apiServer) routeLLM(w http.ResponseWriter, r *http.Request, sub []strin
 		return
 	}
 	switch sub[0] {
+	case "presets":
+		if r.Method != http.MethodGet {
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "presets": llmPresets()})
 	case "settings":
 		switch r.Method {
 		case http.MethodGet:
