@@ -111,6 +111,8 @@ func callLLMCached(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 	if cv == "" {
 		cv = "n/a"
 	}
+	// 缓存开关单一来源 = Context Task Registry.Cacheable（蓝图 §5.1 cache_enabled 不另建一处）。
+	cacheEnabled := taskSpec(task).Cacheable
 	key := aiCacheKey{
 		ContactID:      contactID,
 		Task:           string(task),
@@ -118,19 +120,25 @@ func callLLMCached(ctx context.Context, db *sql.DB, llm *LLMClient, contactID in
 		Model:          llm.modelOf(),
 		PromptVersion:  shortHash(prompt),
 	}
-	if cached, ok := aiCacheGet(db, key); ok {
-		return cached, nil
+	if cacheEnabled {
+		if cached, ok := aiCacheGet(db, key); ok {
+			// 命中也记一行（零 token）：供命中率与「缓存省下多少」观测（§6.2）。
+			llm.logCacheHit(llmSpec{Model: key.Model}, string(task), contactID)
+			return cached, nil
+		}
 	}
-	// 日预算护栏（P2c）：只在这一步之后生效——缓存命中零成本，不该被预算拦。
-	// 且只拦后台批量；用户当场发起的调用已在入口打上交互式标记（见 llm_budget.go）。
-	if !llmBudgetAllows(ctx, db) {
+	// 预算护栏（v7.0 扩展）：只在缓存未命中之后生效；只拦后台批量，不拦交互式。
+	// 全局 daily/weekly/monthly + 任务日预算 + 单联系人日预算多维合一判定（见 llm_budget.go）。
+	if !llmBudgetAllowsCall(ctx, db, task, contactID) {
 		return "", errDailyBudgetExceeded
 	}
-	// 把任务写进 ctx 后真调：使用量日志自带归因（§6），13 个接管点无需改任何签名。
-	raw, err := llm.CallContext(withLLMTask(ctx, task), prompt)
+	// 把任务 + 联系人写进 ctx 后真调：使用量日志自带归因（§6），接管点无需改任何签名。
+	raw, err := llm.CallContext(withLLMContact(withLLMTask(ctx, task), contactID), prompt)
 	if err != nil {
 		return raw, err
 	}
-	aiCachePut(db, key, raw)
+	if cacheEnabled {
+		aiCachePut(db, key, raw)
+	}
 	return raw, nil
 }

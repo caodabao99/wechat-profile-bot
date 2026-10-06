@@ -113,16 +113,53 @@ func isRetryableStatus(code int) bool {
 // CallContext 与 Call 相同，但接受 ctx 用于取消/超时控制。
 // HTTP 请求走 resty 的 SetContext，重试等待也感知 ctx，
 // 避免调用方已经放弃后仍在后台占用 LLM 配额。
-// 每次调用都**运行时解析活动档案**（模型/密钥/接口/推理开关/是否走代理），
-// 故网页端切换模型后紧接着的调用即用新配置，无需重启。
-// 每次真实模型调用（含失败）都记一笔用量日志（缓存命中不会走到这里，故统计的是真实 API 消耗）。
+// v7.0 Model Router：按任务策略解析主/备档案→主失败回退备→仍失败返回普通 error（调用方确定性降级）。
+// 每次真实调用（含失败、含回退）都记一行用量：携 task/contact/cache_hit=0/fallback 标志。
 func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, error) {
-	spec := c.resolveSpec()
+	task := ContextTask(llmTaskFromContext(ctx))
+	contactID := llmContactFromContext(ctx)
+	route := c.resolveRoute(task)
+	if !route.HasPrimary {
+		// 声明了 local_only 但无可用本地档案：绝不外发远端，返回普通 error（不 500）。
+		return "", errNoLocalProfile
+	}
+
+	callCtx, cancel := applyPolicyTimeout(ctx, route.Policy)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	primarySpec := applyGenerationParams(route.Primary, route.Policy)
 	start := time.Now()
-	content, status, usage, err := c.doCallContext(ctx, spec, prompt)
-	// 任务归因（§6）从 ctx 取：接管路径（callLLMCached）会写入，裸调点为空→记为未归因。
-	c.logLLMCall(spec, llmTaskFromContext(ctx), err == nil, status, usage, time.Since(start).Milliseconds())
+	content, status, usage, err := c.doCallContext(callCtx, primarySpec, prompt)
+	c.logLLMCallFull(route.Primary, string(task), contactID, err == nil, status, usage, time.Since(start).Milliseconds(), false, false)
+	if err == nil {
+		return content, nil
+	}
+
+	// primary 失败 → fallback 档案（蓝图 §5.3）。
+	if route.HasFallback {
+		fbSpec := applyGenerationParams(route.Fallback, route.Policy)
+		fbStart := time.Now()
+		content2, status2, usage2, err2 := c.doCallContext(callCtx, fbSpec, prompt)
+		c.logLLMCallFull(route.Fallback, string(task), contactID, err2 == nil, status2, usage2, time.Since(fbStart).Milliseconds(), false, true)
+		if err2 == nil {
+			return content2, nil
+		}
+		return content2, err2
+	}
 	return content, err
+}
+
+// applyPolicyTimeout 若策略设了超时，在调用方 ctx 之上叠加一个更短的超时 ctx；否则原样传递。
+func applyPolicyTimeout(ctx context.Context, policy TaskModelPolicy) (context.Context, context.CancelFunc) {
+	if policy.TimeoutSec <= 0 {
+		return ctx, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, time.Duration(policy.TimeoutSec)*time.Second)
 }
 
 // doCallContext 是 CallContext 的执行体（不含用量记录），返回最终内容/HTTP 状态/token 用量/错误。
@@ -138,6 +175,13 @@ func (c *LLMClient) doCallContext(ctx context.Context, spec llmSpec, prompt stri
 		"response_format": map[string]string{
 			"type": "json_object",
 		},
+	}
+	// v7.0 Model Router：策略的 temperature/max_tokens 覆盖内置默认（未设则保持 0.3 / 不传）。
+	if spec.Temperature != nil {
+		body["temperature"] = *spec.Temperature
+	}
+	if spec.MaxTokens > 0 {
+		body["max_tokens"] = spec.MaxTokens
 	}
 	// 关闭推理思考：百炼兼容模式认 enable_thinking，DeepSeek 官方/V4 认 thinking.type，
 	// 两个参数一起发，不支持的平台会忽略。

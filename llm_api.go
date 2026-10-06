@@ -55,6 +55,16 @@ func (s *apiServer) routeLLM(w http.ResponseWriter, r *http.Request, sub []strin
 			return
 		}
 		hLLMSetBudget(w, r, s.db)
+	case "router":
+		switch r.Method {
+		case http.MethodGet:
+			hLLMGetRouter(w, r, s.db)
+		case http.MethodPut, http.MethodPost:
+			hLLMPutRouter(w, r, s.db)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+		}
+		return
 	case "presets":
 		if r.Method != http.MethodGet {
 			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
@@ -130,18 +140,23 @@ func hLLMPutSettings(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "settings": maskLLMSettings(settings)})
 }
 
-// hLLMSetBudget POST /api/llm/budget {dailyTokenBudget}：设单日真实模型调用 token 上限（0=不限制）。
-// 用指针区分「没传」与「传了 0」——后者是有意义的动作（取消限制）。
-// 写库走 load→modify→save 既有入口，其余字段（含被掩码的密钥）原样保留。
+// hLLMSetBudget POST /api/llm/budget {dailyTokenBudget, weeklyTokenBudget, monthlyTokenBudget,
+// perContactDailyTokenBudget}：设各维「真实模型调用」token 上限（0=不限制）。
+// 用指针区分「没传」与「传了 0」——后者是有意义的动作（取消该维限制）。任一维未传则保持原值。
+// 写库走 load→modify→save 既有入口，其余字段（含被掩码的密钥、任务策略）原样保留。
 func hLLMSetBudget(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	var req struct {
-		DailyTokenBudget *int64 `json:"dailyTokenBudget"`
+		DailyTokenBudget           *int64 `json:"dailyTokenBudget"`
+		WeeklyTokenBudget          *int64 `json:"weeklyTokenBudget"`
+		MonthlyTokenBudget         *int64 `json:"monthlyTokenBudget"`
+		PerContactDailyTokenBudget *int64 `json:"perContactDailyTokenBudget"`
 	}
 	if !readBody(w, r, &req) {
 		return
 	}
-	if req.DailyTokenBudget == nil {
-		writeErr(w, http.StatusBadRequest, "缺少 dailyTokenBudget（0 表示不限制）")
+	if req.DailyTokenBudget == nil && req.WeeklyTokenBudget == nil &&
+		req.MonthlyTokenBudget == nil && req.PerContactDailyTokenBudget == nil {
+		writeErr(w, http.StatusBadRequest, "缺少预算字段（值 0 表示该维不限制）")
 		return
 	}
 	settings, err := loadLLMSettings(db)
@@ -149,12 +164,75 @@ func hLLMSetBudget(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	settings.DailyTokenBudget = *req.DailyTokenBudget
+	if req.DailyTokenBudget != nil {
+		settings.DailyTokenBudget = *req.DailyTokenBudget
+	}
+	if req.WeeklyTokenBudget != nil {
+		settings.WeeklyTokenBudget = *req.WeeklyTokenBudget
+	}
+	if req.MonthlyTokenBudget != nil {
+		settings.MonthlyTokenBudget = *req.MonthlyTokenBudget
+	}
+	if req.PerContactDailyTokenBudget != nil {
+		settings.PerContactDailyTokenBudget = *req.PerContactDailyTokenBudget
+	}
 	if err := saveLLMSettings(db, settings); err != nil {
 		writeErr(w, http.StatusBadRequest, "保存失败: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "budget": llmBudgetStatus(db)})
+}
+
+// hLLMGetRouter GET /api/llm/router：全部任务的「有效路由策略 + 建议档位」视图 + 可绑定档案清单。
+// 视图单一来源 = LLMSettings.TaskPolicies + Context Task Registry（前端不另建映射）。
+func hLLMGetRouter(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	settings, err := loadLLMSettings(db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 档案清单仅暴露 id/label/region/是否本地（不含密钥/端点），供下拉选择主/备档案。
+	type profileRef struct {
+		ID     string `json:"id"`
+		Label  string `json:"label"`
+		Region string `json:"region"`
+		Local  bool   `json:"local"`
+		Usable bool   `json:"usable"`
+	}
+	refs := make([]profileRef, 0, len(settings.Profiles))
+	for i := range settings.Profiles {
+		p := &settings.Profiles[i]
+		refs = append(refs, profileRef{ID: p.ID, Label: p.Label, Region: p.Region, Local: isLocalEndpoint(p), Usable: p.usable()})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":            true,
+		"policies":      ModelPolicyViews(settings),
+		"profiles":      refs,
+		"activeProfile": settings.ActiveProfileID,
+	})
+}
+
+// hLLMPutRouter PUT/POST /api/llm/router {policies:{task:TaskModelPolicy,...}}：整体替换任务级
+// Model Router 策略。空 map = 清空全部策略（所有任务回落活动档案）。保存前经 normalize 清洗。
+func hLLMPutRouter(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	var req struct {
+		Policies map[string]TaskModelPolicy `json:"policies"`
+	}
+	if !readBody(w, r, &req) {
+		return
+	}
+	settings, err := loadLLMSettings(db)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	settings.TaskPolicies = req.Policies
+	if err := saveLLMSettings(db, settings); err != nil {
+		writeErr(w, http.StatusBadRequest, "保存失败: "+err.Error())
+		return
+	}
+	saved, _ := loadLLMSettings(db)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "policies": ModelPolicyViews(saved)})
 }
 
 // hLLMSetActive POST /api/llm/active {id}：切换活动模型档案。

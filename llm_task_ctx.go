@@ -20,6 +20,9 @@ import (
 // llmTaskCtxKey 是 ctx 中承载「本次调用所属 AI 任务」的键（私有类型，避免与第三方键冲突）。
 type llmTaskCtxKey struct{}
 
+// llmContactCtxKey 是 ctx 中承载「本次调用服务的联系人 ID」的键（v7.0 §6 成本按联系人归因）。
+type llmContactCtxKey struct{}
+
 // withLLMTask 把任务写入 ctx，供深层 CallContext 记录用量归因。task 为空时原样返回（不写噪声）。
 func withLLMTask(ctx context.Context, task ContextTask) context.Context {
 	if task == "" {
@@ -41,3 +44,22 @@ func llmTaskFromContext(ctx context.Context) string {
 
 // unattributedTaskKey 是聚合视图里代表「未归因调用」的分组名（不隐藏这部分成本）。
 const unattributedTaskKey = "(未归因)"
+
+// withLLMContact 把联系人 ID 写入 ctx，供深层 CallContext 记录按联系人成本归因。id<=0 时原样返回。
+func withLLMContact(ctx context.Context, contactID int64) context.Context {
+	if contactID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, llmContactCtxKey{}, contactID)
+}
+
+// llmContactFromContext 取回本次调用服务的联系人 ID；无则返回 0（=无联系人归因）。
+func llmContactFromContext(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	if id, ok := ctx.Value(llmContactCtxKey{}).(int64); ok {
+		return id
+	}
+	return 0
+}

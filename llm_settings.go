@@ -82,6 +82,14 @@ type LLMSettings struct {
 	// 0（默认）= 不限制；负数在 normalize 里归零，不引入第三种语义。
 	// 只拦后台批量派生任务，用户当场发起的调用永远不被预算拦（见 llm_budget.go）。
 	DailyTokenBudget int64 `json:"dailyTokenBudget,omitempty"`
+	// v7.0 §6 Cost Control Plane：周/月全局预算 + 单联系人日预算 + 任务级 Model Router 策略。
+	// 均为 token 上限，0=不限制，负数归零；只作用于后台批量，不拦交互式调用。
+	WeeklyTokenBudget          int64 `json:"weeklyTokenBudget,omitempty"`
+	MonthlyTokenBudget         int64 `json:"monthlyTokenBudget,omitempty"`
+	PerContactDailyTokenBudget int64 `json:"perContactDailyTokenBudget,omitempty"`
+	// TaskPolicies 任务级 Model Router：key = ContextTask 值，value = 该任务的模型/参数/预算策略。
+	// 空（默认）= 该任务走活动档案、沿用 registry 缓存策略——未配置时与 v6.x 行为完全一致。
+	TaskPolicies map[string]TaskModelPolicy `json:"taskPolicies,omitempty"`
 }
 
 // llmSpec 是运行时解析出的、供单次调用使用的有效配置。
@@ -96,6 +104,9 @@ type llmSpec struct {
 	Region          string
 	UseProxy        bool
 	ProxyURL        string // 仅当 UseProxy 且全局代理启用且档案需要时非空
+	// v7.0 Model Router 生成参数覆盖（来自任务策略）：nil/0 = 不覆盖，沿用内置默认。
+	Temperature *float64
+	MaxTokens   int
 }
 
 // ensureLLMSettingsTable 懒建单行配置表（幂等 DDL，自持 dbMu，不 bump user_version）。仿 portfolio_settings。
@@ -192,6 +203,16 @@ func (s *LLMSettings) normalize() {
 	if s.DailyTokenBudget < 0 {
 		s.DailyTokenBudget = 0 // 负数无意义，归零即「不限制」
 	}
+	if s.WeeklyTokenBudget < 0 {
+		s.WeeklyTokenBudget = 0
+	}
+	if s.MonthlyTokenBudget < 0 {
+		s.MonthlyTokenBudget = 0
+	}
+	if s.PerContactDailyTokenBudget < 0 {
+		s.PerContactDailyTokenBudget = 0
+	}
+	normalizeTaskPolicies(s)
 }
 
 // activeProfile 返回当前活动档案（找不到返回 nil）。
@@ -202,6 +223,24 @@ func (s *LLMSettings) activeProfile() *LLMProfile {
 		}
 	}
 	return nil
+}
+
+// profileByID 按 ID 返回档案（找不到返回 nil）。供 Model Router 解析主/备档案。
+func (s *LLMSettings) profileByID(id string) *LLMProfile {
+	if id == "" {
+		return nil
+	}
+	for i := range s.Profiles {
+		if s.Profiles[i].ID == id {
+			return &s.Profiles[i]
+		}
+	}
+	return nil
+}
+
+// usable 报告档案是否配齐了发起调用所需的字段。
+func (p *LLMProfile) usable() bool {
+	return p != nil && strings.TrimSpace(p.APIKey) != "" && strings.TrimSpace(p.BaseURL) != "" && strings.TrimSpace(p.Model) != ""
 }
 
 // loadLLMSettings 读取设置（表缺失/无行/脏数据→回落 config.json 合成的默认设置）。
@@ -320,34 +359,39 @@ func saveLLMSettings(db *sql.DB, next LLMSettings) error {
 	return err
 }
 
-// resolveSpec 把「活动档案 + config.json 兜底」解析为单次调用有效配置。
+// resolveSpec 把「活动档案 + config.json 兑底」解析为单次调用有效配置。
 // 优先级：DB 活动档案（可用）→ config.json 启动配置。
 func (c *LLMClient) resolveSpec() llmSpec {
 	if c.db != nil {
 		if s, err := loadLLMSettings(c.db); err == nil {
 			if p := s.activeProfile(); p != nil && p.APIKey != "" && p.BaseURL != "" && p.Model != "" {
-				useProxy := p.UseProxy && s.Proxy.Enabled && strings.TrimSpace(s.Proxy.URL) != ""
-				proxyURL := ""
-				if useProxy {
-					proxyURL = strings.TrimSpace(s.Proxy.URL)
-				}
-				return llmSpec{
-					ProfileID:       p.ID,
-					Label:           p.Label,
-					Provider:        p.Provider,
-					BaseURL:         p.BaseURL,
-					APIKey:          p.APIKey,
-					Model:           p.Model,
-					DisableThinking: p.DisableThinking,
-					Region:          p.Region,
-					UseProxy:        useProxy,
-					ProxyURL:        proxyURL,
-				}
+				return specFromProfile(p, &s)
 			}
 		}
 	}
 	// 回落启动时 config.json（保持老部署与测试 NewLLMClient(cfg) 语义不变）
 	return c.startupSpec()
+}
+
+// specFromProfile 把指定档案 + 全局代理设置组装为单次调用配置（活动档案与路由档案共用）。
+func specFromProfile(p *LLMProfile, s *LLMSettings) llmSpec {
+	useProxy := p.UseProxy && s.Proxy.Enabled && strings.TrimSpace(s.Proxy.URL) != ""
+	proxyURL := ""
+	if useProxy {
+		proxyURL = strings.TrimSpace(s.Proxy.URL)
+	}
+	return llmSpec{
+		ProfileID:       p.ID,
+		Label:           p.Label,
+		Provider:        p.Provider,
+		BaseURL:         p.BaseURL,
+		APIKey:          p.APIKey,
+		Model:           p.Model,
+		DisableThinking: p.DisableThinking,
+		Region:          p.Region,
+		UseProxy:        useProxy,
+		ProxyURL:        proxyURL,
+	}
 }
 
 // startupSpec 由 LLMClient 构造时的固定字段构成。
