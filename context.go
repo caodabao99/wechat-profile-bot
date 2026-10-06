@@ -19,7 +19,9 @@ package main
 // ═══════════════════════════════════════════════════════════════════════════
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -73,6 +75,11 @@ type ContactContext struct {
 	ContactID int64         `json:"contact_id"`
 	Task      ContextTask   `json:"task"`
 	Budget    ContextBudget `json:"budget"`
+
+	// ContextVersion 版本相关输入的确定性内容指纹（蓝图 §4.2）：身份/画像、可信与
+	// 冲突事实、关系状态、目标、项目、待跟进、最近与相关消息。任一变化 → 指纹变化。
+	// 供 AI cache key = (contact_id, task, context_version, model, prompt_version) 复用判定。
+	ContextVersion string `json:"context_version"`
 
 	Identity                 ContextIdentity        `json:"identity"`
 	CurrentRelationshipState *RelationshipStateView `json:"current_relationship_state,omitempty"`
@@ -253,6 +260,9 @@ func BuildContactContext(db *sql.DB, contactID int64, task ContextTask, query st
 		cc.PreviousOutcomes = oc
 	}
 
+	// 版本指纹最后计算（须在上述所有分块填充完成后），供 AI cache 精确失效复用。
+	cc.ContextVersion = computeContextVersion(cc)
+
 	return cc, nil
 }
 
@@ -349,6 +359,92 @@ func contextTokenApprox(s string) int {
 	return len([]rune(s)) / 2
 }
 
+// computeContextVersion 依据「会改变认知的版本相关输入」推导确定性内容指纹（蓝图 §4.2）。
+// 纳入：身份/画像、可信与冲突事实、关系状态、目标、项目、待跟进、最近与相关消息。
+// 不纳入纯派生的指标/主题/风险聚合（它们随上述输入自动变化，避免重复计入）。
+// 同一 DB 状态 → 同一指纹（确定性铁律）；profile/fact/state/goal/project/followup/
+// new relevant message 任一变化都会改变构建出的 cc，从而改变此指纹。返回 sha256 前 16 字节 hex。
+func computeContextVersion(cc *ContactContext) string {
+	var b strings.Builder
+	tok := func(s string) { b.WriteString(s); b.WriteByte(0x1f) } // 0x1f 单元分隔符，避免字段粘连歧义
+	tok("ctxv1")
+	// 身份 / 画像（profile change）
+	tok(cc.Identity.Name)
+	tok(cc.Identity.Remark)
+	tok(cc.Identity.Summary)
+	tok(cc.Identity.Occupation)
+	tok(cc.Identity.Location)
+	tok(cc.Identity.Closeness)
+	tok(cc.Identity.FirstSeenAt)
+	// 关系状态（state change）
+	if st := cc.CurrentRelationshipState; st != nil {
+		tok("state")
+		tok(st.BaseState)
+		tok(st.DynamicState)
+		tok(fmt.Sprintf("%d", st.Intimacy))
+		tok(st.TrendState)
+		tok(st.Alert)
+		tok(fmt.Sprintf("%d", st.Health))
+	} else {
+		tok("nostate")
+	}
+	// 事实（fact change）：可信 + 冲突
+	tok("facts")
+	for _, f := range cc.TrustedFacts {
+		tok(fmt.Sprintf("%d", f.ID))
+		tok(f.Type)
+		tok(f.Key)
+		tok(f.Value)
+		tok(f.Status)
+		tok(fmt.Sprintf("%v", f.Confidence))
+	}
+	tok("cfacts")
+	for _, f := range cc.ConflictingFacts {
+		tok(fmt.Sprintf("%d", f.ID))
+		tok(f.Type)
+		tok(f.Key)
+		tok(f.Value)
+		tok(f.Status)
+		tok(fmt.Sprintf("%v", f.Confidence))
+	}
+	// 目标（goal change）
+	tok("goals")
+	for _, g := range cc.ActiveGoals {
+		tok(g.Title)
+		tok(g.Metric)
+		tok(fmt.Sprintf("%d", g.Target))
+		tok(g.PeriodEnd)
+	}
+	// 项目（project change）
+	tok("projects")
+	for _, p := range cc.Projects {
+		tok(fmt.Sprintf("%d", p.ID))
+		tok(p.Status)
+		tok(p.Stage)
+		tok(p.UpdatedAt)
+	}
+	// 待跟进（followup change）
+	tok("followups")
+	for _, f := range cc.OpenFollowups {
+		tok(fmt.Sprintf("%d", f.ID))
+		tok(f.Status)
+		tok(f.UpdatedAt)
+		tok(f.DueDate)
+	}
+	// 最近 + 相关消息（new relevant messages）
+	tok("recent")
+	for _, m := range cc.RecentMessages {
+		tok(fmt.Sprintf("%d", m.ID))
+		tok(m.Timestamp.Format(time.RFC3339Nano))
+	}
+	tok("relevant")
+	for _, m := range cc.RelevantMessages {
+		tok(fmt.Sprintf("%d", m.ID))
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:16])
+}
+
 // contextSummary 返回不含私人正文的结构化摘要（各认知分块计数 + 关键标志），
 // 供 /context 在未开启 contextDebug 时安全暴露可观测信息。
 func contextSummary(cc *ContactContext) map[string]any {
@@ -357,6 +453,7 @@ func contextSummary(cc *ContactContext) map[string]any {
 		topicCount = len(cc.RecentTopics.Weeks)
 	}
 	return map[string]any{
+		"context_version":        cc.ContextVersion,
 		"identity_present":       strings.TrimSpace(cc.Identity.Name) != "",
 		"has_relationship_state": cc.CurrentRelationshipState != nil,
 		"trusted_facts":          len(cc.TrustedFacts),
