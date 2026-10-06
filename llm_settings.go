@@ -26,6 +26,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -227,6 +230,45 @@ func loadLLMSettings(db *sql.DB) (LLMSettings, error) {
 	return s, nil
 }
 
+// validateLLMBaseURL 校验单个模型端点：仅允许 http/https、必须有主机名、禁止 userinfo 掩盖主机。
+// 空串放行（回落 config.json 启动配置，属合法语义）。返回人读可懂的拒绝原因。
+func validateLLMBaseURL(field, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%s 不是合法的 URL（需含 http(s):// 主机名）", field)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%s 仅支持 http/https 协议，实得 %q", field, u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s 不允许在 URL 内嵌账号密码（user:pass@host）", field)
+	}
+	return nil
+}
+
+// validateLLMProxyURL 校验代理端点：允许 http/https/socks5；空串放行（未启用）。
+func validateLLMProxyURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return errors.New("代理地址不是合法的 URL（需含协议与主机名）")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5":
+	default:
+		return fmt.Errorf("代理仅支持 http/https/socks5 协议，实得 %q", u.Scheme)
+	}
+	return nil
+}
+
 // saveLLMSettings 保存设置（合并打码密钥：前端回传 apiKeyMask 视为「不改动」沿用原值）。
 func saveLLMSettings(db *sql.DB, next LLMSettings) error {
 	// 先读旧值以还原被掩码的密钥
@@ -245,6 +287,16 @@ func saveLLMSettings(db *sql.DB, next LLMSettings) error {
 		}
 	}
 	next.normalize()
+	// v6.3 安全收口：在任何写库/生效前校验端点（SSRF/协议处理器护栏）。
+	// 只校非空值，合法 http(s) 端点不受影响；不合法直接拒绝，不落库、不改活动配置。
+	for _, p := range next.Profiles {
+		if err := validateLLMBaseURL("模型接口地址", p.BaseURL); err != nil {
+			return err
+		}
+	}
+	if err := validateLLMProxyURL(next.Proxy.URL); err != nil {
+		return err
+	}
 	b, err := json.Marshal(next)
 	if err != nil {
 		return err
