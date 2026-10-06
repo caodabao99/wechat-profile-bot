@@ -316,7 +316,7 @@ func (s *apiServer) routeContactContext(w http.ResponseWriter, r *http.Request, 
 		task = TaskProfile
 	}
 	q := r.URL.Query().Get("q")
-	cc, err := BuildContactContext(s.db, id, task, q, time.Now())
+	cc, err := buildTaskContext(s.db, id, task, q, time.Now())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeErr(w, http.StatusNotFound, "联系人不存在")

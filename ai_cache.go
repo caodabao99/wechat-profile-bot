@@ -15,9 +15,11 @@ package main
 // 调用点必须处于「锁外」（与各 LLM 编排函数调 RenderPrompt 同一约束），绝不嵌套 dbMu。
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"strings"
 )
 
@@ -89,4 +91,39 @@ func aiCachePut(db *sql.DB, k aiCacheKey, response string) {
 		ON CONFLICT(contact_id, task, context_version, model, prompt_version)
 		DO UPDATE SET response=excluded.response, created_at=excluded.created_at`,
 		k.ContactID, k.Task, k.ContextVersion, k.Model, k.PromptVersion, response)
+}
+
+// callLLMCached 带缓存的 LLM 调用（蓝图 §4.2 接管原语）：命中（相同 contact/task/上下文版本/
+// 模型/最终 prompt）直接返回缓存，否则真调用并回写。
+//
+// 正确性锚点是「最终 prompt 的哈希」（存入 PromptVersion 位）：prompt = 模板(经 context 填充)，
+// 故模板改动、context 输入改动、以及问题/草稿等即时输入变化都会改变 prompt → 改变键 → 不会误命中。
+// context_version 作为可选的结构化分量（便于按认知快照归类）：传空则用哨兵 "n/a"，不削弱正确性。
+//
+// 降级哲学：context_version 恒有值故总启用缓存；缓存读写任何异常透明忽略；LLM 未配置或调用失败时
+// 原样返回错误、绝不写缓存，保证本可完成的调用不被缓存层阻断（与 LLM 双重降级一致）。
+func callLLMCached(ctx context.Context, db *sql.DB, llm *LLMClient, contactID int64, task ContextTask, contextVersion, prompt string) (string, error) {
+	if llm == nil || !llm.configured() {
+		return "", errors.New("LLM 未配置")
+	}
+	cv := contextVersion
+	if cv == "" {
+		cv = "n/a"
+	}
+	key := aiCacheKey{
+		ContactID:      contactID,
+		Task:           string(task),
+		ContextVersion: cv,
+		Model:          llm.modelOf(),
+		PromptVersion:  shortHash(prompt),
+	}
+	if cached, ok := aiCacheGet(db, key); ok {
+		return cached, nil
+	}
+	raw, err := llm.CallContext(ctx, prompt)
+	if err != nil {
+		return raw, err
+	}
+	aiCachePut(db, key, raw)
+	return raw, nil
 }

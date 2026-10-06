@@ -96,7 +96,7 @@ func AskContactHistory(ctx context.Context, db *sql.DB, llm *LLMClient, contactI
 		return nil, err
 	}
 
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskAsk, "", prompt)
 	if err != nil {
 		return nil, err
 	}
