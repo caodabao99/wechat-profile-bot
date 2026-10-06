@@ -118,6 +118,12 @@ func (s *apiServer) routeSystem(w http.ResponseWriter, r *http.Request, sub []st
 	switch sub[0] {
 	case "data-report":
 		s.hStatusDataReport(w, r)
+	case "data-health": // V7 §21：数据健康总览 + 仅重建派生/缓存
+		if len(sub) > 1 && sub[1] == "rebuild" {
+			s.hDataHealthRebuild(w, r)
+			return
+		}
+		s.hDataHealth(w, r)
 	case "table-registry":
 		s.hTableRegistry(w, r)
 	default:

@@ -33,6 +33,9 @@ var contactCleanupTables = []string{
 	"ai_response_cache",
 	"relationship_action_log",
 	"relationship_experiment",
+	"contact_topic_history", // 蓝图 §22：含 contact_id 的持久主题历史表，删联系人必清，否则留孤儿行（曾缺失）
+	"today_snooze",          // 蓝图 §22：TODAY 屏蔽缓存，按 contact_id；人删了残留屏蔽就是孤儿（且是隐私泄漏）
+	"ingest_stats",          // 蓝图 §22：Smart Paste 去重统计，按 contact_id；人删后残留行属孤儿
 }
 
 // contactCleanupStmts 删除联系人时需要一并清理的增值功能关联表。
