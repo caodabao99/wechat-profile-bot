@@ -2854,6 +2854,22 @@ createApp({
       new: { label: '新关系', cls: 'st-purple' },
     };
     const ckKindLabel = { cooling: '关系降温', silence: '长期沉默', no_reply: '对方消息未回' };
+    // v6.2 i18n：把后端枚举英文值统一映成中文（关系状态机/趋势/预警/事实类型）。
+    const baseStateLabel = { unknown: '未认识', introduced: '已认识', familiar: '熟悉', stable: '稳定', close: '亲密', core: '核心' };
+    const dynStateLabel = { stable: '平稳', warming: '升温', cooling: '降温', at_risk: '有流失风险', dormant: '已沉寂', reconnecting: '重连中' };
+    const factTypeLabel = { occupation: '职业', location: '所在地', important_date: '重要日子', personality: '性格', interest: '兴趣', important_fact: '重要事实', phrase: '口头禅', closeness: '亲密度' };
+    // relStateText：把「base / dynamic」英文组合串译成中文（未知 token 保留原值，不致空白）。
+    function relStateText(s) {
+      if (!s) return '';
+      return String(s).split('/').map(seg => {
+        const t = seg.trim();
+        return baseStateLabel[t] || dynStateLabel[t] || t;
+      }).join(' · ');
+    }
+    function baseStateCN(s) { return baseStateLabel[s] || s || ''; }
+    function dynStateCN(s) { return dynStateLabel[s] || s || ''; }
+    function factTypeCN(t) { return factTypeLabel[t] || t || ''; }
+    function trendStateCN(s) { return (ckTrendMeta[s] && ckTrendMeta[s].label) || s || ''; }
     // 展开证据的事实 id 集合：用 reactive Set 模拟，命中/收起都触发重渲染
     const ckExpanded = reactive({});
     function ckToggleFact(id) { ckExpanded[id] = !ckExpanded[id]; }
@@ -3908,6 +3924,8 @@ createApp({
       showRemark, remarkInput, showSupplement, supplementNote,
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       relState, showReplay, replayText, todayList, todayLoading,
+      // v6.2 i18n 枚举中文映射
+      relStateText, baseStateCN, dynStateCN, factTypeCN, trendStateCN,
       openReplay, closeReplay, loadTodayDecisions, decisionReasonText, gotoContact,
       actionBusy, memReviewCount, memReviewPreview, riskCount, riskByType, portfolioSummary,
       loadActionCenter, acceptDecision, completeDecision, deferDecision, dismissDecision,

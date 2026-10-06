@@ -83,7 +83,7 @@
             <div class="tc-body">
               <div class="tc-head">
                 <a class="decision-who" :href="'#/contact/' + d.contact_id">{{ d.name }}</a>
-                <span class="chip st-gray">{{ d.state }}</span>
+                <span class="chip st-gray">{{ relStateText(d.state) }}</span>
                 <span class="chip st-orange" v-if="d.risk>0">风险</span>
                 <span class="chip st-blue" v-if="d.confidence">置信 {{ d.confidence }}</span>
               </div>
@@ -206,10 +206,10 @@
         </div>
         <!-- OS 2.0 Phase 8：关系状态（Relationship State Machine 实时快照） -->
         <div class="c-meta rel-state" v-if="relState">
-          <span class="chip st-blue">状态：{{ relState.baseState }} / {{ relState.dynamicState }}</span>
+          <span class="chip st-blue">状态：{{ baseStateCN(relState.baseState) }} · {{ dynStateCN(relState.dynamicState) }}</span>
           <span class="chip st-gray" v-if="relState.intimacy!=null">亲密度 {{ relState.intimacy }}</span>
-          <span class="chip st-gray" v-if="relState.trendState">趋势 {{ relState.trendState }}</span>
-          <span class="chip st-orange" v-if="relState.alert && relState.alert!=='none'">预警 {{ relState.alert }}</span>
+          <span class="chip st-gray" v-if="relState.trendState">趋势 {{ trendStateCN(relState.trendState) }}</span>
+          <span class="chip st-orange" v-if="relState.alert && relState.alert!=='none'">预警 {{ alertLabel(relState.alert) }}</span>
           <span class="hint inline" v-if="relState.reason">{{ relState.reason }}</span>
         </div>
         <!-- 标签编辑：勾选即改，点保存生效 -->
@@ -660,7 +660,7 @@
           <ul class="ck-facts" v-else>
             <li v-for="f in ck.facts" :key="f.id">
               <div class="ck-fact-head" @click="ckToggleFact(f.id)">
-                <span class="ck-ftype">{{ f.type }}</span>
+                <span class="ck-ftype">{{ factTypeCN(f.type) }}</span>
                 <span class="ck-fkey" v-if="f.key">{{ f.key }}：</span>
                 <span class="ck-fval">{{ f.value }}</span>
                 <span class="ck-conf" :title="'置信度 ' + ckPct(f.confidence)">
