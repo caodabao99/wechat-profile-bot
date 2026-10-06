@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v6.3.3.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.0.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v6.3.3.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v6.3.3.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v6.3.3.tar.gz`，得到 `wechat-profile-bot:v6.3.3` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.0.0.tar.gz`，得到 `wechat-profile-bot:v7.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,26 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v7.0.0（2026-10-06）— Personal Relationship OS 3.0
+
+本版是 **v7.0 蓝图「收口 + 连接 + 提升智能层级」的完整交付**，把既有系统收拢成一台会自我学习的个人关系智能机，而非「更多 AI 功能」。全 17 个 Phase（P1–P17）一次性落地，接通 `PERCEIVE→REMEMBER→VERIFY→UNDERSTAND→DECIDE→REHEARSE→ACT→OBSERVE→LEARN→UPDATE MEMORY` 的闭环。桌面端配套升至 **v4.0.0**（独立仓库）。SQLite `user_version` 25 → **27**（新增 `personal_calibration_profile` 唯一真相表 + `relationship_action_log` 结果列），向后兼容、幂等迁移。
+
+- **P1 Context Engine 唯一入口化收口**：所有 AI 任务上下文一律经 `BuildContactContext`（全仓仅此一份）+ Context Task Registry（22 任务登记预算/所需块/cacheable/requiresLLM 为单一来源）；杜绝第二套 Context Engine（§32 审计 0 命中）。
+- **P2 AI Model Router + Cost Governance**：`llm_router.go` 按任务能力/成本选模；`llm_budget.go` 任务级归因 + 日预算护栏（只拦后台批量、不拦用户即时操作，超限降级不 503）。
+- **P3 Memory / Evidence 3.0**：`memory_temporal.go` + `evidence_chain.go`——FACT/INFERENCE 分层、每条结论可溯源到消息证据、事实冲突进待确认队列**绝不直接覆盖**（场景 B/C）。
+- **P4 Smart Paste 2.0**：`smart_paste.go` 增量去重，同段二次粘贴 0 新增、绝不重复调用 AI（场景 D），四指标审计闭环。
+- **P5 Relationship Session**：`relationship_session.go` 编排 before-brief→strategy→rehearsal→observation，落统一 Action Ledger。API `/api/contacts/{id}/session`。
+- **P6 Strategy Learning / Calibration**：`strategy_learning.go` 聚合历史表现（Wilson 置信下界、有界软加分、措辞只谈相关不谈因果）；`calibration.go` 用户反馈写独立软调整表、限幅 + 时间衰减。学习让**下一次推荐因这一次结果而改变**（场景 A 闭环，见 `regression_v7_test.go`）。
+- **P7 Command Center / Contact Brief**：`command_center.go` 首页六栏 Top3 只读编排（模型全失效时仍显示 State/Risk/Today/Memory/Portfolio，仅 AI 文案降级、绝不 500，场景 G）；`contact_brief.go` 纯确定性联系前简报。API `/api/command-center` · `/api/contacts/{id}/brief`。
+- **P8 Network Opportunity Discovery**：`network_opportunity.go`「谁可能帮我」只读检索，零新真相层。API `/api/opportunity`。
+- **P9 Historical Repository 收口**：`message_repository.go`/`history_source.go` 命名门面 Recent/Historical/Aggregate，深分页 keyset 不 `COUNT(*)`（场景 E）。
+- **P10 Data Health / Backup / Merge / Delete**：`datahealth.go` Data Health 2.0 聚合器（仅重建 derived）；删除级联无孤儿不变量；带口令备份密钥加密、API Key 不回传明文。
+- **P11 AI Evaluation Lab（§18/§19）**：`eval.go` 离线/确定性/零真实数据评测底座（22 例覆盖 11 任务类型、五质量指标 + 模型对比 + Prompt 回归钉）；缓存键五分量治理（切模型/改 Prompt 天然失效、绝不串）。
+- **P13 性能 Benchmark（§25.1）**：`perf_bench_test.go` 七操作上报 P50/P95/P99，规模经 `PERF_SCALE` env 化（100K–10M 可复现）。
+- **P14 安全回归（§27）**：`security_v7_test.go` 钉十攻击面（SQLi/FTS 注入/SSRF/密钥泄漏/认证/限流/路径穿越/备份密漏/CORS/代理滥用）。
+- **门禁**：全增量过同一门禁——`gofmt`/`build`/`vet=0`、linux/{amd64,arm64}·windows/amd64（`CGO_ENABLED=0`）交叉编译、U+FFFD=0；`-race -cover` 全绿，覆盖率 71.2%（v6.3.3 基线）→ **72.3%**（棘轮只升不降）。652 测试/基准函数全通过。
+- **交付报告**：`V7_ARCHITECTURE_BASELINE.md` · `V7_IMPLEMENTATION_REPORT.md` · `V7_AI_EVALUATION_REPORT.md` · `V7_PERFORMANCE_REPORT.md` · `V7_SECURITY_REPORT.md`（§33 二十六项逐项 IMPLEMENTED/PARTIAL 标注）。
 
 ### v6.3.3（2026-10-06）
 

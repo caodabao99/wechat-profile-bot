@@ -18,6 +18,8 @@ COPY *.go ./
 COPY static ./static
 # v5.1.0：prompts.go 用 //go:embed prompts 内嵌默认提示词模板，缺目录会报 pattern prompts: no matching files found
 COPY prompts ./prompts
+# v7.0.0：eval.go 用 //go:embed tests/evaldata/golden_cases.json 内嵌 AI 评测黄金用例，缺目录会报 pattern ...: no matching files found
+COPY tests/evaldata ./tests/evaldata
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o wechat-profile-bot .
 
 # 运行阶段
