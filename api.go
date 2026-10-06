@@ -346,6 +346,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "memory":
 		// 蓝图 §8 P4：待确认记忆队列 /api/memory/review
 		s.routeMemory(w, r, parts[1:])
+	case parts[0] == "today":
+		// v6.3 §P11：Action Center 2.0 聚合 /api/today + /api/today/snooze
+		s.routeToday(w, r, parts[1:])
 	case parts[0] == "risks":
 		// 蓝图 §13 P9：Relationship Risk Center /api/risks
 		s.routeRisks(w, r, parts[1:])

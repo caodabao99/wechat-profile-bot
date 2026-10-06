@@ -79,6 +79,7 @@ func init() {
 		{Name: "self_portrait_cache", Type: "cache", Owner: "portrait", Backup: false, Rebuild: true, HasContactID: false, Note: "自我关系画像缓存"},
 		{Name: "intervention_cache", Type: "cache", Owner: "intervention", Backup: false, Rebuild: true, HasContactID: false, Note: "干预学习统计缓存"},
 		{Name: "briefing_cache", Type: "cache", Owner: "briefing", Backup: false, Rebuild: true, HasContactID: false, Note: "主动简报缓存"},
+		{Name: "today_snooze", Type: "cache", Owner: "today_aggregate", Backup: false, Rebuild: true, HasContactID: true, Note: "v6.3 §P11 TODAY 屏蔽表，过期行自动清理"},
 		{Name: "ai_response_cache", Type: "cache", Owner: "context", Backup: false, Rebuild: true, HasContactID: true, Note: "AI 响应缓存，语义键=(contact_id,task,context_version,model,prompt_version)，蓝图 §4.2；按 contact_id 级联清理"},
 		{Name: "relationship_action_log", Type: "audit", Owner: "actions", Backup: true, Rebuild: false, HasContactID: true, Note: "行动账本（蓝图 §5 P1）：跨来源(decision/coach/goal/project/calendar/manual)+八态生命周期+outcome/provenance 分离；记真实用户行为不可重建，故参与备份、按 contact_id 级联清理"},
 		{Name: "relationship_experiment", Type: "audit", Owner: "experiment", Backup: true, Rebuild: false, HasContactID: true, Note: "个人关系实验（蓝图 §9 P5）：用户定义的观察性实验(目标/策略/周期)+前后测量快照与相关性结论；定义不可重建，故参与备份、按 contact_id 级联清理"},
