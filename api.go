@@ -952,11 +952,17 @@ type IngestOutcome struct {
 	ViaAlias         bool
 	ProfileTriggered bool
 	Messages         []Message
+	// v7.0 §12 Smart Paste 2.0 增量：四指标粘贴审计 + AI 触发分级决策（可解释）
+	Audit           PasteAudit
+	AITriggerPath   string
+	AITriggerReason string
+	ChangeSignals   []PasteSignal
 }
 
 // ingestAndStore 解析聊天记录、推断联系人、存库、按需触发画像更新
 func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*IngestOutcome, error) {
 	messages := ParseClipboard(text, cfg.MyName)
+	rawCandidates := len(messages) // §12.1 输入：解析器产出总数（过滤空之前）
 	var valid []Message
 	for _, m := range messages {
 		if strings.TrimSpace(m.Content) != "" {
@@ -990,6 +996,7 @@ func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*Inge
 	outcome := &IngestOutcome{
 		Contact: contact, ParsedCount: len(valid),
 		NewCount: newCount, ViaAlias: viaAlias, Messages: valid,
+		Audit: ComputePasteAudit(rawCandidates, len(valid), newCount),
 	}
 
 	// 隐式反馈：若本次有 sender="me" 的新消息入库，自动标记该联系人的 open 建议为已执行
@@ -1012,8 +1019,14 @@ func ingestAndStore(db *sql.DB, cfg *Config, llm *LLMClient, text string) (*Inge
 		}
 	}
 
+	// §12.3 AI 触发分级门：普通粘贴只入库，只有「重要变化」或到安全刷新阈值才惊动 AI。
+	// 冷启动路径不变（画像照常生成）；确定性词法判定，禁 LLM 决定是否触发。
+	dec := DecideAITrigger(db, cid, valid)
+	outcome.AITriggerPath = dec.Path
+	outcome.AITriggerReason = dec.Reason
+	outcome.ChangeSignals = dec.Signals
 	// 达到阈值则后台更新画像（去重：同一联系人已有生成任务则跳过，避免并发浪费 LLM 调用）
-	if ShouldGenerateProfile(db, cid) || ShouldUpdateProfile(db, cid) {
+	if dec.Trigger {
 		if _, loaded := profileInFlight.LoadOrStore(cid, true); !loaded {
 			outcome.ProfileTriggered = true
 			go func() {
@@ -1075,8 +1088,8 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// v6.3 §P12：记录去重统计
-	RecordIngestStat(s.db, outcome.Contact.ID, outcome.ParsedCount, outcome.NewCount, time.Now())
+	// v7.0 §12.1：记录去重统计（含异常四指标）。parsed=可用条数(新增+重复)，anomaly 单列另计。
+	RecordIngestStatAudit(s.db, outcome.Contact.ID, outcome.ParsedCount, outcome.NewCount, outcome.Audit.Anomaly, time.Now())
 
 	resp := map[string]interface{}{
 		"contactId":        outcome.Contact.ID,
@@ -1089,6 +1102,15 @@ func (s *apiServer) hIngest(w http.ResponseWriter, r *http.Request) {
 		"profileTriggered": outcome.ProfileTriggered,
 		"hasProfile":       outcome.Contact.ProfileJSON != "" && outcome.Contact.ProfileJSON != "{}",
 		"coldStartCount":   s.cfg.Profile.ColdStartCount,
+		// §12.1 粘贴闭环四指标：输入 = 新增 + 重复 + 异常
+		"audit": outcome.Audit,
+		// §12.3 AI 触发分级决策（可解释）：为何触发/未触发
+		"aiTrigger": map[string]interface{}{
+			"trigger": outcome.ProfileTriggered,
+			"path":    outcome.AITriggerPath,
+			"reason":  outcome.AITriggerReason,
+			"signals": outcome.ChangeSignals,
+		},
 	}
 
 	// 同步意图分析（桌面端结果窗需要）

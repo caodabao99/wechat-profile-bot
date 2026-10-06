@@ -21,32 +21,64 @@ import (
 	"time"
 )
 
-// ensureIngestStatsTable 幂等建表。
+// ensureIngestStatsTable 幂等建表（自持 dbMu）。
 func ensureIngestStatsTable(db *sql.DB) error {
 	dbMu.Lock()
 	defer dbMu.Unlock()
+	return ensureIngestStatsLocked(db)
+}
+
+// ensureIngestStatsLocked 幂等建表 + 补列，**调用方须已持有 dbMu**（不重复加锁）。
+// v7.0 §12.1 新增 anomaly_count：旧库已存在本表而无该列 → pragma_table_info 守门做一次
+// ALTER（与 llm_call_log 同一手法）。本表 derived/cache 级、可重建，补列失败不阻断主流程。
+func ensureIngestStatsLocked(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS ingest_stats (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		contact_id INTEGER NOT NULL,
 		parsed_count INTEGER NOT NULL,
 		new_count INTEGER NOT NULL,
 		dup_count INTEGER NOT NULL,
+		anomaly_count INTEGER NOT NULL DEFAULT 0,
 		recorded_at TEXT NOT NULL,
 		UNIQUE(contact_id, recorded_at)
 	)`)
-	return err
+	if err != nil {
+		return err
+	}
+	var colCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ingest_stats') WHERE name='anomaly_count'`).Scan(&colCount); err != nil {
+		return err
+	}
+	if colCount == 0 {
+		if _, err := db.Exec(`ALTER TABLE ingest_stats ADD COLUMN anomaly_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// RecordIngestStat 在每次成功 ingest 后记一行。
+// RecordIngestStat 在每次成功 ingest 后记一行（兼容旧签名：异常=0）。
 func RecordIngestStat(db *sql.DB, contactID int64, parsed, newCnt int, now time.Time) {
+	RecordIngestStatAudit(db, contactID, parsed, newCnt, 0, now)
+}
+
+// RecordIngestStatAudit §12.1：记一行含「异常」计数。dup = parsed - new（钳制非负），
+// parsed 仍为「可用条数（新增+重复）」以保持既有聚合口径不变；anomaly 单列另计。
+func RecordIngestStatAudit(db *sql.DB, contactID int64, parsed, newCnt, anomaly int, now time.Time) {
 	dup := parsed - newCnt
 	if dup < 0 {
 		dup = 0
 	}
+	if anomaly < 0 {
+		anomaly = 0
+	}
 	dbMu.Lock()
 	defer dbMu.Unlock()
-	db.Exec(`INSERT OR IGNORE INTO ingest_stats (contact_id, parsed_count, new_count, dup_count, recorded_at)
-		VALUES (?, ?, ?, ?, ?)`, contactID, parsed, newCnt, dup, now.Format(time.RFC3339))
+	if err := ensureIngestStatsLocked(db); err != nil {
+		return // 建/补列失败：只丢这一次统计，绝不阻断 ingest 主流程
+	}
+	db.Exec(`INSERT OR IGNORE INTO ingest_stats (contact_id, parsed_count, new_count, dup_count, anomaly_count, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, contactID, parsed, newCnt, dup, anomaly, now.Format(time.RFC3339))
 }
 
 // IngestStatSummary 聚合统计结果。
@@ -55,7 +87,8 @@ type IngestStatSummary struct {
 	TotalParsed   int                `json:"total_parsed"`
 	TotalNew      int                `json:"total_new"`
 	TotalDup      int                `json:"total_dup"`
-	DedupRate     float64            `json:"dedup_rate"` // dup / parsed，0~1
+	TotalAnomaly  int                `json:"total_anomaly"` // v7.0 §12.1 异常（解析出来但被丢弃）
+	DedupRate     float64            `json:"dedup_rate"`    // dup / parsed，0~1
 	TopDuplicates []IngestTopContact `json:"top_duplicates"`
 	WindowDays    int                `json:"window_days"`
 }
@@ -77,24 +110,16 @@ func GetIngestStats(db *sql.DB, now time.Time, windowDays int) (*IngestStatSumma
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
-	// 确保表存在
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ingest_stats (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		contact_id INTEGER NOT NULL,
-		parsed_count INTEGER NOT NULL,
-		new_count INTEGER NOT NULL,
-		dup_count INTEGER NOT NULL,
-		recorded_at TEXT NOT NULL,
-		UNIQUE(contact_id, recorded_at)
-	)`); err != nil {
+	// 确保表存在 + anomaly 列就位（复用持锁版 ensure，本函数已持 dbMu）
+	if err := ensureIngestStatsLocked(db); err != nil {
 		return nil, err
 	}
 
 	s := &IngestStatSummary{WindowDays: windowDays}
 	err := db.QueryRow(`
-		SELECT COUNT(*), COALESCE(SUM(parsed_count),0), COALESCE(SUM(new_count),0), COALESCE(SUM(dup_count),0)
+		SELECT COUNT(*), COALESCE(SUM(parsed_count),0), COALESCE(SUM(new_count),0), COALESCE(SUM(dup_count),0), COALESCE(SUM(anomaly_count),0)
 		FROM ingest_stats WHERE recorded_at >= ?`, since).
-		Scan(&s.TotalPastes, &s.TotalParsed, &s.TotalNew, &s.TotalDup)
+		Scan(&s.TotalPastes, &s.TotalParsed, &s.TotalNew, &s.TotalDup, &s.TotalAnomaly)
 	if err != nil {
 		return nil, err
 	}
