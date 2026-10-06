@@ -57,6 +57,50 @@ func (s *apiServer) routeContactFacts(w http.ResponseWriter, r *http.Request, id
 		})
 		return
 	}
+	// §10.3 Temporal Memory：GET /api/contacts/{id}/facts/timeline?factType=X[&factKey=Y]
+	if len(sub) == 1 && sub[0] == "timeline" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		factType := r.URL.Query().Get("factType")
+		if factType == "" {
+			writeErr(w, http.StatusBadRequest, "缺少 factType 参数")
+			return
+		}
+		tl, err := BuildFactTimeline(s.db, id, factType, r.URL.Query().Get("factKey"))
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "构建事实时间线失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "timeline": tl})
+		return
+	}
+	// §11 Evidence Chain 3.0：GET /api/contacts/{id}/facts/evidence-chain/{factId}
+	if len(sub) == 2 && sub[0] == "evidence-chain" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeErr(w, http.StatusMethodNotAllowed, "不支持的方法")
+			return
+		}
+		factID, err := strconv.ParseInt(sub[1], 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "事实 ID 无效")
+			return
+		}
+		chain, err := BuildEvidenceChain(s.db, id, factID, time.Now())
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeErr(w, http.StatusNotFound, "事实不存在")
+				return
+			}
+			writeErr(w, http.StatusInternalServerError, "构建证据链失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "chain": chain})
+		return
+	}
 	if len(sub) == 2 && (sub[0] == "confirm" || sub[0] == "reject" || sub[0] == "defer") {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
