@@ -46,11 +46,10 @@ func buildHeatmap(db *sql.DB, contactID int64, year int, now time.Time) *Heatmap
 	to := strconv.Itoa(year) + "-12-31"
 
 	dbMu.Lock()
-	// 自愈：该联系人指标表为空但有消息时全量重建其日聚合（与 GetRelationshipTrend 同语义）。
+	// 自愈：该联系人指标表为空但有消息（活跃或归档）时全量重建其日聚合（与 GetRelationshipTrend 同语义）。
 	var mc int
 	if db.QueryRow(`SELECT COUNT(*) FROM relationship_daily_metrics WHERE contact_id=?`, contactID).Scan(&mc) == nil && mc == 0 {
-		var msgc int
-		if db.QueryRow(`SELECT COUNT(*) FROM messages WHERE contact_id=?`, contactID).Scan(&msgc) == nil && msgc > 0 {
+		if hasMessagesForRebuildLocked(db, contactID) {
 			_, _ = rebuildDailyMetricsLocked(db, contactID)
 		}
 	}

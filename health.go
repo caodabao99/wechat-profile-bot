@@ -232,11 +232,10 @@ func ComputeHealth(db *sql.DB, now time.Time, windowDays int) (*HealthDashboard,
 	emoSince := now.AddDate(0, 0, -healthEmotionDays).Format("2006-01-02 15:04:05")
 
 	dbMu.Lock()
-	// 自愈：指标表为空但有消息时全量重建一次（与 GetRelationshipTrend 同语义，但批量）。
+	// 自愈：指标表为空但有消息（活跃或归档）时全量重建一次（与 GetRelationshipTrend 同语义，但批量）。
 	var mc int
 	if db.QueryRow(`SELECT COUNT(*) FROM relationship_daily_metrics`).Scan(&mc) == nil && mc == 0 {
-		var msgc int
-		if db.QueryRow(`SELECT COUNT(*) FROM messages WHERE msg_unix IS NOT NULL AND msg_unix > 0`).Scan(&msgc) == nil && msgc > 0 {
+		if hasMessagesForRebuildLocked(db, 0) {
 			_, _ = rebuildDailyMetricsLocked(db, 0)
 		}
 	}

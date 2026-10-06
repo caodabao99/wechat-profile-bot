@@ -288,11 +288,10 @@ func activeContactsForTopics(db *sql.DB, now time.Time, windowDays int) []int64 
 	if !tableExistsLocked(db, "relationship_daily_metrics") {
 		return out
 	}
-	// 自愈：指标表为空但有消息时全量重建一次（与 ComputeHealth 同语义）。
+	// 自愈：指标表为空但有消息（活跃或归档）时全量重建一次（与 ComputeHealth 同语义）。
 	var mc int
 	if db.QueryRow(`SELECT COUNT(*) FROM relationship_daily_metrics`).Scan(&mc) == nil && mc == 0 {
-		var msgc int
-		if db.QueryRow(`SELECT COUNT(*) FROM messages WHERE msg_unix IS NOT NULL AND msg_unix > 0`).Scan(&msgc) == nil && msgc > 0 {
+		if hasMessagesForRebuildLocked(db, 0) {
 			_, _ = rebuildDailyMetricsLocked(db, 0)
 		}
 	}

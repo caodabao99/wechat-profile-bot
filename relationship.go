@@ -98,21 +98,13 @@ func GetRelationshipTrend(db *sql.DB, contactID int64) (*RelationshipTrend, erro
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
-	var metricRows, msgRows int
+	var metricRows int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM relationship_daily_metrics WHERE contact_id=?`, contactID).Scan(&metricRows); err != nil {
 		return nil, err
 	}
-	// 自愈门槛同样计入归档：长期沉默的人消息可能已全部被归档，只看 messages 会算出 0 而不触发自愈。
-	if err := db.QueryRow(`SELECT COUNT(*) FROM messages WHERE contact_id=?`, contactID).Scan(&msgRows); err != nil {
-		return nil, err
-	}
-	if tableExistsLocked(db, "messages_archive") {
-		var an int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM messages_archive WHERE contact_id=?`, contactID).Scan(&an); err == nil {
-			msgRows += an
-		}
-	}
-	if metricRows == 0 && msgRows > 0 {
+	// 自愈门槛计入归档（活跃或归档任一有消息即重建）：长期沉默的人消息可能已全部被归档，
+	// 只看 messages 会算出 0 而不触发自愈（与全局门槛共用 hasMessagesForRebuildLocked）。
+	if metricRows == 0 && hasMessagesForRebuildLocked(db, contactID) {
 		if _, err := rebuildDailyMetricsLocked(db, contactID); err != nil {
 			return nil, err
 		}

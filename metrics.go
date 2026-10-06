@@ -104,15 +104,41 @@ func getAggregatedMetricsLocked(db *sql.DB, contactID int, windowDay int) (*Metr
 	return m, nil
 }
 
+// hasMessagesForRebuildLocked 判断某作用域（contactID>0 单人，<=0 全局）在活跃表或归档表里是否
+// 仍有可归入自然日的消息，供「指标表为空则重建」的自愈门槛使用（蓝图 §10.2 历史统计归档感知）。
+// 必须计入 messages_archive：长期沉默的人消息可能已全部归档，只看活跃表会误判为「无数据」而跳过
+// 重建，令依赖 relationship_daily_metrics 的历史统计（累计互动/热力图/趋势/年度报告/主题）读 0。
+// 门槛口径与各调用点原状一致：全局限带 msg_unix 的行（无时间戳无法归日），单人不限时间戳。
+// 仅在持 dbMu 时调用（单连接池，内部只读不写、绝不嵌套）。
+func hasMessagesForRebuildLocked(db *sql.DB, contactID int64) bool {
+	anyPositive := func(q string, args ...interface{}) bool {
+		var c int
+		return db.QueryRow(q, args...).Scan(&c) == nil && c > 0
+	}
+	if contactID > 0 {
+		if anyPositive(`SELECT COUNT(*) FROM messages WHERE contact_id=?`, contactID) {
+			return true
+		}
+	} else if anyPositive(`SELECT COUNT(*) FROM messages WHERE msg_unix IS NOT NULL AND msg_unix > 0`) {
+		return true
+	}
+	if !tableExistsLocked(db, "messages_archive") {
+		return false
+	}
+	if contactID > 0 {
+		return anyPositive(`SELECT COUNT(*) FROM messages_archive WHERE contact_id=?`, contactID)
+	}
+	return anyPositive(`SELECT COUNT(*) FROM messages_archive WHERE msg_unix IS NOT NULL AND msg_unix > 0`)
+}
+
 // ensureDailyMetricsSeededLocked 在持 dbMu 时确保日聚合指标非空：若 relationship_daily_metrics
-// 为空但 messages 里有带时间戳的消息，则全量重建一次（与 health/heatmap/GetRelationshipTrend 同语义）。
+// 为空但消息表（活跃或归档）里有带时间戳的消息，则全量重建一次（与 health/heatmap/GetRelationshipTrend 同语义）。
 // 目的：让 status / data-report 等「从 metrics 聚合计数」的读路径，永不因刚升级、指标尚未
 // 建立而报 0 条消息（同一人跨面板口径一致的护栏）。仅在持 dbMu 时调用。
 func ensureDailyMetricsSeededLocked(db *sql.DB) {
 	var mc int
 	if db.QueryRow(`SELECT COUNT(*) FROM relationship_daily_metrics`).Scan(&mc) == nil && mc == 0 {
-		var msgc int
-		if db.QueryRow(`SELECT COUNT(*) FROM messages WHERE msg_unix IS NOT NULL AND msg_unix > 0`).Scan(&msgc) == nil && msgc > 0 {
+		if hasMessagesForRebuildLocked(db, 0) {
 			_, _ = rebuildDailyMetricsLocked(db, 0)
 		}
 	}
