@@ -32,6 +32,7 @@ var contactCleanupTables = []string{
 	"contact_quality_history",
 	"ai_response_cache",
 	"relationship_action_log",
+	"relationship_experiment",
 }
 
 // contactCleanupStmts 删除联系人时需要一并清理的增值功能关联表。

@@ -763,6 +763,44 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 24 {
+		// v24: Personal Relationship Experiment（蓝图 §9 P5）。保留现有 intervention learning 不动，
+		// 新增一张「观察性关系实验」表：用户定义目标/策略/避免项/周期，系统据硬数据做前/后对照，
+		// 只给相关性结论（observed improvement/no clear change/negative signal/insufficient）、绝不声称因果。
+		//
+		// 实验定义是用户手写、不可从 messages/profile 重建的数据 → audit 类：参与备份恢复
+		// （不进 derivedTables）、按 contact_id 级联清理（进 contactCleanupTables），同 action_log 先例。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS relationship_experiment (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			contact_id       INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+			goal             TEXT NOT NULL DEFAULT '',
+			strategy         TEXT NOT NULL DEFAULT '',
+			avoid_strategy   TEXT NOT NULL DEFAULT '',
+			metrics          TEXT NOT NULL DEFAULT '["interaction_volume","other_initiated","reply_latency","intimacy","health","state"]',
+			duration_days    INTEGER NOT NULL DEFAULT 14,
+			start_date       TEXT NOT NULL DEFAULT '',
+			end_date         TEXT NOT NULL DEFAULT '',
+			status           TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','running','completed','abandoned','cancelled')),
+			conclusion       TEXT NOT NULL DEFAULT '' CHECK(conclusion IN ('','improved','no_change','negative','insufficient')),
+			conclusion_note  TEXT NOT NULL DEFAULT '',
+			baseline_json    TEXT NOT NULL DEFAULT '',
+			observed_json    TEXT NOT NULL DEFAULT '',
+			created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+			return err
+		}
+		for _, idx := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_experiment_contact ON relationship_experiment(contact_id, status)`,
+		} {
+			if _, err := db.Exec(idx); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 24`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

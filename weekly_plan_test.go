@@ -490,7 +490,7 @@ func TestWeeklyPlanMigrationsIdempotent(t *testing.T) {
 	if ver != backupCurrentDBVer {
 		t.Fatalf("迁移后 user_version 应等于迁移终点 backupCurrentDBVer(%d), got %d", backupCurrentDBVer, ver)
 	}
-	for _, tbl := range []string{"weekly_plan_cache", "suggestion_outcomes", "contact_connections", "life_state_cache", "life_projection_cache", "network_insight_cache", "self_portrait_cache", "intervention_cache", "briefing_cache", "insight_trend_history", "ai_response_cache", "relationship_action_log"} {
+	for _, tbl := range []string{"weekly_plan_cache", "suggestion_outcomes", "contact_connections", "life_state_cache", "life_projection_cache", "network_insight_cache", "self_portrait_cache", "intervention_cache", "briefing_cache", "insight_trend_history", "ai_response_cache", "relationship_action_log", "relationship_experiment"} {
 		var n int
 		if err := db.QueryRow(
 			`SELECT COUNT(*) FROM pragma_table_info(?)`, tbl).Scan(&n); err != nil || n == 0 {
