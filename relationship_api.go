@@ -325,7 +325,19 @@ func (s *apiServer) routeContactContext(w http.ResponseWriter, r *http.Request, 
 		writeErr(w, http.StatusInternalServerError, "上下文构造失败: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "context": cc, "rendered": RenderContextText(cc)})
+	// 隐私门（§4.3）：rendered/完整上下文含大量私人聊天，默认不外泄。
+	// 仅 config.contextDebug=true（排障）时返回完整 context+rendered；否则只返回结构化摘要（各分块计数，无消息正文）。
+	if s.cfg == nil || !s.cfg.ContextDebug {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"task":    string(cc.Task),
+			"debug":   false,
+			"summary": contextSummary(cc),
+			"hint":    "完整上下文与 rendered 需开启 config.contextDebug 才返回（含私人聊天，默认关闭）",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "debug": true, "context": cc, "rendered": RenderContextText(cc)})
 }
 
 // routeTodayDecisions GET /api/relationships/decisions/today?top=3：Decision Engine（Phase 4）。

@@ -36,6 +36,9 @@ type Config struct {
 	WebBaseURL     string        `json:"webBaseURL"`     // 管理面板对外可达的完整基础地址（如 https://your-domain/ 或 http://公网IP:端口/），供微信「网址」命令直开；留空则自动探测服务器公网出口 IP，探测不可用才回退局域网 IP
 	LLM            LLMConfig     `json:"llm"`
 	Profile        ProfileConfig `json:"profile"`
+	// ContextDebug 控制可观测端点 GET /api/contacts/{id}/context 是否返回完整上下文与 rendered 文本。
+	// rendered 含大量私人聊天与推理上下文，生产默认 false（仅返回结构化摘要）；排障时才开。
+	ContextDebug bool `json:"contextDebug"`
 }
 
 // config 全局配置单例

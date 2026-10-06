@@ -349,6 +349,37 @@ func contextTokenApprox(s string) int {
 	return len([]rune(s)) / 2
 }
 
+// contextSummary 返回不含私人正文的结构化摘要（各认知分块计数 + 关键标志），
+// 供 /context 在未开启 contextDebug 时安全暴露可观测信息。
+func contextSummary(cc *ContactContext) map[string]any {
+	topicCount := 0
+	if cc.RecentTopics != nil {
+		topicCount = len(cc.RecentTopics.Weeks)
+	}
+	return map[string]any{
+		"identity_present":       strings.TrimSpace(cc.Identity.Name) != "",
+		"has_relationship_state": cc.CurrentRelationshipState != nil,
+		"trusted_facts":          len(cc.TrustedFacts),
+		"conflicting_facts":      len(cc.ConflictingFacts),
+		"recent_events":          len(cc.RecentEvents),
+		"active_goals":           len(cc.ActiveGoals),
+		"projects":               len(cc.Projects),
+		"open_followups":         len(cc.OpenFollowups),
+		"recent_topics":          topicCount,
+		"has_metrics":            cc.Metrics != nil,
+		"recent_messages":        len(cc.RecentMessages),
+		"relevant_messages":      len(cc.RelevantMessages),
+		"relevant_evidence":      len(cc.RelevantEvidence),
+		"previous_actions":       len(cc.PreviousActions),
+		"previous_outcomes":      len(cc.PreviousOutcomes),
+		"risks":                  len(cc.Risks),
+		"opportunities":          len(cc.Opportunities),
+		"truncated":              cc.Truncated,
+		"budget_max_messages":    cc.Budget.MaxMessages,
+		"budget_max_tokens":      cc.Budget.MaxTokens,
+	}
+}
+
 // RenderContextText 按任务侧重渲染上下文为纯文本块，并截断到 Budget.MaxTokens（规格 9.3）。
 // 侧重排序：Ask/Simulation 先相关+最近消息，Narrative/Replay 先时间线+主题，Decision 先状态+指标。
 func RenderContextText(cc *ContactContext) string {
