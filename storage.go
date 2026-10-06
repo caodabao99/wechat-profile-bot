@@ -801,6 +801,47 @@ func migrate(db *sql.DB) error {
 			return err
 		}
 	}
+	if version < 25 {
+		// v25: 联系人深分页二阶段（蓝图 §11.3）。新增 last_updated_unix（由 last_updated 派生的整型排序键）
+		// + 复合索引，供 keyset 游标翻页按 (last_updated_unix, id) 排序，避免每行 strftime 计算与深页 OFFSET 全表扫。
+		// 沿用 msg_unix(v8) 先例用普通列而非生成列：生成列不可写，会打断备份恢复的「按同名列拷贝」。
+		// 用触发器与 last_updated 自动同步（Go 各写点零改动；恢复整表 DELETE+INSERT 也会经 INSERT 触发器自愈该列）。
+		// 幂等：列先查 pragma_table_info；索引/触发器 IF NOT EXISTS（测试回卷 user_version 重跑安全）。
+		var exists int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('contacts') WHERE name='last_updated_unix'`).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if _, err := db.Exec(`ALTER TABLE contacts ADD COLUMN last_updated_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+		}
+		// 一次性回填：只补尚未算过（=0）且有合法 last_updated 的行；不可解析/空的留 0（排序落最后，与原 strftime NULL 行为一致）。
+		if _, err := db.Exec(
+			`UPDATE contacts SET last_updated_unix = CAST(strftime('%s', last_updated) AS INTEGER)
+			 WHERE last_updated_unix = 0 AND last_updated IS NOT NULL AND last_updated != ''
+			   AND strftime('%s', last_updated) IS NOT NULL`); err != nil {
+			return err
+		}
+		for _, ddl := range []string{
+			`CREATE INDEX IF NOT EXISTS idx_contacts_updated_unix ON contacts(last_updated_unix DESC, id DESC)`,
+			`CREATE TRIGGER IF NOT EXISTS trg_contacts_updated_unix_ai AFTER INSERT ON contacts FOR EACH ROW
+			 BEGIN
+			   UPDATE contacts SET last_updated_unix = COALESCE(CAST(strftime('%s', NEW.last_updated) AS INTEGER), 0) WHERE id = NEW.id;
+			 END`,
+			`CREATE TRIGGER IF NOT EXISTS trg_contacts_updated_unix_au AFTER UPDATE OF last_updated ON contacts FOR EACH ROW
+			 BEGIN
+			   UPDATE contacts SET last_updated_unix = COALESCE(CAST(strftime('%s', NEW.last_updated) AS INTEGER), 0) WHERE id = NEW.id;
+			 END`,
+		} {
+			if _, err := db.Exec(ddl); err != nil {
+				return err
+			}
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 25`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1106,12 +1147,7 @@ func GetAllContacts(db *sql.DB, includeMerged bool) ([]Contact, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
-	query := `SELECT c.id, c.name, COALESCE(c.remark,''), COALESCE(c.profile_json,'{}'),
-		        COALESCE(c.profile_summary,''), c.other_msg_count,
-		        COALESCE(c.last_updated,''), c.created_at,
-		        COALESCE(c.merged_into, 0),
-		        (SELECT COUNT(*) FROM merge_log ml WHERE ml.target_id = c.id AND ml.undone_at IS NULL)
-		 FROM contacts c`
+	query := contactsSelectCols + ` FROM contacts c`
 	if !includeMerged {
 		query += ` WHERE c.merged_into IS NULL`
 	}
@@ -1140,31 +1176,20 @@ func GetAllContacts(db *sql.DB, includeMerged bool) ([]Contact, error) {
 	return out, rows.Err()
 }
 
-// GetContactsPage 分页查询联系人，返回当前页数据与符合条件的总数。
-// q 非空时按昵称/备注/别名模糊匹配（LIKE 忽略 ASCII 大小写，中文天然精确）。
-// GetAllContacts 保持全量语义不动（桌面端远程模式在用），网页端改用本函数避免全量渲染。
-func GetContactsPage(db *sql.DB, includeMerged bool, q string, offset, limit int) ([]Contact, int, error) {
-	return GetContactsPageFiltered(db, includeMerged, q, nil, offset, limit)
-}
+// contactsSelectCols 是联系人列表查询共用的 SELECT 列（不含 FROM 及其后的 WHERE/ORDER）。
+// 全量列表、offset 分页、cursor 分页三处列集合完全一致，抽此常量避免复制漂移。
+const contactsSelectCols = `SELECT c.id, c.name, COALESCE(c.remark,''), COALESCE(c.profile_json,'{}'),
+		        COALESCE(c.profile_summary,''), c.other_msg_count,
+		        COALESCE(c.last_updated,''), c.created_at,
+		        COALESCE(c.merged_into, 0),
+		        (SELECT COUNT(*) FROM merge_log ml WHERE ml.target_id = c.id AND ml.undone_at IS NULL)`
 
-// GetContactsPageFiltered 与 GetContactsPage 相同，额外支持按标签筛选。
-// tagIDs 非空时要求联系人**同时**带有全部这些标签（"且"关系）；为 nil 时行为与原来完全一致。
-func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []int64, offset, limit int) ([]Contact, int, error) {
-	dbMu.Lock()
-	defer dbMu.Unlock()
-
-	if limit <= 0 {
-		limit = 30
-	}
-	if limit > 200 {
-		limit = 200 // 硬上限，避免一个请求把整库拉走
-	}
-	if offset < 0 {
-		offset = 0
-	}
-
-	where := ""
-	var args []interface{}
+// buildContactsWhereLocked 组装联系人列表查询的 WHERE 片段与参数（不含 LIMIT/ORDER）。
+// 须持 dbMu 调用（内部 tagTableReadyLocked 走同一连接）。
+// 返回 tagMissing=true 表示按标签筛选但标签表尚未就绪——调用方应据此返回空列表
+// （没表就等于没人有标签），而非整页 500。
+// where 以 " WHERE ..." 开头或为空串，供调用方在其后继续 AND 追加 keyset 谓词。
+func buildContactsWhereLocked(db *sql.DB, includeMerged bool, q string, tagIDs []int64) (where string, args []interface{}, tagMissing bool) {
 	if !includeMerged {
 		where = ` WHERE c.merged_into IS NULL`
 	}
@@ -1180,9 +1205,7 @@ func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []
 		args = append(args, like, like, like)
 	}
 	if len(tagIDs) > 0 && !tagTableReadyLocked(db) {
-		// 标签表还没建好（ensureTagTables 失败的老库）：没表就等于没人有标签，
-		// 返回空列表比整页 500 更符合语义
-		return []Contact{}, 0, nil
+		return where, args, true
 	}
 	for _, tid := range tagIDs {
 		cond := `EXISTS (SELECT 1 FROM contact_tag_links tl WHERE tl.contact_id = c.id AND tl.tag_id = ?)`
@@ -1193,17 +1216,49 @@ func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []
 		}
 		args = append(args, tid)
 	}
+	return where, args, false
+}
+
+// GetContactsPage 分页查询联系人，返回当前页数据与符合条件的总数。
+// q 非空时按昵称/备注/别名模糊匹配（LIKE 忽略 ASCII 大小写，中文天然精确）。
+// GetAllContacts 保持全量语义不动（桌面端远程模式在用），网页端改用本函数避免全量渲染。
+//
+// Deprecated: offset 深分页会随页码线性放大扫描量且每请求执行 COUNT(*)。新 Web UI
+// 请改用 GetContactsPageCursor（蓝图 §11.3/§11.4）；本函数仅为兼容既有调用与桌面
+// 远程模式保留（§11.4 明确保留旧 offset API）。
+func GetContactsPage(db *sql.DB, includeMerged bool, q string, offset, limit int) ([]Contact, int, error) {
+	return GetContactsPageFiltered(db, includeMerged, q, nil, offset, limit)
+}
+
+// GetContactsPageFiltered 与 GetContactsPage 相同，额外支持按标签筛选。
+// tagIDs 非空时要求联系人**同时**带有全部这些标签（"且"关系）；为 nil 时行为与原来完全一致。
+//
+// Deprecated: 见 GetContactsPage；深分页请改用 GetContactsPageCursor。
+func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []int64, offset, limit int) ([]Contact, int, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 200 {
+		limit = 200 // 硬上限，避免一个请求把整库拉走
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	where, args, tagMissing := buildContactsWhereLocked(db, includeMerged, q, tagIDs)
+	if tagMissing {
+		return []Contact{}, 0, nil
+	}
 
 	var total int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM contacts c`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	query := `SELECT c.id, c.name, COALESCE(c.remark,''), COALESCE(c.profile_json,'{}'),
-		        COALESCE(c.profile_summary,''), c.other_msg_count,
-		        COALESCE(c.last_updated,''), c.created_at,
-		        COALESCE(c.merged_into, 0),
-		        (SELECT COUNT(*) FROM merge_log ml WHERE ml.target_id = c.id AND ml.undone_at IS NULL)
+	query := contactsSelectCols + `
 		 FROM contacts c` + where +
 		// 排序依据同 GetAllContacts：strftime 转 epoch 再比，避免混入不同时区偏移时字典序出错
 		` ORDER BY strftime('%s', c.last_updated) DESC, c.id DESC LIMIT ? OFFSET ?`
@@ -1226,6 +1281,90 @@ func GetContactsPageFiltered(db *sql.DB, includeMerged bool, q string, tagIDs []
 		out = append(out, c)
 	}
 	return out, total, rows.Err()
+}
+
+// GetContactsPageCursor 以 keyset 游标（而非 OFFSET）翻页联系人，返回当前页、
+// 是否还有下一页、以及下一页游标 (nextUnix, nextID)。
+//
+// 排序键为 (last_updated_unix DESC, id DESC)：last_updated_unix 是 v25 迁移新增、
+// 由触发器与 last_updated 同步的整型列（蓝图 §11.3），配合 idx_contacts_updated_unix
+// 走索引，避免旧路径每行 strftime 计算 + 深页 OFFSET 全表扫。默认不执行 COUNT(*)；
+// includeTotal=true 仅为首屏展示总数时显式 opt-in（对称 §11.1），后续翻页传 false。
+//
+// 首屏传 beforeUnix=0, beforeID=0（不加 keyset 谓词）；此后把上一次返回的
+// (nextUnix, nextID) 原样回填即可，稳定不重不漏。last_updated 不可解析的历史行
+// last_updated_unix=0，天然排在最后（与原 strftime NULL 在 DESC 下排末一致）。
+// q/tagIDs 语义与 GetContactsPageFiltered 相同（标签为"且"关系）。
+func GetContactsPageCursor(db *sql.DB, includeMerged bool, q string, tagIDs []int64, beforeUnix, beforeID int64, limit int, includeTotal bool) (list []Contact, total int, hasMore bool, nextUnix, nextID int64, err error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	if limit <= 0 {
+		limit = 30
+	}
+	if limit > 200 {
+		limit = 200 // 硬上限，避免一个请求把整库拉走
+	}
+
+	where, args, tagMissing := buildContactsWhereLocked(db, includeMerged, q, tagIDs)
+	if tagMissing {
+		return []Contact{}, 0, false, 0, 0, nil
+	}
+	// 总数仅用于首屏展示：includeTotal=true 时才 COUNT（走 filter WHERE，不含 keyset 谓词）。
+	// QueryRow+Scan 读尽即释放单连接，随后的翻页 db.Query 安全。
+	if includeTotal {
+		if err := db.QueryRow(`SELECT COUNT(*) FROM contacts c`+where, args...).Scan(&total); err != nil {
+			return nil, 0, false, 0, 0, err
+		}
+	}
+	clause := where
+	if beforeID != 0 {
+		// keyset 谓词：严格取排序 (last_updated_unix, id) 在游标之后的下一批
+		keyset := `(c.last_updated_unix < ? OR (c.last_updated_unix = ? AND c.id < ?))`
+		if clause == "" {
+			clause = ` WHERE ` + keyset
+		} else {
+			clause += ` AND ` + keyset
+		}
+		args = append(args, beforeUnix, beforeUnix, beforeID)
+	}
+
+	// 多取一条判 hasMore（深分页主开销来自 COUNT 与 OFFSET 扫描，二者此处均规避）
+	query := contactsSelectCols + `, c.last_updated_unix
+		 FROM contacts c` + clause +
+		` ORDER BY c.last_updated_unix DESC, c.id DESC LIMIT ?`
+	args = append(args, limit+1)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, 0, false, 0, 0, err
+	}
+	defer rows.Close()
+
+	out := []Contact{}
+	unixs := []int64{}
+	ids := []int64{}
+	for rows.Next() {
+		var c Contact
+		var u int64
+		if err := rows.Scan(&c.ID, &c.Name, &c.Remark, &c.ProfileJSON,
+			&c.ProfileSummary, &c.OtherMsgCount, &c.LastUpdated, &c.CreatedAt,
+			&c.MergedInto, &c.MergeCount, &u); err != nil {
+			return nil, 0, false, 0, 0, err
+		}
+		out = append(out, c)
+		unixs = append(unixs, u)
+		ids = append(ids, c.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, false, 0, 0, err
+	}
+	if len(out) > limit {
+		hasMore = true
+		out = out[:limit]
+		nextUnix, nextID = unixs[limit-1], ids[limit-1]
+	}
+	return out, total, hasMore, nextUnix, nextID, nil
 }
 
 // GetProfileHistory 取画像变更历史（最新在前）

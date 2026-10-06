@@ -72,7 +72,9 @@ createApp({
     // ---------- 联系人列表（分页 + 服务端搜索） ----------
     const contacts = ref([]);
     const contactsTotal = ref(0);
-    const contactsOffset = ref(0);
+    const contactsCursorUnix = ref(0);   // keyset 游标：上一页末行的 (last_updated_unix, id)
+    const contactsCursorID = ref(0);
+    const contactsHasMore = ref(false);  // 后端多取一条推断，不依赖 COUNT(*)
     const contactsLimit = 30;
     const loadingContacts = ref(false);
     const search = ref('');        // 输入框内容
@@ -896,11 +898,17 @@ createApp({
     // ---------- 联系人列表 ----------
     // 分页加载：不再一次性取全量，避免联系人多了首屏卡顿。
     // 搜索走后端：本地 filter 只能搜已加载的页，会漏掉后面的联系人。
-    function buildContactsQuery(offset) {
+    function buildContactsQuery(firstScreen) {
       const p = new URLSearchParams();
-      p.set('paged', '1');
-      p.set('offset', String(offset));
+      p.set('cursor', '1');
       p.set('limit', String(contactsLimit));
+      // 仅首屏请求总数用于展示；后续翻页走 keyset 游标、不 COUNT(*)（蓝图 §11.1/§11.3）
+      if (firstScreen) {
+        p.set('includeTotal', '1');
+      } else {
+        p.set('beforeUnix', String(contactsCursorUnix.value));
+        p.set('beforeID', String(contactsCursorID.value));
+      }
       if (showMerged.value) p.set('includeMerged', '1');
       if (searchApplied.value) p.set('q', searchApplied.value);
       // 标签筛选：后端多个标签是「且」的关系
@@ -909,23 +917,28 @@ createApp({
     }
     async function loadContacts(reset) {
       const my = ++contactsSeq;
-      if (reset !== false) {
-        contactsOffset.value = 0;
+      const firstScreen = reset !== false;
+      if (firstScreen) {
+        contactsCursorUnix.value = 0;
+        contactsCursorID.value = 0;
       }
       loadingContacts.value = true;
       try {
         // 兜底成 []：后端空列表若返回 null，ref 变成 null，
         // 模板里 .length 会抛 TypeError 导致整页白屏
-        const out = await api('/api/contacts' + buildContactsQuery(contactsOffset.value));
+        const out = await api('/api/contacts' + buildContactsQuery(firstScreen));
         if (my !== contactsSeq) return;   // 已被更新的搜索/筛选取代，丢弃
         const list = (out && out.list) || [];
-        if (contactsOffset.value === 0) {
+        if (firstScreen) {
           contacts.value = list;
           picked.value = []; // 列表换了一批，之前的勾选不再有意义
+          contactsTotal.value = (out && out.total) || 0; // 总数仅首屏取；翻页后端返 0 不覆盖
         } else {
           contacts.value = contacts.value.concat(list);
         }
-        contactsTotal.value = (out && out.total) || 0;
+        contactsHasMore.value = !!(out && out.hasMore);
+        contactsCursorUnix.value = (out && out.nextUnix) || 0;
+        contactsCursorID.value = (out && out.nextID) || 0;
       } catch (e) {
         if (my !== contactsSeq) return;
         toast(e.message, 'error');
@@ -934,8 +947,7 @@ createApp({
       }
     }
     function loadMoreContacts() {
-      if (loadingContacts.value || contacts.value.length >= contactsTotal.value) return;
-      contactsOffset.value = contacts.value.length;
+      if (loadingContacts.value || !contactsHasMore.value) return;
       loadContacts(false);
     }
     function applySearch() {
@@ -947,7 +959,6 @@ createApp({
       searchApplied.value = '';
       loadContacts();
     }
-    const contactsHasMore = computed(() => contacts.value.length < contactsTotal.value);
 
     // displayName：有备注时显示「备注（昵称）」
     function displayName(c) {

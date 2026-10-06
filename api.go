@@ -535,6 +535,32 @@ func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 	includeMerged := r.URL.Query().Get("includeMerged") == "1"
 	q := r.URL.Query()
 	tagIDs := parseTagIDs(q.Get("tags"))
+	// cursor=1 走 keyset 游标分页（蓝图 §11.3，推荐新 Web UI 用）：不执行 COUNT(*)、
+	// 按 (last_updated_unix,id) 排序，返回 {list,hasMore,nextUnix,nextID,limit}。
+	if q.Get("cursor") == "1" {
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		beforeUnix, _ := strconv.ParseInt(q.Get("beforeUnix"), 10, 64)
+		beforeID, _ := strconv.ParseInt(q.Get("beforeID"), 10, 64)
+		// 仅首屏（无游标）且显式要求时才 COUNT，后续翻页免 COUNT(*)（对称 §11.1）
+		includeTotal := beforeID == 0 && (q.Get("includeTotal") == "1" || q.Get("includeTotal") == "true")
+		list, total, hasMore, nextUnix, nextID, err := GetContactsPageCursor(s.db, includeMerged, q.Get("q"), tagIDs, beforeUnix, beforeID, limit, includeTotal)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if limit <= 0 || limit > 200 {
+			limit = 30
+		}
+		out := make([]contactJSON, 0, len(list))
+		for i := range list {
+			out = append(out, toContactJSON(&list[i]))
+		}
+		attachContactTags(s.db, out)
+		writeJSON(w, 200, map[string]interface{}{
+			"list": out, "total": total, "hasMore": hasMore, "nextUnix": nextUnix, "nextID": nextID, "limit": limit,
+		})
+		return
+	}
 	// 带分页/搜索参数时走分页响应 {list,total,offset,limit}；裸调用保持返回数组，
 	// 兼容桌面端远程模式（它一次性拿全量在本地过滤）。
 	paged := q.Get("paged") == "1" || q.Get("q") != "" || q.Get("offset") != "" || q.Get("limit") != "" || len(tagIDs) > 0
@@ -554,6 +580,7 @@ func (s *apiServer) hListContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Deprecated: offset 分页仅为兼容保留（蓝图 §11.4），新 UI 请用 cursor=1。
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	contacts, total, err := GetContactsPageFiltered(s.db, includeMerged, q.Get("q"), tagIDs, offset, limit)
