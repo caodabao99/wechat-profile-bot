@@ -96,6 +96,7 @@ type ContactContext struct {
 	RelevantEvidence         []ContextEvidence      `json:"relevant_evidence"`
 	PreviousActions          []SuggestionView       `json:"previous_actions"`
 	PreviousOutcomes         []ContextOutcome       `json:"previous_outcomes"`
+	ActionLog                []ActionLogEntry       `json:"action_log"`
 	Risks                    []string               `json:"risks"`
 	Opportunities            []string               `json:"opportunities"`
 
@@ -156,6 +157,7 @@ func BuildContactContext(db *sql.DB, contactID int64, task ContextTask, query st
 		RelevantEvidence: []ContextEvidence{},
 		PreviousActions:  []SuggestionView{},
 		PreviousOutcomes: []ContextOutcome{},
+		ActionLog:        []ActionLogEntry{},
 		Risks:            []string{},
 		Opportunities:    []string{},
 	}
@@ -258,6 +260,10 @@ func BuildContactContext(db *sql.DB, contactID int64, task ContextTask, query st
 	}
 	if oc, err := recentOutcomesForContact(db, contactID, 10); err == nil {
 		cc.PreviousOutcomes = oc
+	}
+	// 行动账本（蓝图 §5 P1）：跨来源全生命周期的真实行动记录，供 Decision→Action→Outcome 闭环回哺。
+	if al, err := ListActionLog(db, contactID, 10); err == nil {
+		cc.ActionLog = al
 	}
 
 	// 版本指纹最后计算（须在上述所有分块填充完成后），供 AI cache 精确失效复用。
@@ -441,6 +447,18 @@ func computeContextVersion(cc *ContactContext) string {
 	for _, m := range cc.RelevantMessages {
 		tok(fmt.Sprintf("%d", m.ID))
 	}
+	// 行动账本（action change）：新增行动 / 生命周期迁移 / 结果确定都应使认知版本前进。
+	// 只纳入语义字段（不含 updated_at 等簿记时间戳，避免无意义抖动）。
+	tok("actionlog")
+	for _, a := range cc.ActionLog {
+		tok(fmt.Sprintf("%d", a.ID))
+		tok(a.Source)
+		tok(a.Status)
+		tok(a.ActionText)
+		tok(a.Outcome)
+		tok(a.OutcomeProvenance)
+		tok(a.ActedAt)
+	}
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:16])
 }
@@ -469,6 +487,7 @@ func contextSummary(cc *ContactContext) map[string]any {
 		"relevant_evidence":      len(cc.RelevantEvidence),
 		"previous_actions":       len(cc.PreviousActions),
 		"previous_outcomes":      len(cc.PreviousOutcomes),
+		"action_log":             len(cc.ActionLog),
 		"risks":                  len(cc.Risks),
 		"opportunities":          len(cc.Opportunities),
 		"truncated":              cc.Truncated,
@@ -546,6 +565,7 @@ func RenderContextText(cc *ContactContext) string {
 	}
 	writeSection("上次行动", suggestionsToLines(cc.PreviousActions))
 	writeSection("行动结果", outcomesToLines(cc.PreviousOutcomes))
+	writeSection("行动账本", actionLogToLines(cc.ActionLog))
 
 	out := b.String()
 	// token 预算截断（近似按 rune；保留头部，靠后块优先舍弃）。
@@ -672,6 +692,19 @@ func outcomesToLines(os []ContextOutcome) []string {
 	out := []string{}
 	for _, o := range os {
 		out = append(out, fmt.Sprintf("%s｜%s", o.ActedAt, o.Outcome))
+	}
+	return out
+}
+
+// actionLogToLines 渲染行动账本条目为可读行（标出来源/状态/结果及其 provenance）。
+func actionLogToLines(as []ActionLogEntry) []string {
+	out := []string{}
+	for _, a := range as {
+		line := fmt.Sprintf("[%s] %s｜%s（%s）", a.Source, a.ActionType, a.ActionText, a.Status)
+		if a.OutcomeProvenance != "" {
+			line += fmt.Sprintf("→ 结果 %s(%s)", a.Outcome, a.OutcomeProvenance)
+		}
+		out = append(out, line)
 	}
 	return out
 }

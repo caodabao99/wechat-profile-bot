@@ -275,6 +275,29 @@ func ListActionLog(db *sql.DB, contactID int64, limit int) ([]ActionLogEntry, er
 	return out, rows.Err()
 }
 
+// GetActionLog 按 id 读回单条行动记录（不存在返回 nil,nil）。供 API 越权校验与回显刷新后的行。
+func GetActionLog(db *sql.DB, id int64) (*ActionLogEntry, error) {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if !tableExistsLocked(db, "relationship_action_log") {
+		return nil, nil
+	}
+	var e ActionLogEntry
+	err := db.QueryRow(`SELECT id, contact_id, source, source_ref, action_type, action_text, status,
+		deferred_until, created_at, updated_at, acted_at, outcome, outcome_provenance,
+		outcome_observed_at, outcome_days, outcome_note
+		FROM relationship_action_log WHERE id = ?`, id).Scan(&e.ID, &e.ContactID, &e.Source, &e.SourceRef,
+		&e.ActionType, &e.ActionText, &e.Status, &e.DeferredUntil, &e.CreatedAt, &e.UpdatedAt,
+		&e.ActedAt, &e.Outcome, &e.OutcomeProvenance, &e.OutcomeObservedAt, &e.OutcomeDays, &e.OutcomeNote)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
 // clipRunes 按 rune 截断（保中文不产生半个字符 / U+FFFD），超长保留前 max 个 rune。
 func clipRunes(s string, max int) string {
 	if max <= 0 {
