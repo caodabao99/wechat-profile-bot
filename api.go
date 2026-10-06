@@ -345,6 +345,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "risks":
 		// 蓝图 §13 P9：Relationship Risk Center /api/risks
 		s.routeRisks(w, r, parts[1:])
+	case parts[0] == "portfolio":
+		// 蓝图 §12 P8：Relationship Portfolio /api/portfolio(+ /settings)
+		s.routePortfolio(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

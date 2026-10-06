@@ -111,6 +111,7 @@ var restoreSkipTables = func() map[string]bool {
 // 不静默清空用户的自动化设置与自定义预设。
 var restorePreserveWhenAbsent = map[string]bool{
 	"assistant_settings": true,
+	"portfolio_settings": true,
 	"archive_settings":   true,
 	"mode_presets":       true,
 	"prompt_templates":   true,

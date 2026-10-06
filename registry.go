@@ -86,6 +86,7 @@ func init() {
 
 		// —— 全局配置（不按联系人关联，恢复时缺表则保留主库现状）——
 		{Name: "assistant_settings", Type: "config", Owner: "assistant", Backup: true, Rebuild: false, HasContactID: false},
+		{Name: "portfolio_settings", Type: "config", Owner: "portfolio", Backup: true, Rebuild: false, HasContactID: false, Note: "关系组合时间预算与类别权重/逐人覆盖（蓝图 §12 P8），用户自建不可重建，恢复缺表则保留主库"},
 		{Name: "archive_settings", Type: "config", Owner: "archive", Backup: true, Rebuild: false, HasContactID: false},
 		{Name: "mode_presets", Type: "config", Owner: "assistant", Backup: true, Rebuild: false, HasContactID: false, Note: "运行模式预设，用户自建"},
 		{Name: "prompt_templates", Type: "config", Owner: "prompts", Backup: true, Rebuild: false, HasContactID: false, Note: "提示词模板，用户可编辑"},
