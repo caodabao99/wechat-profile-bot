@@ -61,6 +61,7 @@
         <a href="#/backup" :class="{active: route.view==='backup'}">备份</a>
         <a href="#/assistant" :class="{active: route.view==='assistant'}">关系助手</a>
         <a href="#/insights" :class="{active: route.view==='insights'}">洞察</a>
+        <a href="#/model" :class="{active: route.view==='model'}">模型与代理</a>
         <a href="#/status" :class="{active: route.view==='status'}">状态</a>
       </nav>
       <button class="btn logout" @click="logout">退出</button>
@@ -2513,6 +2514,24 @@
           <div class="stat-row"><span class="st-label">联系人</span><span class="st-val">{{ sysStatus.contacts }} 人</span></div>
           <div class="stat-row"><span class="st-label">消息总数</span><span class="st-val">{{ sysStatus.messages }} 条</span></div>
         </div>
+
+        <!-- v6.2 模型与代理 -->
+        <div class="card">
+          <h3>模型与代理</h3>
+          <div class="stat-row"><span class="st-label">活动模型</span><span class="st-val">
+            <span class="chip" :class="sysStatus.llm && sysStatus.llm.configured ? 'st-ok' : 'st-gray'">
+              {{ sysStatus.llm && sysStatus.llm.configured ? '已配置' : '未配置' }}
+            </span>
+            <template v-if="sysStatus.llm && sysStatus.llm.active"> {{ sysStatus.llm.active.label }} · {{ sysStatus.llm.active.model }}</template>
+          </span></div>
+          <div v-if="sysStatus.llm && sysStatus.llm.active" class="stat-row"><span class="st-label">区域 / 推理</span><span class="st-val">{{ sysStatus.llm.active.region==='foreign' ? '国外' : '国内' }} · {{ sysStatus.llm.active.disableThinking ? '已关闭' : '开启' }}</span></div>
+          <div v-if="sysStatus.llm" class="stat-row"><span class="st-label">代理</span><span class="st-val">
+            <span class="chip" :class="sysStatus.llm.proxy && sysStatus.llm.proxy.enabled ? 'st-purple' : 'st-gray'">{{ sysStatus.llm.proxy && sysStatus.llm.proxy.enabled ? '已启用' : '未启用' }}</span>
+            <template v-if="sysStatus.llm.proxy && sysStatus.llm.proxy.egressIp"> 出口 {{ sysStatus.llm.proxy.egressIp }}</template>
+          </span></div>
+          <div v-if="sysStatus.llm && sysStatus.llm.usage" class="stat-row"><span class="st-label">今日调用</span><span class="st-val">{{ sysStatus.llm.usage.today.calls }} 次 · {{ sysStatus.llm.usage.today.totalTokens }} tokens</span></div>
+          <div class="stat-row"><span class="st-label"></span><a class="btn sm" href="#/model">前往配置</a></div>
+        </div>
       </div>
 
       <!-- v5.4.0 #9 数据健康自检（只读 SQL 聚合，按需手动刷新） -->
@@ -2546,6 +2565,152 @@
             <span class="chip dr-cache-item" :class="ct.present ? 'st-blue' : 'st-gray'" v-for="ct in dataReport.data.cacheTables" :key="ct.table">{{ ct.table }} · {{ ct.rows }}</span>
           </div>
         </template>
+      </div>
+    </section>
+
+    <!-- ============ v6.2 模型与代理 ============ -->
+    <section v-if="route.view==='model'">
+      <div class="card status-head-card">
+        <div>
+          <h2 style="margin:0">模型与代理</h2>
+          <p class="hint" style="margin:4px 0 0">切换对话模型、适配国内外预设、开关推理模式、添加自定义模型；代理仅作于模型调用，其他功能仍走本地直连。</p>
+        </div>
+        <button class="btn sm" @click="loadModelPage" :disabled="mp.loading">{{ mp.loading ? '刷新中…' : '重新加载' }}</button>
+      </div>
+
+      <div v-if="mp.error" class="card">加载失败：{{ mp.error }}</div>
+
+      <template v-if="mp.settings">
+        <!-- 模型档案列表 -->
+        <div class="card">
+          <div class="tl-head">
+            <h2>模型档案</h2>
+            <div class="lh-actions"><button class="btn sm primary" @click="openNewForm">＋ 新建自定义模型</button></div>
+          </div>
+          <p class="empty" v-if="!mp.settings.profiles || !mp.settings.profiles.length">尚无模型档案，可从下方预设一键添加，或新建自定义模型。</p>
+          <div class="mp-profile" v-for="p in mp.settings.profiles" :key="p.id"
+               :class="{active: p.id===mp.settings.activeProfileId}">
+            <div class="mp-pf-main">
+              <div class="mp-pf-title">
+                <span class="mp-pf-label">{{ p.label || p.model }}</span>
+                <span class="chip" :class="p.id===mp.settings.activeProfileId ? 'st-ok' : 'st-gray'">{{ p.id===mp.settings.activeProfileId ? '使用中' : '备用' }}</span>
+                <span class="chip" :class="p.region==='foreign' ? 'st-purple' : 'st-blue'">{{ regionLabel(p.region) }}</span>
+                <span class="chip" :class="p.disableThinking ? 'st-gray' : 'st-blue'">{{ p.disableThinking ? '推理已关' : '推理开启' }}</span>
+                <span class="chip" :class="p.useProxy ? 'st-purple' : 'st-gray'">{{ p.useProxy ? '走代理' : '直连' }}</span>
+              </div>
+              <div class="mp-pf-meta">模型 {{ p.model }} · 厂商 {{ p.provider }} · 接口 {{ p.baseURL }}</div>
+            </div>
+            <div class="mp-pf-acts">
+              <button class="btn sm" v-if="p.id!==mp.settings.activeProfileId" @click="activateProfile(p.id)" :disabled="mp.busy">设为活动</button>
+              <button class="btn sm" @click="openEditForm(p)">编辑</button>
+              <button class="btn sm danger" @click="deleteProfile(p.id)" :disabled="mp.busy">删除</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 预设目录 -->
+        <div class="card">
+          <h2>从预设快速添加</h2>
+          <h3 class="life-sub">国内模型（无需代理）</h3>
+          <div class="mp-preset-row">
+            <button class="btn sm" v-for="p in mp.domestic" :key="p.key" @click="openPresetForm(p)">{{ p.label }}</button>
+          </div>
+          <h3 class="life-sub">国外模型（建议配合代理）</h3>
+          <div class="mp-preset-row">
+            <button class="btn sm" v-for="p in mp.foreign" :key="p.key" @click="openPresetForm(p)">{{ p.label }}</button>
+          </div>
+          <p class="hint block">选择预设会自动填好接口地址与常用模型，你只需补上 API Key。</p>
+        </div>
+
+        <!-- 代理与连通性 -->
+        <div class="card">
+          <h2>网络代理</h2>
+          <p class="hint block">用于访问国外模型。代理只作用于模型 API 调用；微信同步、邮件等其他功能仍走本地直连。</p>
+          <label class="mp-check"><input type="checkbox" v-model="mp.proxyForm.enabled"> 启用代理（仅模型调用）</label>
+          <div class="field"><label>代理地址</label>
+            <input type="text" v-model="mp.proxyForm.url" placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"></div>
+          <div class="field"><label>不走代理（逗号分隔，可选）</label>
+            <input type="text" v-model="mp.proxyForm.noProxy" placeholder="example.com,10.0.0.0/8"></div>
+          <div class="mp-preset-row">
+            <button class="btn sm" @click="saveProxy" :disabled="mp.proxySaving">{{ mp.proxySaving ? '保存中…' : '保存代理设置' }}</button>
+            <button class="btn sm primary" @click="testProxy" :disabled="mp.proxyTesting">{{ mp.proxyTesting ? '测试中…' : '测试连通性' }}</button>
+            <button class="btn sm" @click="testModel" :disabled="mp.modelTesting">{{ mp.modelTesting ? '调用中…' : '测试活动模型' }}</button>
+          </div>
+
+          <div v-if="mp.settings.proxy && mp.settings.proxy.testedAt" class="mp-test-result">
+            <div class="stat-row"><span class="st-label">上次测试</span><span class="st-val">{{ fmtTime(mp.settings.proxy.testedAt) }}</span></div>
+            <div class="stat-row"><span class="st-label">直连出口 IP</span><span class="st-val">{{ mp.settings.proxy.directIp || '未获取' }}</span></div>
+            <div class="stat-row"><span class="st-label">代理出口 IP</span><span class="st-val">{{ mp.settings.proxy.egressIp || '未获取' }}</span></div>
+            <div v-if="mp.settings.proxy.sites && mp.settings.proxy.sites.length" class="mp-sites">
+              <div class="mp-site" v-for="s in mp.settings.proxy.sites" :key="s.url">
+                <span class="chip" :class="s.ok ? 'st-ok' : 'st-bad'">{{ s.ok ? '可达' : '不可达' }}</span>
+                <span class="mp-site-url">{{ s.url }}</span>
+                <span class="mp-site-lat" v-if="s.ok">{{ s.latencyMs }} ms</span>
+                <span class="mp-site-err" v-if="s.error">{{ s.error }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mp.modelTestResult" class="mp-test-result">
+            <span class="chip" :class="mp.modelTestResult.ok ? 'st-ok' : 'st-bad'">{{ mp.modelTestResult.ok ? '模型可达' : '模型不可达' }}</span>
+            <span v-if="mp.modelTestResult.latencyMs!=null" class="mp-site-lat">{{ mp.modelTestResult.latencyMs }} ms</span>
+            <span class="mp-site-err" v-if="mp.modelTestResult.error">{{ mp.modelTestResult.error }}</span>
+          </div>
+        </div>
+
+        <!-- 调用量统计 -->
+        <div class="card" v-if="mp.usage">
+          <h2>模型调用量</h2>
+          <div class="dr-metrics">
+            <div class="dr-metric"><span class="dr-num">{{ mp.usage.today.calls }}</span><span class="dr-lbl">今日调用</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ mp.usage.today.totalTokens }}</span><span class="dr-lbl">今日 tokens</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ mp.usage.week.calls }}</span><span class="dr-lbl">近 7 天调用</span></div>
+            <div class="dr-metric"><span class="dr-num">{{ mp.usage.month.calls }}</span><span class="dr-lbl">近 30 天调用</span></div>
+          </div>
+          <div class="dr-rows">
+            <div class="dr-row"><span class="dr-k">今日成功/失败</span><span class="dr-v">{{ mp.usage.today.success }} / {{ mp.usage.today.errors }}</span></div>
+            <div class="dr-row"><span class="dr-k">今日平均延迟</span><span class="dr-v">{{ mp.usage.today.avgLatencyMs }} ms</span></div>
+            <div class="dr-row"><span class="dr-k">近 30 天总 tokens</span><span class="dr-v">{{ mp.usage.month.totalTokens }}</span></div>
+            <div class="dr-row"><span class="dr-k">经代理调用（近 30 天）</span><span class="dr-v">{{ mp.usage.month.proxyCalls }}</span></div>
+          </div>
+          <template v-if="mp.usage.byModel && mp.usage.byModel.length">
+            <h3 class="life-sub">按模型</h3>
+            <table class="mp-usage-table">
+              <thead><tr><th>模型</th><th>调用</th><th>成功</th><th>tokens</th><th>均延(ms)</th></tr></thead>
+              <tbody>
+                <tr v-for="m in mp.usage.byModel" :key="m.model">
+                  <td>{{ m.label || m.model }}</td><td>{{ m.calls }}</td><td>{{ m.success }}</td><td>{{ m.totalTokens }}</td><td>{{ m.avgLatencyMs }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+          <p class="hint block">口径：仅统计真实发起的 API 调用（缓存命中不计），故反映实际模型消费。</p>
+        </div>
+      </template>
+
+      <!-- 新建/编辑模型档案弹框 -->
+      <div class="mask" v-if="mp.editing">
+        <form class="card modal" style="max-width:520px" @submit.prevent="saveProfile">
+          <h2>{{ mp.formIsNew ? '新建模型档案' : '编辑模型档案' }}</h2>
+          <div class="field"><label>显示名称</label><input type="text" v-model="mp.editing.label" placeholder="如：DeepSeek 对话"></div>
+          <div class="field"><label>厂商标识</label><input type="text" v-model="mp.editing.provider" placeholder="deepseek / openai / custom…"></div>
+          <div class="field"><label>接口地址（OpenAI 兼容，不带末尾斜杠）</label><input type="text" v-model="mp.editing.baseURL" placeholder="https://api.deepseek.com"></div>
+          <div class="field"><label>API Key<span v-if="!mp.formNeedsKey" class="hint">（本地模型可留空）</span></label>
+            <input type="text" v-model="mp.editing.apiKey" :placeholder="mp.formIsNew ? 'sk-…' : '******（不修改则保留）'"></div>
+          <div class="field"><label>模型名</label>
+            <input type="text" v-model="mp.editing.model" list="mp-model-list" placeholder="deepseek-chat">
+            <datalist id="mp-model-list"><option v-for="mo in (mp.presetModels||[])" :key="mo" :value="mo"></option></datalist>
+          </div>
+          <div class="field"><label>区域</label>
+            <select v-model="mp.editing.region"><option value="domestic">国内</option><option value="foreign">国外</option></select></div>
+          <label class="mp-check"><input type="checkbox" v-model="mp.editing.disableThinking"> 关闭推理/思考模式</label>
+          <label class="mp-check"><input type="checkbox" v-model="mp.editing.useProxy"> 本模型经代理访问（国外建议勾选）</label>
+          <p class="mp-form-err" v-if="mp.formError">{{ mp.formError }}</p>
+          <div class="modal-actions">
+            <button type="button" class="btn" @click="closeForm" :disabled="mp.busy">取消</button>
+            <button type="submit" class="btn primary" :disabled="mp.busy">{{ mp.busy ? '保存中…' : '保存' }}</button>
+          </div>
+        </form>
       </div>
     </section>
 

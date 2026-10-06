@@ -826,6 +826,9 @@ createApp({
       } else if (h.startsWith('#/status')) {
         route.view = 'status';
         route.id = 0;
+      } else if (h.startsWith('#/model')) {
+        route.view = 'model';
+        route.id = 0;
       } else {
         route.view = 'contacts';
         route.id = 0;
@@ -842,6 +845,7 @@ createApp({
       if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
       if (route.view === 'assistant') { loadAssistant(); loadPrompts(); }
       if (route.view === 'insights') switchInsight(insightTab.value);
+      if (route.view === 'model') loadModelPage();
       if (route.view === 'status') {
         loadStatus();
         statusTimer = setInterval(loadStatus, 5000);
@@ -3564,6 +3568,129 @@ createApp({
         statusLoading.value = false;
       }
     }
+    // ---------- v6.2 模型与代理管理页 ----------
+    // 一览：多模型档案（国内/国外/自定义）+ 活动切换 + 推理开关 + 代理（仅模型调用走）+ 连通性测试 + 用量统计。
+    const mp = reactive({
+      loading: false, busy: false, error: '',
+      settings: null,                 // {activeProfileId, profiles[], proxy{}}
+      presets: [], domestic: [], foreign: [],
+      usage: null,                    // {today,week,month,byModel[]}
+      editing: null, formIsNew: false, formNeedsKey: true, formError: '',
+      proxyForm: { enabled: false, url: '', noProxy: '' }, proxySaving: false,
+      proxyTesting: false, modelTesting: false,
+      modelTestResult: null,
+    });
+    function regionLabel(r) { return r === 'foreign' ? '国外' : '国内'; }
+    function activeProfile() {
+      if (!mp.settings) return null;
+      const id = mp.settings.activeProfileId;
+      return (mp.settings.profiles || []).find(p => p.id === id) || null;
+    }
+    async function loadModelPage() {
+      mp.loading = true; mp.error = '';
+      try {
+        const st = await api('/api/llm/settings');
+        mp.settings = st.settings;
+        mp.proxyForm = { enabled: !!st.settings.proxy.enabled, url: st.settings.proxy.url || '', noProxy: st.settings.proxy.noProxy || '' };
+        const [pr, us] = await Promise.all([api('/api/llm/presets'), api('/api/llm/usage')]);
+        mp.presets = pr.presets || [];
+        mp.domestic = mp.presets.filter(p => p.region !== 'foreign');
+        mp.foreign = mp.presets.filter(p => p.region === 'foreign');
+        mp.usage = us.usage || null;
+      } catch (e) {
+        mp.error = e.message || '加载失败';
+      } finally { mp.loading = false; }
+    }
+    async function reloadUsage() {
+      try { const us = await api('/api/llm/usage'); mp.usage = us.usage || null; } catch (e) { /* 用量非关键，失败保留旧值 */ }
+    }
+    function openNewForm() {
+      mp.formIsNew = true; mp.formNeedsKey = true; mp.formError = '';
+      mp.editing = { id: '', label: '', provider: 'custom', baseURL: '', apiKey: '', model: '', region: 'domestic', disableThinking: false, useProxy: false };
+    }
+    function openPresetForm(p) {
+      mp.formIsNew = true; mp.formNeedsKey = p.needsKey !== false; mp.formError = '';
+      mp.editing = {
+        id: '', label: p.label, provider: p.provider, baseURL: p.baseURL,
+        apiKey: '', model: (p.models && p.models[0]) || '', region: p.region || 'domestic',
+        disableThinking: true, useProxy: !!p.useProxy,
+      };
+      mp.presetModels = (p.models || []).slice();
+    }
+    function openEditForm(prof) {
+      mp.formIsNew = false; mp.formNeedsKey = true; mp.formError = '';
+      mp.editing = Object.assign({}, prof); // apiKey 是打码串，保存时后端按 ID 沿用旧密钥
+      mp.presetModels = [];
+    }
+    function closeForm() { mp.editing = null; }
+    async function saveProfile() {
+      if (!mp.editing || mp.busy) return;
+      if (!mp.editing.baseURL || !mp.editing.model) { mp.formError = '接口地址与模型名不能为空'; return; }
+      mp.busy = true; mp.formError = '';
+      try {
+        await api('/api/llm/profile', { method: 'POST', body: mp.editing });
+        toast('模型档案已保存', 'ok');
+        mp.editing = null;
+        const st = await api('/api/llm/settings'); mp.settings = st.settings;
+      } catch (e) {
+        mp.formError = e.message || '保存失败';
+      } finally { mp.busy = false; }
+    }
+    async function activateProfile(id) {
+      if (mp.busy) return; mp.busy = true;
+      try {
+        await api('/api/llm/active', { method: 'POST', body: { id } });
+        toast('已切换活动模型', 'ok');
+        const st = await api('/api/llm/settings'); mp.settings = st.settings;
+      } catch (e) { toast(e.message || '切换失败', 'error'); }
+      finally { mp.busy = false; }
+    }
+    async function deleteProfile(id) {
+      if (mp.busy) return; mp.busy = true;
+      try {
+        await api('/api/llm/profile/delete', { method: 'POST', body: { id } });
+        toast('档案已删除', 'ok');
+        const st = await api('/api/llm/settings'); mp.settings = st.settings;
+      } catch (e) { toast(e.message || '删除失败', 'error'); }
+      finally { mp.busy = false; }
+    }
+    // 代理保存走整体 PUT（profiles 携打码密钥，后端按 ID 沿用旧值）。
+    async function saveProxy() {
+      if (!mp.settings || mp.proxySaving) return;
+      mp.proxySaving = true;
+      try {
+        const payload = {
+          activeProfileId: mp.settings.activeProfileId,
+          profiles: mp.settings.profiles,
+          proxy: { enabled: mp.proxyForm.enabled, url: mp.proxyForm.url, noProxy: mp.proxyForm.noProxy },
+        };
+        const st = await api('/api/llm/settings', { method: 'PUT', body: payload });
+        mp.settings = st.settings;
+        toast('代理设置已保存', 'ok');
+      } catch (e) { toast(e.message || '保存失败', 'error'); }
+      finally { mp.proxySaving = false; }
+    }
+    // 测连通：携当前表单（可未保存），后端“配好即测”并落库，回包刷新展示。
+    async function testProxy() {
+      if (mp.proxyTesting) return; mp.proxyTesting = true;
+      try {
+        const body = { enabled: mp.proxyForm.enabled, url: mp.proxyForm.url, noProxy: mp.proxyForm.noProxy };
+        const resp = await api('/api/llm/proxy/test', { method: 'POST', body });
+        mp.settings = resp.settings;
+        if (resp.proxy) mp.proxyForm = { enabled: !!resp.proxy.enabled, url: resp.proxy.url || '', noProxy: resp.proxy.noProxy || '' };
+        toast('连通性测试完成', 'ok');
+      } catch (e) { toast(e.message || '测试失败', 'error'); }
+      finally { mp.proxyTesting = false; }
+    }
+    async function testModel() {
+      if (mp.modelTesting) return; mp.modelTesting = true; mp.modelTestResult = null;
+      try {
+        mp.modelTestResult = await api('/api/llm/model/test', { method: 'POST', body: {} });
+        reloadUsage();
+      } catch (e) { mp.modelTestResult = { ok: false, error: e.message || '调用失败' }; }
+      finally { mp.modelTesting = false; }
+    }
+
     // ---------- v5.4.0 #9 数据健康自检（只读 SQL 聚合，按需手动刷新） ----------
     const dataReport = reactive({ data: null, busy: false, failed: false, error: '' });
     async function loadDataReport() {
@@ -3792,6 +3919,10 @@ createApp({
       startMerge, doMerge, doDelete, confirmDelete,
       loadMergeLogs, undoMerge, fmtTime,
       sysStatus, statusLoading, loadStatus, fmtUptime, fmtAgo, fmtMB, pctClass,
+      // v6.2 模型与代理页
+      mp, regionLabel, activeProfile, loadModelPage, reloadUsage,
+      openNewForm, openPresetForm, openEditForm, closeForm, saveProfile,
+      activateProfile, deleteProfile, saveProxy, testProxy, testModel,
       // v5.4.0 #9 数据健康自检
       dataReport, loadDataReport, fmtBytes,
       // 标签
