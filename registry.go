@@ -90,6 +90,7 @@ func init() {
 		{Name: "archive_settings", Type: "config", Owner: "archive", Backup: true, Rebuild: false, HasContactID: false},
 		{Name: "mode_presets", Type: "config", Owner: "assistant", Backup: true, Rebuild: false, HasContactID: false, Note: "运行模式预设，用户自建"},
 		{Name: "prompt_templates", Type: "config", Owner: "prompts", Backup: true, Rebuild: false, HasContactID: false, Note: "提示词模板，用户可编辑"},
+		{Name: "llm_settings", Type: "config", Owner: "llm", Backup: true, Rebuild: false, HasContactID: false, Note: "模型与代理运行时配置（多档案/活动模型/推理开关/代理，v6.2），含密钥故参与备份、恢复缺表则保留主库"},
 
 		// —— 审计日志（不参与业务恢复）——
 		{Name: "backup_log", Type: "audit", Owner: "backup", Backup: false, Rebuild: false, HasContactID: false, Note: "备份/恢复审计日志，恢复时须保留自身"},

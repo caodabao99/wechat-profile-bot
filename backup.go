@@ -115,6 +115,7 @@ var restorePreserveWhenAbsent = map[string]bool{
 	"archive_settings":   true,
 	"mode_presets":       true,
 	"prompt_templates":   true,
+	"llm_settings":       true,
 }
 
 // listRestoreTables 从 main 库 sqlite_master 动态列出参与恢复的用户表，取代手写数组。

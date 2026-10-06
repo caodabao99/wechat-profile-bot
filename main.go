@@ -46,8 +46,11 @@ func main() {
 	defer db.Close()
 	slog.Info("数据库已就绪", "path", dbFilePath)
 
-	// LLM 客户端
-	llmClient := NewLLMClient(cfg)
+	// LLM 客户端（接入 db 后支持网页端运行时切换模型/推理开关/代理与用量统计，未配置档案时回落 config.json）
+	llmClient := NewLLMClient(cfg).WithDB(db)
+	if err := ensureLLMSettingsTable(db); err != nil {
+		slog.Warn("模型与代理设置表初始化失败", "err", err)
+	}
 
 	// iLink 客户端
 	credPath := credentialPath()

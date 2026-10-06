@@ -43,12 +43,13 @@ func (k aiCacheKey) valid() bool {
 	return k.ContactID > 0 && k.Task != "" && k.ContextVersion != "" && k.Model != "" && k.PromptVersion != ""
 }
 
-// modelOf 返回 LLM 客户端配置的模型名（nil/空→"unknown"），用于缓存键。
+// modelOf 返回当前**活动**模型名（运行时解析；nil/空→"unknown"），用于缓存键：
+// 切模型即改变键 → 跨模型结果天然不串用。
 func (c *LLMClient) modelOf() string {
 	if c == nil {
 		return "unknown"
 	}
-	if m := strings.TrimSpace(c.model); m != "" {
+	if m := strings.TrimSpace(c.resolveSpec().Model); m != "" {
 		return m
 	}
 	return "unknown"

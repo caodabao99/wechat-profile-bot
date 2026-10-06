@@ -2,26 +2,35 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 )
 
-// LLMClient 封装 OpenAI 兼容的 chat/completions 调用
+// LLMClient 封装 OpenAI 兼容的 chat/completions 调用。
+// 启动时以 config.json 的 llm 段为固定配置；接入 db 后升级为「运行时解析活动档案」——
+// 网页端切换模型/开关推理/配置代理无需重启即生效，未配置档案时回落 config.json。
 type LLMClient struct {
-	apiKey          string
-	baseURL         string
-	model           string
-	disableThinking bool
-	http            *resty.Client
+	apiKey          string // 启动兜底：config.json llm.apiKey
+	baseURL         string // 启动兜底：config.json llm.baseURL
+	model           string // 启动兜底：config.json llm.model
+	disableThinking bool   // 启动兜底：config.json llm.disableThinking
+	db              *sql.DB
+	http            *resty.Client // 直连客户端（不走代理）
+
+	proxyMu  sync.Mutex    // 保护 proxyCli/proxyURL
+	proxyURL string        // 当前代理客户端对应的 URL（变更则重建）
+	proxyCli *resty.Client // 走代理的客户端（缓存）
 }
 
-// NewLLMClient 根据配置创建 LLM 客户端
+// NewLLMClient 根据配置创建 LLM 客户端（db 为 nil 时只用 config.json）。
 func NewLLMClient(cfg *Config) *LLMClient {
 	base := strings.TrimRight(strings.TrimSpace(cfg.LLM.BaseURL), "/")
 	return &LLMClient{
@@ -35,10 +44,38 @@ func NewLLMClient(cfg *Config) *LLMClient {
 	}
 }
 
-// configured 报告模型是否真正可用（配了 apiKey 与 baseURL）。用于区分「真实调用」与
-// 「未配置」——未配置时应向用户明确报错，而不是编造一个看似合理的返回。
+// WithDB 注入数据库，使 LLMClient 具备运行时切模型/代理/用量统计能力。返回自身便于链式调用。
+func (c *LLMClient) WithDB(db *sql.DB) *LLMClient {
+	c.db = db
+	return c
+}
+
+// clientFor 返回是否走代理对应的 resty 客户端。代理客户端仅在 URL 变化时重建，
+// 并发调用共享只读客户端，绝不在调用中改写直连客户端的传输层（避免数据竞态）。
+func (c *LLMClient) clientFor(useProxy bool, proxyURL string) *resty.Client {
+	if !useProxy || strings.TrimSpace(proxyURL) == "" {
+		return c.http
+	}
+	c.proxyMu.Lock()
+	defer c.proxyMu.Unlock()
+	if c.proxyCli == nil || c.proxyURL != proxyURL {
+		cl := resty.New().
+			SetTimeout(60*time.Second).
+			SetHeader("Content-Type", "application/json").
+			SetProxy(proxyURL)
+		c.proxyCli = cl
+		c.proxyURL = proxyURL
+	}
+	return c.proxyCli
+}
+
+// configured 报告模型是否真正可用（配了 apiKey 与 baseURL）。运行时解析活动档案。
 func (c *LLMClient) configured() bool {
-	return c != nil && strings.TrimSpace(c.apiKey) != "" && strings.TrimSpace(c.baseURL) != ""
+	if c == nil {
+		return false
+	}
+	spec := c.resolveSpec()
+	return strings.TrimSpace(spec.APIKey) != "" && strings.TrimSpace(spec.BaseURL) != ""
 }
 
 // chatResponse 是接口返回中我们关心的字段
@@ -71,9 +108,14 @@ func isRetryableStatus(code int) bool {
 // CallContext 与 Call 相同，但接受 ctx 用于取消/超时控制。
 // HTTP 请求走 resty 的 SetContext，重试等待也感知 ctx，
 // 避免调用方已经放弃后仍在后台占用 LLM 配额。
+// 每次调用都**运行时解析活动档案**（模型/密钥/接口/推理开关/是否走代理），
+// 故网页端切换模型后紧接着的调用即用新配置，无需重启。
 func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, error) {
+	spec := c.resolveSpec()
+	cli := c.clientFor(spec.UseProxy && spec.ProxyURL != "", spec.ProxyURL)
+
 	body := map[string]interface{}{
-		"model": c.model,
+		"model": spec.Model,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -84,11 +126,12 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 	}
 	// 关闭推理思考：百炼兼容模式认 enable_thinking，DeepSeek 官方/V4 认 thinking.type，
 	// 两个参数一起发，不支持的平台会忽略。
-	if c.disableThinking {
+	if spec.DisableThinking {
 		body["enable_thinking"] = false
 		body["thinking"] = map[string]string{"type": "disabled"}
 	}
 
+	endpoint := spec.BaseURL + "/chat/completions"
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
@@ -99,11 +142,11 @@ func (c *LLMClient) CallContext(ctx context.Context, prompt string) (string, err
 			}
 		}
 
-		resp, err := c.http.R().
+		resp, err := cli.R().
 			SetContext(ctx).
-			SetHeader("Authorization", "Bearer "+c.apiKey).
+			SetHeader("Authorization", "Bearer "+spec.APIKey).
 			SetBody(body).
-			Post(c.baseURL + "/chat/completions")
+			Post(endpoint)
 		if err != nil {
 			lastErr = fmt.Errorf("请求模型接口失败: %w", err)
 			continue

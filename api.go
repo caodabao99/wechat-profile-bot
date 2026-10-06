@@ -348,6 +348,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "portfolio":
 		// 蓝图 §12 P8：Relationship Portfolio /api/portfolio(+ /settings)
 		s.routePortfolio(w, r, parts[1:])
+	case parts[0] == "llm":
+		// v6.2：模型与代理 /api/llm/{settings|active|profile|profile/delete|presets|proxy/test|model/test|usage}
+		s.routeLLM(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:
