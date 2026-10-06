@@ -71,20 +71,53 @@
 
     <!-- ============ 联系人列表 ============ -->
     <section v-if="route.view==='contacts'">
-      <!-- OS 2.0 Phase 8：今天值得做（Decision Engine，确定性打分 Top-3） -->
-      <div class="card today-decisions" v-if="todayList.length || todayLoading">
-        <h2>今天值得做</h2>
+      <!-- v6.1 §14 P10：Action Center 首页（Today / Memory / Risk / Portfolio） -->
+      <div class="card action-center">
+        <h2>今天 <span class="hint inline">系统只呈现「值得行动」的人，不制造噪音</span></h2>
         <p class="empty" v-if="todayLoading">计算中…</p>
-        <ul class="decision-list" v-else>
-          <li v-for="d in todayList" :key="d.contact_id" class="decision-item">
-            <a class="decision-who" :href="'#/contact/' + d.contact_id">{{ d.name }}</a>
-            <span class="chip st-gray">{{ d.state }}</span>
-            <span class="chip st-orange" v-if="d.risk>0">风险</span>
-            <span class="decision-why">{{ decisionReasonText(d.reason_codes) }}</span>
-            <span class="decision-action" v-if="d.action">建议：{{ d.action }}</span>
-            <span class="hint inline" v-if="d.best_time">· {{ d.best_time }}</span>
-          </li>
-        </ul>
+        <p class="empty" v-else-if="!todayList.length">今天没有需要特别行动的关系</p>
+        <div class="today-cards" v-else>
+          <div class="today-card" v-for="(d, i) in todayList" :key="d.contact_id">
+            <div class="tc-rank">{{ i + 1 }}</div>
+            <div class="tc-body">
+              <div class="tc-head">
+                <a class="decision-who" :href="'#/contact/' + d.contact_id">{{ d.name }}</a>
+                <span class="chip st-gray">{{ d.state }}</span>
+                <span class="chip st-orange" v-if="d.risk>0">风险</span>
+                <span class="chip st-blue" v-if="d.confidence">置信 {{ d.confidence }}</span>
+              </div>
+              <p class="tc-why"><strong>为什么：</strong>{{ (d.why_now && d.why_now.length) ? d.why_now.join('；') : decisionReasonText(d.reason_codes) }}</p>
+              <p class="tc-what" v-if="d.action"><strong>做什么：</strong>{{ d.action }}</p>
+              <p class="hint block" v-if="d.best_time">什么时候：{{ d.best_time }}</p>
+              <p class="hint block" v-if="d.goal">相关目标：{{ d.goal }}</p>
+              <p class="hint block" v-if="d.followup">相关待办：{{ d.followup }}</p>
+              <div class="tc-ops">
+                <button class="btn sm" :disabled="actionBusy>0" @click="acceptDecision(d)">接受</button>
+                <button class="btn ghost sm" :disabled="actionBusy>0" @click="deferDecision(d)">稍后</button>
+                <button class="btn ghost sm" :disabled="actionBusy>0" @click="dismissDecision(d)">忽略</button>
+                <button class="btn ghost sm" :disabled="actionBusy>0" @click="completeDecision(d)">已完成</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 14.1 Memory Review：待确认记忆入口 -->
+      <div class="card ac-strip" v-if="memReviewCount>0">
+        <span class="ac-strip-main">🧠 <strong>{{ memReviewCount }} 条记忆需要确认</strong></span>
+        <span class="hint" v-if="memReviewText">{{ memReviewText }}</span>
+      </div>
+
+      <!-- 14.2 Risk：关系风险入口 -->
+      <div class="card ac-strip" v-if="riskCount>0">
+        <span class="ac-strip-main">⚠️ <strong>{{ riskCount }} 个关系风险</strong></span>
+        <span class="hint" v-if="riskSummaryText">{{ riskSummaryText }}</span>
+      </div>
+
+      <!-- 14.3 Portfolio：本周时间建议 -->
+      <div class="card ac-strip" v-if="portfolioSummary">
+        <span class="ac-strip-main">📊 <strong>本周时间建议</strong>（预算 {{ portfolioHours }}h）</span>
+        <span class="hint">{{ portfolioTopText }}</span>
       </div>
       <div class="card">
         <div class="search-row">

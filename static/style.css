@@ -1200,14 +1200,19 @@ textarea.text-input { resize: vertical; }
 .cg-bar > i { display: block; height: 100%; border-radius: 6px; background: var(--accent); transition: width .3s; }
 .cg-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-/* ---------- OS 2.0 Phase 8：Decision / Relationship State / Replay ---------- */
-.today-decisions h2 { font-size: 15px; margin: 0 0 10px; }
-.decision-list { list-style: none; margin: 0; padding: 0; }
-.decision-item { padding: 10px 0; border-bottom: 1px dashed var(--line); display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
-.decision-item:last-child { border-bottom: none; }
+/* ---------- v6.1 §14 P10：Action Center 首页（Today/Memory/Risk/Portfolio） ---------- */
+.action-center h2 { font-size: 15px; margin: 0 0 10px; }
+.today-cards { display: flex; flex-direction: column; gap: 10px; }
+.today-card { display: flex; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: #fafafa; }
+.tc-rank { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.tc-body { flex: 1 1 auto; min-width: 0; }
+.tc-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.tc-why { font-size: 13px; color: var(--muted); margin: 2px 0; line-height: 1.6; }
+.tc-what { font-size: 13.5px; color: var(--ink); margin: 2px 0; }
+.tc-ops { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ac-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
+.ac-strip-main { font-size: 14px; }
 .decision-who { font-weight: 600; color: var(--accent2); text-decoration: none; }
-.decision-why { font-size: 12.5px; color: var(--muted); }
-.decision-action { font-size: 13px; color: var(--ink); flex-basis: 100%; }
 .chip.st-orange { background: #fff7ed; color: #c2410c; }
 .rel-state { margin-top: 8px; }
 .rel-state .hint.inline { color: var(--muted); font-size: 12px; }

@@ -91,6 +91,13 @@ createApp({
     const replayText = ref('');        // 回放渲染文本（markdown 源，纯文本展示）
     const todayList = ref([]);         // /api/decision/today 结果
     const todayLoading = ref(false);
+    // —— v6.1 §14 P10：Action Center 首页（Today/Memory/Risk/Portfolio 一屏） ——
+    const actionBusy = ref(0);         // 正在处理的卡片操作数（>0 时禁用按钮防重复提交）
+    const memReviewCount = ref(0);     // /api/memory/review 待确认记忆条数
+    const memReviewPreview = ref([]);  // 前几条预览
+    const riskCount = ref(0);          // /api/risks 关系风险条数
+    const riskByType = ref({});        // /api/risks 按类型计数
+    const portfolioSummary = ref(null);// /api/portfolio 本周时间建议摘要
     const messages = ref([]);
     const messagesLoading = ref(false);
     const messagesHasMore = ref(false);
@@ -829,7 +836,7 @@ createApp({
     function onRouteEnter() {
       stopStatusTimer();
       if (!authed.value) return;
-      if (route.view === 'contacts') { loadContacts(); loadTags(); loadTodayDecisions(); }
+      if (route.view === 'contacts') { loadContacts(); loadTags(); loadTodayDecisions(); loadActionCenter(); }
       if (route.view === 'detail') loadDetail();
       if (route.view === 'merges') loadMergeLogs();
       if (route.view === 'backup') { loadBackupLogs(); loadArchive(); loadTrusted(); }
@@ -1014,6 +1021,77 @@ createApp({
     }
     function decisionReasonText(codes) { return (codes || []).join('、'); }
     function gotoContact(id) { location.hash = '#/contact/' + id; }
+
+    // ---------- v6.1 §14 P10：Action Center（首页 Today/Memory/Risk/Portfolio） ----------
+    // 载入今日建议之外的三个摘要（只读复用既有端点，异常时静默降级为空，不打断首页）。
+    async function loadActionCenter() {
+      try {
+        const r = await api('/api/memory/review?limit=5');
+        memReviewCount.value = r.count || 0;
+        memReviewPreview.value = r.items || [];
+      } catch (e) { memReviewCount.value = 0; memReviewPreview.value = []; }
+      try {
+        const r = await api('/api/risks');
+        riskCount.value = r.count || 0;
+        riskByType.value = r.byType || {};
+      } catch (e) { riskCount.value = 0; riskByType.value = {}; }
+      try {
+        portfolioSummary.value = await api('/api/portfolio?topN=3');
+      } catch (e) { portfolioSummary.value = null; }
+    }
+
+    // 卡片四操作→行动账本生命周期（§14.1）：接受/已完成/稍后=transition，忽略=dismiss（仅本窗屏蔽）。
+    async function actionTransition(d, to, deferredUntil) {
+      if (!d || !d.action_log_id) { toast('该建议尚无行动记录', 'error'); return; }
+      actionBusy.value++;
+      try {
+        const body = { status: to };
+        if (deferredUntil) body.deferred_until = deferredUntil;
+        await api('/api/contacts/' + d.contact_id + '/actions/' + d.action_log_id + '/transition', { method: 'POST', body });
+        toast('已更新行动状态');
+        loadTodayDecisions();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { actionBusy.value--; }
+    }
+    function acceptDecision(d) { actionTransition(d, 'accepted'); }
+    function completeDecision(d) { actionTransition(d, 'completed'); }
+    function deferDecision(d) {
+      const t = new Date(Date.now() + 86400000); // 明天
+      const ymd = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+      actionTransition(d, 'deferred', ymd);
+    }
+    async function dismissDecision(d) {
+      if (!d || !d.action_log_id) { toast('该建议尚无行动记录', 'error'); return; }
+      actionBusy.value++;
+      try {
+        await api('/api/contacts/' + d.contact_id + '/actions/' + d.action_log_id + '/dismiss', { method: 'POST', body: { reason: '首页忽略' } });
+        toast('已忽略（仅屏蔽本窗，不会永久屏蔽）');
+        loadTodayDecisions();
+      } catch (e) { toast(e.message, 'error'); }
+      finally { actionBusy.value--; }
+    }
+    // 摘要行可读文本（将计数/预算分钟/Top 项拼成人话，避免模板内复杂表达式）。
+    const riskSummaryText = computed(() => {
+      const bt = riskByType.value || {};
+      const parts = Object.keys(bt).map((k) => k + ' ' + bt[k]);
+      return parts.length ? ('类型：' + parts.join(' · ')) : '';
+    });
+    const portfolioHours = computed(() => {
+      const v = portfolioSummary.value;
+      if (!v) return 0;
+      return Math.round(((v.weeklyBudgetMinutes || 0) / 60) * 10) / 10;
+    });
+    const portfolioTopText = computed(() => {
+      const v = portfolioSummary.value;
+      if (!v || !v.top || !v.top.length) return '暂无分配';
+      return v.top.slice(0, 3).map((e) => e.name + ' ' + e.minutes + 'min').join(' · ');
+    });
+    const memReviewText = computed(() => {
+      const items = memReviewPreview.value || [];
+      return items.slice(0, 2)
+        .map((it) => (it.contact_name ? it.contact_name + '·' : '') + (it.fact_value || it.fact_type || ''))
+        .filter(Boolean).join('；');
+    });
 
     function switchTab(tab) {
       detailTab.value = tab;
@@ -3704,6 +3782,9 @@ createApp({
       showMerge, mergeSourceId, mergeUseSourceName, mergeRegenerate, showDelete,
       relState, showReplay, replayText, todayList, todayLoading,
       openReplay, closeReplay, loadTodayDecisions, decisionReasonText, gotoContact,
+      actionBusy, memReviewCount, memReviewPreview, riskCount, riskByType, portfolioSummary,
+      loadActionCenter, acceptDecision, completeDecision, deferDecision, dismissDecision,
+      riskSummaryText, portfolioHours, portfolioTopText, memReviewText,
       toasts,
       loadContacts, gotoDetail, displayName, loadDetail, switchTab, loadMessages,
       toggleHistory, historySections, rollback,
