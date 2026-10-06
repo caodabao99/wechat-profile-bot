@@ -1,0 +1,227 @@
+{
+  "version": "eval-lab-v1",
+  "note": "AI Evaluation Lab 黄金用例（V7 §18）。全部为虚拟数据，绝不包含真实用户聊天。每个 case 的 model_outputs 是「已录制的样本」，评测器在离线、确定性、零 LLM 依赖下打分；接真实模型时由 runner 用模型输出替换这些样本即可复用同一套指标/对比/回归逻辑。约定：model-a=理想、model-b=一般、model-c=坏输出(非法 JSON)。",
+  "models": ["model-a", "model-b", "model-c"],
+  "cases": [
+    {
+      "id": "fact-01", "task": "fact_extraction", "category": "Fact",
+      "input": "对方说：我是一名中学老师，教数学。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["facts"], "expected_snippets": ["老师"], "forbidden_snippets": ["医生"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"facts\":[\"职业:中学老师\",\"学科:数学\"]}", "latency_ms": 900, "tokens": 520},
+        "model-b": {"output": "{\"facts\":[\"职业:老师\"]}", "latency_ms": 1300, "tokens": 610},
+        "model-c": {"output": "对方好像是老师吧。", "latency_ms": 300, "tokens": 0}
+      }
+    },
+    {
+      "id": "fact-02", "task": "fact_extraction", "category": "Fact",
+      "input": "她周末经常去跑步，参加过半马。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["facts"], "expected_snippets": ["跑步"], "forbidden_snippets": ["游泳"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"facts\":[\"爱好:跑步\",\"经历:半程马拉松\"]}", "latency_ms": 880, "tokens": 500},
+        "model-b": {"output": "{\"facts\":[\"喜欢运动\"]}", "latency_ms": 1200, "tokens": 560},
+        "model-c": {"output": "{bad json", "latency_ms": 250, "tokens": 0}
+      }
+    },
+    {
+      "id": "fact-03", "task": "fact_extraction", "category": "Fact",
+      "input": "他有个女儿，今年上小学三年级。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["facts"], "expected_snippets": ["女儿"], "forbidden_snippets": ["儿子"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"facts\":[\"子女:女儿\",\"学龄:小学三年级\"]}", "latency_ms": 910, "tokens": 530},
+        "model-b": {"output": "{\"facts\":[\"有孩子\"]}", "latency_ms": 1250, "tokens": 540},
+        "model-c": {"output": "", "latency_ms": 100, "tokens": 0}
+      }
+    },
+    {
+      "id": "evidence-01", "task": "attach_evidence", "category": "Evidence",
+      "input": "事实「职业是老师」需要回溯支撑消息。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["evidence"], "expected_snippets": [], "forbidden_snippets": [], "min_evidence_refs": 2},
+      "model_outputs": {
+        "model-a": {"output": "{\"evidence\":[{\"message_id\":11},{\"message_id\":23}]}", "latency_ms": 700, "tokens": 380},
+        "model-b": {"output": "{\"evidence\":[{\"message_id\":11}]}", "latency_ms": 950, "tokens": 400},
+        "model-c": {"output": "证据在聊天里。", "latency_ms": 200, "tokens": 0}
+      }
+    },
+    {
+      "id": "evidence-02", "task": "attach_evidence", "category": "Evidence",
+      "input": "事实「爱好跑步」的证据链。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["evidence"], "expected_snippets": [], "forbidden_snippets": [], "min_evidence_refs": 2},
+      "model_outputs": {
+        "model-a": {"output": "{\"evidence\":[{\"message_id\":31,\"direct\":true},{\"message_id\":42}]}", "latency_ms": 720, "tokens": 390},
+        "model-b": {"output": "{\"evidence\":[]}", "latency_ms": 900, "tokens": 300},
+        "model-c": {"output": "{\"evidence\":", "latency_ms": 150, "tokens": 0}
+      }
+    },
+    {
+      "id": "conflict-01", "task": "detect_conflict", "category": "Conflict",
+      "input": "早期记录职业=会计，近期自述职业=设计师。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"conflict\":true,\"note\":\"职业冲突：会计 vs 设计师，需澄清\"}", "latency_ms": 800, "tokens": 450},
+        "model-b": {"output": "{\"conflict\":false}", "latency_ms": 1100, "tokens": 420},
+        "model-c": {"output": "可能有变化吧。", "latency_ms": 220, "tokens": 0}
+      }
+    },
+    {
+      "id": "conflict-02", "task": "detect_conflict", "category": "Conflict",
+      "input": "一条说未婚，另一条提到配偶。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"conflict\":true,\"note\":\"婚姻状态冲突：未婚 vs 已婚\"}", "latency_ms": 790, "tokens": 460},
+        "model-b": {"output": "{\"conflict\":true}", "latency_ms": 1050, "tokens": 380},
+        "model-c": {"output": "{oops", "latency_ms": 180, "tokens": 0}
+      }
+    },
+    {
+      "id": "ask-01", "task": "qa_answer", "category": "Ask",
+      "input": "问：他最近在忙什么？",
+      "expect": {"must_be_valid_json": true, "required_fields": ["answer"], "expected_snippets": ["搬家"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"answer\":\"他最近在准备搬家。\",\"confidence\":0.8}", "latency_ms": 850, "tokens": 500},
+        "model-b": {"output": "{\"answer\":\"不太确定。\"}", "latency_ms": 1200, "tokens": 480},
+        "model-c": {"output": "不知道。", "latency_ms": 200, "tokens": 0}
+      }
+    },
+    {
+      "id": "ask-02", "task": "qa_answer", "category": "Ask",
+      "input": "问：我们上次聊到哪个项目？",
+      "expect": {"must_be_valid_json": true, "required_fields": ["answer"], "expected_snippets": ["小程序"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"answer\":\"上次聊到小程序项目。\"}", "latency_ms": 830, "tokens": 490},
+        "model-b": {"output": "{\"answer\":\"聊过一些事。\"}", "latency_ms": 1150, "tokens": 460},
+        "model-c": {"output": "{\"answer\":}", "latency_ms": 160, "tokens": 0}
+      }
+    },
+    {
+      "id": "profile-01", "task": "profile_summary", "category": "Profile",
+      "input": "汇总：教师、爱跑步、有女儿。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["summary"], "expected_snippets": ["老师"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"summary\":\"中学老师，热爱跑步，育有一女。\"}", "latency_ms": 900, "tokens": 520},
+        "model-b": {"output": "{\"summary\":\"一位家长。\"}", "latency_ms": 1250, "tokens": 500},
+        "model-c": {"output": "是个老师吧可能。", "latency_ms": 240, "tokens": 0}
+      }
+    },
+    {
+      "id": "profile-02", "task": "profile_summary", "category": "Profile",
+      "input": "汇总：设计师、养猫、常住成都。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["summary"], "expected_snippets": ["成都"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"summary\":\"设计师，养猫，常住成都。\"}", "latency_ms": 890, "tokens": 510},
+        "model-b": {"output": "{\"summary\":\"有只猫。\"}", "latency_ms": 1180, "tokens": 470},
+        "model-c": {"output": "{\"summary\"", "latency_ms": 170, "tokens": 0}
+      }
+    },
+    {
+      "id": "coach-01", "task": "coaching_suggestion", "category": "Coach",
+      "input": "与老友已 60 天无互动。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["主动联系"], "forbidden_snippets": ["拉黑"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"suggestion\":\"主动联系，问候近况。\",\"tone\":\"温和\"}", "latency_ms": 820, "tokens": 440},
+        "model-b": {"output": "{\"suggestion\":\"发个朋友圈。\"}", "latency_ms": 1100, "tokens": 420},
+        "model-c": {"output": "随便吧。", "latency_ms": 210, "tokens": 0}
+      }
+    },
+    {
+      "id": "coach-02", "task": "coaching_suggestion", "category": "Coach",
+      "input": "对方近期回复变慢、语气冷淡。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["空间"], "forbidden_snippets": ["逼问"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"suggestion\":\"给予空间，低压关心。\"}", "latency_ms": 810, "tokens": 430},
+        "model-b": {"output": "{\"suggestion\":\"多问几次。\"}", "latency_ms": 1080, "tokens": 410},
+        "model-c": {"output": "{\"suggestion\":]", "latency_ms": 190, "tokens": 0}
+      }
+    },
+    {
+      "id": "decision-01", "task": "decision_rank", "category": "Decision",
+      "input": "候选动作：follow_up 高亲密 90 天沉默；celebrate 低相关。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["follow_up"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"action_type\":\"follow_up\",\"priority\":95}", "latency_ms": 760, "tokens": 400},
+        "model-b": {"output": "{\"action_type\":\"celebrate\",\"priority\":40}", "latency_ms": 990, "tokens": 380},
+        "model-c": {"output": "选第一个。", "latency_ms": 220, "tokens": 0}
+      }
+    },
+    {
+      "id": "decision-02", "task": "decision_rank", "category": "Decision",
+      "input": "候选：apology 关系紧张；casual 无急务。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["apology"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"action_type\":\"apology\",\"priority\":90}", "latency_ms": 750, "tokens": 390},
+        "model-b": {"output": "{\"action_type\":\"casual\",\"priority\":20}", "latency_ms": 980, "tokens": 370},
+        "model-c": {"output": "{\"action_type\":}", "latency_ms": 170, "tokens": 0}
+      }
+    },
+    {
+      "id": "sim-01", "task": "simulate_action", "category": "Simulation",
+      "input": "模拟：本周主动问候降温中的老友。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["升温"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"outcome\":\"有望升温\",\"probability\":0.6}", "latency_ms": 840, "tokens": 460},
+        "model-b": {"output": "{\"outcome\":\"不确定\"}", "latency_ms": 1150, "tokens": 440},
+        "model-c": {"output": "也许会好点。", "latency_ms": 230, "tokens": 0}
+      }
+    },
+    {
+      "id": "sim-02", "task": "simulate_action", "category": "Simulation",
+      "input": "模拟：送生日祝福给长期未联系亲友。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["回联"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"outcome\":\"提升回联概率\",\"probability\":0.5}", "latency_ms": 830, "tokens": 450},
+        "model-b": {"output": "{\"outcome\":\"一般\"}", "latency_ms": 1120, "tokens": 430},
+        "model-c": {"output": "{\"outcome\"", "latency_ms": 180, "tokens": 0}
+      }
+    },
+    {
+      "id": "memrev-01", "task": "memory_review_queue", "category": "Memory Review",
+      "input": "低置信事实待人工确认。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["items"], "expected_snippets": ["待确认"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"items\":[{\"fact\":\"职业\",\"note\":\"待确认：证据弱\"}]}", "latency_ms": 800, "tokens": 420},
+        "model-b": {"output": "{\"items\":[]}", "latency_ms": 1050, "tokens": 360},
+        "model-c": {"output": "有几条要看看。", "latency_ms": 200, "tokens": 0}
+      }
+    },
+    {
+      "id": "memrev-02", "task": "memory_review_queue", "category": "Memory Review",
+      "input": "冲突事实待合并决策。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["items"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"items\":[{\"note\":\"冲突：地址新旧\"}]}", "latency_ms": 810, "tokens": 430},
+        "model-b": {"output": "{\"items\":[{\"note\":\"普通\"}]}", "latency_ms": 1060, "tokens": 410},
+        "model-c": {"output": "{\"items\":]", "latency_ms": 190, "tokens": 0}
+      }
+    },
+    {
+      "id": "memcons-01", "task": "memory_consolidation", "category": "Memory Consolidation",
+      "input": "重复事实去重合并。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["merged"], "expected_snippets": ["去重"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"merged\":true,\"note\":\"去重：保留最新\"}", "latency_ms": 790, "tokens": 410},
+        "model-b": {"output": "{\"merged\":false}", "latency_ms": 1040, "tokens": 380},
+        "model-c": {"output": "合一下。", "latency_ms": 200, "tokens": 0}
+      }
+    },
+    {
+      "id": "sess-01", "task": "relationship_session_brief", "category": "Relationship Session",
+      "input": "生成本次沟通简报与策略。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["brief", "strategy"], "expected_snippets": ["开场"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"brief\":\"近况摘要\",\"strategy\":\"轻松开场，聊共同话题\"}", "latency_ms": 860, "tokens": 500},
+        "model-b": {"output": "{\"brief\":\"摘要\"}", "latency_ms": 1200, "tokens": 480},
+        "model-c": {"output": "先打个招呼。", "latency_ms": 230, "tokens": 0}
+      }
+    },
+    {
+      "id": "sess-02", "task": "relationship_session_brief", "category": "Relationship Session",
+      "input": "紧张关系下的沟通策略。",
+      "expect": {"must_be_valid_json": true, "required_fields": ["brief", "strategy"], "expected_snippets": ["倾听"], "forbidden_snippets": ["指责"], "min_evidence_refs": 0},
+      "model_outputs": {
+        "model-a": {"output": "{\"brief\":\"存在张力\",\"strategy\":\"多倾听，不评判\"}", "latency_ms": 850, "tokens": 490},
+        "model-b": {"output": "{\"brief\":\"还好\",\"strategy\":\"直接谈\"}", "latency_ms": 1180, "tokens": 470},
+        "model-c": {"output": "{\"brief\"", "latency_ms": 180, "tokens": 0}
+      }
+    }
+  ]
+}
