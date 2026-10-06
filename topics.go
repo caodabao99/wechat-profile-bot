@@ -266,7 +266,7 @@ func analyzeContactTopics(ctx context.Context, db *sql.DB, llm *LLMClient, conta
 	}
 
 	// 调模型（无锁）。
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskTopic, "", prompt)
 	if err != nil {
 		return nil, err
 	}

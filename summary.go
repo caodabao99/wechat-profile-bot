@@ -127,7 +127,7 @@ func SummarizeContact(ctx context.Context, db *sql.DB, llm *LLMClient, contactID
 		return nil, err
 	}
 
-	raw, err := llm.CallContext(ctx, prompt)
+	raw, err := callLLMCached(ctx, db, llm, contactID, TaskSummary, "", prompt)
 	if err != nil {
 		return nil, err
 	}

@@ -116,6 +116,7 @@ func TestProfileInFlightInvalidated(t *testing.T) {
 			defer server.Close()
 			cfg := &Config{}
 			cfg.LLM.BaseURL = server.URL
+			cfg.LLM.ApiKey = "test-key" // 画像等 AI 函数经 callLLMCached 走 configured() 闸门，需配好密钥才算「已配置」
 			client := NewLLMClient(cfg)
 			done := make(chan error, 1)
 			go func() {

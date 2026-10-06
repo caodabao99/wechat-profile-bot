@@ -48,6 +48,8 @@ const (
 	TaskMemoryReview ContextTask = "memory_review"
 	TaskTopic        ContextTask = "topic"
 	TaskExperiment   ContextTask = "experiment"
+	TaskSummary      ContextTask = "summary" // 联系人往来摘要（SummarizeContact）
+	TaskIntent       ContextTask = "intent"  // 单条新消息意图分析（AnalyzeIntent）
 )
 
 // allBlocks 便捷全量块集合（画像等重任务需要几乎全部上下文）。
@@ -135,6 +137,20 @@ var contextTaskRegistry = map[ContextTask]contextTaskSpec{
 		Optional:  []ContextBlock{BlockPreviousOutcomes, BlockTimeline, BlockGoals},
 		Budget:    ContextBudget{MaxMessages: 12, MaxRelevant: 8, MaxEvidence: 8, MaxEvents: 12, MaxTopics: 6, MaxWeeks: 4, MaxTokens: 1000},
 		Cacheable: true, RequiresLLM: false,
+	},
+	TaskSummary: {
+		Task: TaskSummary, Label: "往来摘要",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState, BlockMetrics, BlockTopics},
+		Budget:    ContextBudget{MaxMessages: 24, MaxRelevant: 8, MaxEvidence: 8, MaxEvents: 10, MaxTopics: 6, MaxWeeks: 6, MaxTokens: 1400},
+		Cacheable: true, RequiresLLM: true,
+	},
+	TaskIntent: {
+		Task: TaskIntent, Label: "意图分析",
+		Required:  []ContextBlock{BlockIdentity, BlockRecentMessages},
+		Optional:  []ContextBlock{BlockFacts, BlockRelationshipState},
+		Budget:    ContextBudget{MaxMessages: 10, MaxRelevant: 0, MaxEvidence: 4, MaxEvents: 4, MaxTopics: 0, MaxWeeks: 2, MaxTokens: 700},
+		Cacheable: true, RequiresLLM: true,
 	},
 }
 

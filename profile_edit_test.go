@@ -49,6 +49,7 @@ func TestAnalyzeRepliesSingleCall(t *testing.T) {
 	defer server.Close()
 	cfg := &Config{}
 	cfg.LLM.BaseURL = server.URL
+	cfg.LLM.ApiKey = "test-key" // 迁移后 AnalyzeIntent 经 callLLMCached，需 configured()（key+baseURL）
 	result, err := AnalyzeIntent(context.Background(), db, NewLLMClient(cfg), id, "你好", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +197,7 @@ func TestEditInvalidatesRunningGeneration(t *testing.T) {
 			defer releaseOnce.Do(func() { close(release) })
 			cfg := &Config{}
 			cfg.LLM.BaseURL = server.URL
+			cfg.LLM.ApiKey = "test-key" // 画像生成/补充经 callLLMCached，需配好密钥才算已配置
 			client := NewLLMClient(cfg)
 			done := make(chan error, 1)
 			go func() {
