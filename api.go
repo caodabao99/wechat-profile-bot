@@ -401,6 +401,9 @@ func (s *apiServer) routeContact(w http.ResponseWriter, r *http.Request, id int6
 	case "actions":
 		// 行动账本（蓝图 §5 P1）：/api/contacts/{id}/actions[/{aid}/{transition|outcome}]
 		s.routeContactActions(w, r, id, sub[1:])
+	case "experiments":
+		// 关系实验（蓝图 §9 P5）：/api/contacts/{id}/experiments[/{eid}/{start|abandon|cancel|measure}]
+		s.routeContactExperiments(w, r, id, sub[1:])
 	case "replay":
 		s.routeContactReplay(w, r, id)
 	case "connections":
