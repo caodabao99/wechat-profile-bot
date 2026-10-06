@@ -168,6 +168,7 @@
 |---|---|---|
 | P1 §5.2 裸调点→`callLLMCached` 接管 | **PARTIAL→接近收口**（联系人/幂等类已尽数接管）| 新增 8 处迁至单一原语：`simulate`(TaskSimulation)、`rehearsal`×2（TaskRehearsal/TaskRehearsalReview）、`followup`(TaskFollowup)、`weekly_plan`(TaskOutreach)、`assistant`(TaskEmotion)，叠加 v6.3.0 的 6 处——共 **14 处接管点 / 10 个文件** |
 | P1 §5.2 接管边界（新增结论）| **IMPLEMENTED（边界已明）** | 交互式操作刻意**不接管**并附代码注释：`assistance.go` `RewriteReply`/`ReviewDraft` 期望每次新鲜多样、且需取消能真实中断模型（缓存先查会绕过 `ctx`）；registry 中登记为 `Cacheable:false` 以记录决策而非遗漏。`llm_api.go:282` 连通性 ping 同理不缓存 |
+| P1 §5.4 Context Debug 可观测 | **IMPLEMENTED**（待随下一版发布）| 新增 `context_debug.go`，经 `GET /api/contacts/{id}/context` 的 `obs` 字段返回：① `block_plan`——注册表「计划」×实取「结果」逐项对照，并单列 `missing_required`（声明必需却为空）；② `token_estimate`（CJK 逐字 + 拉丁每 4 字符，**标明仅为估算**、不冒充真实用量）占预算百分比与 `truncated`；③ `cache` 快照状态（按 context_version/model 分层计数）；④ 活动 `model`与 `llm_configured`；⑤ `registered`（未登记任务回落默认规格的迁移告警）。与 §4.3 隐私一致：`obs` 全为计数/指纹，**不含任何正文**（有专测以「同上下文 rendered 确实含该私密串」对照「obs 序列化后不含它」，防空断言）；不建表、不新引第二套 Context 引擎 |
 
 **剩余 `llm.CallContext` 实测清单（共 9 处，均为刻意豁免、非遭遗漏）**：`ai_cache.go:124`（原语自身的真调出口，必须保留）、`profile.go:302`（变化说明辅助调用，作入参的 profile 已变、无 `contactID`）、`assistance.go:92/117`（交互式，见上）、`llm_api.go:282`（ping）、`ask.go:116`（非联系人作用域、已走自有 cache）、`calendar.go:346` 与 `relationship.go:360`（全局/多联系人编排类，不是单联系人上下文任务）。
 

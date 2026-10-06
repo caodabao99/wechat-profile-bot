@@ -567,7 +567,7 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/relationships/projects` | Relationship Projects（Phase 5）列表（`?contactId=&status=`；`status=open` 取 active+paused） |
 | POST | `/api/relationships/projects` | 新建关系项目（目标之上的高层经营单元：主题/阶段/下一步行动/截止） |
 | GET/PUT/DELETE | `/api/relationships/projects/{id}` | 单条项目读/局部更新（PATCH 语义）/删除 |
-| GET | `/api/contacts/{id}/context` | AI Context Engine（Phase 6）：分层构造联系人认知快照（`?task=profile/ask/coach/narrative/simulation/decision/briefing/replay`，`?q=` 附 FTS 相关消息），按任务预算返回结构化 `context` + `rendered` 提示词上下文块 |
+| GET | `/api/contacts/{id}/context` | AI Context Engine（Phase 6）：分层构造联系人认知快照（`?task=profile/ask/coach/narrative/simulation/decision/briefing/replay/summary/intent/...`，`?q=` 附 FTS 相关消息）。**默认只返回无正文的可观测层**（§5.4）：`summary` 各块计数 + `obs`（注册表标定的 `block_plan` 块计划与 `missing_required`、`token_estimate` 估算、`cache` 快照状态、活动 `model`）；仅 `config.contextDebug=true` 时额外返回含正文的 `context` + `rendered` |
 | GET | `/api/contacts/{id}/replay` | Memory Replay「重新认识 TA」（Phase 7）：确定性拼装关系回放（首次认识/阶段/转折/兴趣职业/升降温/共同事件/主题变化/当前状态/关注点/长期目标/未完成事项），每条结论带来源证据（timeline/fact/topic/metric/message/state）；不依赖 LLM，返回 `replay` + `rendered` |
 | GET | `/api/life/state` | 人生总览快照（资产账本+组合聚合+时间回流；缓存缺失/过期则现算，纯 SQL） |
 | GET | `/api/life/projection` | 未来推演（90 天走势 + 三条自动 what-if 策略） |
