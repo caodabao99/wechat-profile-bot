@@ -14,10 +14,11 @@ import (
 
 // LLMConfig 大模型接口配置
 type LLMConfig struct {
-	ApiKey          string `json:"apiKey"`          // API Key
-	BaseURL         string `json:"baseURL"`         // 接口地址，如 https://api.deepseek.com
-	Model           string `json:"model"`           // 模型名称
-	DisableThinking bool   `json:"disableThinking"` // 关闭推理思考模式（适用于 deepseek-v4/qwen3 等默认开启思考的模型）
+	ApiKey          string `json:"apiKey"`              // API Key
+	BaseURL         string `json:"baseURL"`             // 接口地址，如 https://api.deepseek.com
+	Model           string `json:"model"`               // 模型名称
+	DisableThinking bool   `json:"disableThinking"`     // 关闭推理思考模式（适用于 deepseek-v4/qwen3 等默认开启思考的模型）
+	ExtraBody       string `json:"extraBody,omitempty"` // 自定义请求体参数（JSON 对象），与网页档案同义：兼容各厂商思考/推理参数命名差异
 }
 
 // ProfileConfig 画像生成策略

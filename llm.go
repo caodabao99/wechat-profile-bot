@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ type LLMClient struct {
 	baseURL         string // 启动兜底：config.json llm.baseURL
 	model           string // 启动兜底：config.json llm.model
 	disableThinking bool   // 启动兜底：config.json llm.disableThinking
+	extraBody       string // 启动兜底：config.json llm.extraBody（自定义请求体 JSON）
 	db              *sql.DB
 	http            *resty.Client // 直连客户端（不走代理）
 
@@ -38,6 +40,7 @@ func NewLLMClient(cfg *Config) *LLMClient {
 		baseURL:         base,
 		model:           cfg.LLM.Model,
 		disableThinking: cfg.LLM.DisableThinking,
+		extraBody:       strings.TrimSpace(cfg.LLM.ExtraBody),
 		http: resty.New().
 			SetTimeout(60*time.Second).
 			SetHeader("Content-Type", "application/json"),
@@ -196,6 +199,22 @@ func (c *LLMClient) doCallContext(ctx context.Context, spec llmSpec, prompt stri
 	if spec.DisableThinking {
 		body["enable_thinking"] = false
 		body["thinking"] = map[string]string{"type": "disabled"}
+	}
+
+	// 自定义请求体参数（网页端可配）：逐键覆盖式合并，让用户按各家厂商命名覆盖内置默认（含上面的关思考参数）。
+	// messages 是结构性键，禁止被覆盖（覆盖必致请求畸形）。坏 JSON 记告警并忽略，不阻断调用。
+	if eb := strings.TrimSpace(spec.ExtraBody); eb != "" {
+		var extra map[string]interface{}
+		if err := json.Unmarshal([]byte(eb), &extra); err != nil {
+			slog.Warn("模型自定义请求参数非合法 JSON 对象，已忽略", "profile", spec.ProfileID, "err", err)
+		} else {
+			for k, v := range extra {
+				if k == "messages" {
+					continue
+				}
+				body[k] = v
+			}
+		}
 	}
 
 	endpoint := spec.BaseURL + "/chat/completions"

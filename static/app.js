@@ -3645,14 +3645,14 @@ createApp({
     }
     function openNewForm() {
       mp.formIsNew = true; mp.formNeedsKey = true; mp.formError = '';
-      mp.editing = { id: '', label: '', provider: 'custom', baseURL: '', apiKey: '', model: '', region: 'domestic', disableThinking: false, useProxy: false };
+      mp.editing = { id: '', label: '', provider: 'custom', baseURL: '', apiKey: '', model: '', region: 'domestic', disableThinking: false, useProxy: false, extraBody: '' };
     }
     function openPresetForm(p) {
       mp.formIsNew = true; mp.formNeedsKey = p.needsKey !== false; mp.formError = '';
       mp.editing = {
         id: '', label: p.label, provider: p.provider, baseURL: p.baseURL,
         apiKey: '', model: (p.models && p.models[0]) || '', region: p.region || 'domestic',
-        disableThinking: true, useProxy: !!p.useProxy,
+        disableThinking: true, useProxy: !!p.useProxy, extraBody: '',
       };
       mp.presetModels = (p.models || []).slice();
     }

@@ -52,6 +52,9 @@ type LLMProfile struct {
 	DisableThinking bool   `json:"disableThinking"` // 关闭推理/思考模式
 	Region          string `json:"region"`          // domestic|foreign
 	UseProxy        bool   `json:"useProxy"`        // 本档案是否经全局代理访问（国外模型建议 true）
+	// ExtraBody 自定义请求体参数（JSON 对象）：逐键覆盖式合并进每次 chat 请求，
+	// 用于兼容各家厂商对思考/推理模式的不同参数命名（enable_thinking / thinking:{type} / reasoning_effort …）。
+	ExtraBody string `json:"extraBody,omitempty"`
 }
 
 // LLMProxySite 一次代理连通性探测的站点结果。
@@ -104,6 +107,7 @@ type llmSpec struct {
 	Region          string
 	UseProxy        bool
 	ProxyURL        string // 仅当 UseProxy 且全局代理启用且档案需要时非空
+	ExtraBody       string // 来自档案/config 的自定义请求体 JSON（合并进 body，结构性键 messages 除外）
 	// v7.0 Model Router 生成参数覆盖（来自任务策略）：nil/0 = 不覆盖，沿用内置默认。
 	Temperature *float64
 	MaxTokens   int
@@ -152,6 +156,7 @@ func seedProfilesFromConfig() []LLMProfile {
 		APIKey:          cfg.ApiKey,
 		Model:           strings.TrimSpace(cfg.Model),
 		DisableThinking: cfg.DisableThinking,
+		ExtraBody:       cfg.ExtraBody,
 		Region:          region,
 		UseProxy:        region == regionForeign,
 	}}
@@ -183,6 +188,7 @@ func (s *LLMSettings) normalize() {
 		s.Profiles[i].BaseURL = strings.TrimRight(strings.TrimSpace(s.Profiles[i].BaseURL), "/")
 		s.Profiles[i].Label = strings.TrimSpace(s.Profiles[i].Label)
 		s.Profiles[i].Model = strings.TrimSpace(s.Profiles[i].Model)
+		s.Profiles[i].ExtraBody = strings.TrimSpace(s.Profiles[i].ExtraBody)
 		if s.Profiles[i].ID == "" {
 			s.Profiles[i].ID = newProfileID()
 		}
@@ -315,6 +321,24 @@ func validateLLMProxyURL(raw string) error {
 	return nil
 }
 
+// validateLLMExtraBody 校验自定义请求体参数：空放行；非空必须是合法 JSON 对象（拒绝数组/标量/坏 JSON）。
+// 让用户按各家厂商命名自由配置调用参数；坏 JSON 会污染请求体，故保存时直接拒绝。
+func validateLLMExtraBody(label, raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		name := strings.TrimSpace(label)
+		if name == "" {
+			name = "未命名档案"
+		}
+		return fmt.Errorf("档案「%s」的自定义请求参数必须是合法的 JSON 对象（如 {\"thinking\":{\"type\":\"low\"}}），当前无法解析", name)
+	}
+	return nil
+}
+
 // saveLLMSettings 保存设置（合并打码密钥：前端回传 apiKeyMask 视为「不改动」沿用原值）。
 func saveLLMSettings(db *sql.DB, next LLMSettings) error {
 	// 先读旧值以还原被掩码的密钥
@@ -337,6 +361,9 @@ func saveLLMSettings(db *sql.DB, next LLMSettings) error {
 	// 只校非空值，合法 http(s) 端点不受影响；不合法直接拒绝，不落库、不改活动配置。
 	for _, p := range next.Profiles {
 		if err := validateLLMBaseURL("模型接口地址", p.BaseURL); err != nil {
+			return err
+		}
+		if err := validateLLMExtraBody(p.Label, p.ExtraBody); err != nil {
 			return err
 		}
 	}
@@ -388,6 +415,7 @@ func specFromProfile(p *LLMProfile, s *LLMSettings) llmSpec {
 		APIKey:          p.APIKey,
 		Model:           p.Model,
 		DisableThinking: p.DisableThinking,
+		ExtraBody:       p.ExtraBody,
 		Region:          p.Region,
 		UseProxy:        useProxy,
 		ProxyURL:        proxyURL,
@@ -403,5 +431,6 @@ func (c *LLMClient) startupSpec() llmSpec {
 		APIKey:          c.apiKey,
 		Model:           c.model,
 		DisableThinking: c.disableThinking,
+		ExtraBody:       c.extraBody,
 	}
 }

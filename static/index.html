@@ -2760,6 +2760,10 @@
             <select v-model="mp.editing.region"><option value="domestic">国内</option><option value="foreign">国外</option></select></div>
           <label class="mp-check"><input type="checkbox" v-model="mp.editing.disableThinking"> 关闭推理/思考模式</label>
           <label class="mp-check"><input type="checkbox" v-model="mp.editing.useProxy"> 本模型经代理访问（国外建议勾选）</label>
+          <div class="field"><label>自定义请求参数（JSON 对象，选填）</label>
+            <textarea rows="3" v-model="mp.editing.extraBody" placeholder='{"thinking":{"type":"low"}}'></textarea>
+            <span class="hint">逐键合并进每次请求（可覆盖内置默认）。用于适配不同厂商的思考/推理参数命名，如 <code>{"thinking":{"type":"low"}}</code>、<code>{"enable_thinking":false}</code>、<code>{"reasoning_effort":"low"}</code>、<code>{"temperature":0.3}</code>。留空=不额外发送。</span>
+          </div>
           <p class="mp-form-err" v-if="mp.formError">{{ mp.formError }}</p>
           <div class="modal-actions">
             <button type="button" class="btn" @click="closeForm" :disabled="mp.busy">取消</button>
