@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,7 +121,7 @@ func (b *Bot) bufferChatLog(msg *ILinkMessage, text string) {
 		p.timer.Stop()
 	}
 	p.timer = time.AfterFunc(chatLogFlushDelay, func() {
-		b.flushPending(msg.FromUserID)
+		b.SafeFlushPending(msg.FromUserID)
 	})
 	n := len(p.texts)
 	pendingBatchMu.Unlock()
@@ -152,7 +153,7 @@ func (b *Bot) touchPendingBatch(userID string) {
 		p.timer.Stop()
 	}
 	p.timer = time.AfterFunc(chatLogFlushDelay, func() {
-		b.flushPending(userID)
+		b.SafeFlushPending(userID)
 	})
 	slog.Info("跳过非文本消息并顺延合并窗口", "from", userID, "skippedMedia", p.mediaCount)
 }
@@ -215,6 +216,35 @@ func profileErrMsg(err error) string {
 		return ErrProfileBusy.Error()
 	}
 	return err.Error()
+}
+
+// SafeHandleMessage 带 panic 隔离地处理一条入站消息。
+//
+// 为什么必须有：主消息循环处理的是**用户粘贴的任意文本**，而此前全仓 recover 只存在于
+// 归档/助手等旁路功能里——解析/画像/合并链路上任何一处 panic 都会让整个进程退出（审计 C2）。
+// 这里把 panic 收住并转成回复文案 + 日志，同时返回 succeeded=false 让调用方**不要提交游标**，
+// 消息会由服务端重放 + ingest_ledger 重试，做到「崩一条不丢一批」。
+func (b *Bot) SafeHandleMessage(msg *ILinkMessage) (reply string, succeeded bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			reply = "处理这条消息时程序内部出错，已记录日志；请稍后重试或换个方式粘贴。"
+			succeeded = false
+			slog.Error("消息处理 panic（已隔离，进程继续运行）",
+				"panic", r, "from", msg.FromUserID, "stack", string(debug.Stack()))
+		}
+	}()
+	return b.HandleMessage(msg), true
+}
+
+// SafeFlushPending 带 panic 隔离地结算聊天记录分片缓冲。
+// 它跑在 time.AfterFunc 的独立 goroutine 里，没有隔离的话一条坏记录会直接带走整个进程。
+func (b *Bot) SafeFlushPending(userID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("聊天记录结算 panic（已隔离）", "panic", r, "from", userID, "stack", string(debug.Stack()))
+		}
+	}()
+	b.flushPending(userID)
 }
 
 // NewBot 创建命令处理器
@@ -897,7 +927,10 @@ func (b *Bot) webPanelURL() string {
 	case panelSourceConfig:
 		sb.WriteString("（来自 config.json 的 webBaseURL。）\n")
 	case panelSourcePublic:
-		fmt.Fprintf(&sb, "（这是自动探测到的服务器公网地址。从外网打开需你在云主机安全组/防火墙放行 %d 端口，或在路由器做端口映射；跨公网建议给 webBaseURL 配 https 域名，以免微信内置浏览器告警。）\n", port)
+		fmt.Fprintf(&sb, "（自动探测到的公网地址，而面板只跑 HTTP。从外网打开需你在云主机安全组/防火墙放行 %d 端口或在路由器做端口映射。\n"+
+			"⚠ 安全提醒：跨公网走明文意味着 apiToken、TOTP 密钥与全部聊天内容明文过网，"+
+			"拿到 token 就能绕过 2FA 调用全部 API（含导出带密钥的备份）。\n"+
+			"正式使用请先在 config.json 的 webBaseURL 配 HTTPS 反代地址，不要把 %d 端口直接暴露公网。）\n", port, port)
 	default: // panelSourceLAN：公网探测不可用时的兵底
 		sb.WriteString("（未能探测到公网 IP，上面是局域网地址，仅与服务器同一 WiFi/内网时可打开。外网直开请在 config.json 配置 webBaseURL 为你的可达地址。）\n")
 	}

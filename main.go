@@ -79,6 +79,12 @@ func main() {
 	}
 
 	// 加载 context token 缓存
+	// 收取账本与游标回读（at-least-once 的前提）：重启后从「上次已成功处理」的位置续拉，
+	// 既不丢消息，也不会因为空游标把历史消息整段重放一遍。
+	if err := ensureIngestLedger(db); err != nil {
+		slog.Warn("收取账本初始化失败（会退化为无持久去重，不影响收消息本身）", "err", err)
+	}
+	client.LoadCursor()
 	// 文件不存在是首次启动的正常情况；文件存在但解析失败要告警——
 	// 那意味着缓存损坏，所有用户都发不出主动消息，得让用户知道
 	if err := client.LoadContextTokens(); err != nil {
@@ -169,6 +175,11 @@ func main() {
 			}
 		}
 
+		// 会话过期退避：首次 60s，之后 ×3，上限 60 分钟（对齐官方插件 Session Guard 的
+		// 「暂停该账号 60 分钟」做法）。关键是**不再永不 GetUpdates**。
+		expiryBackoff := time.Minute
+		lastPrune := time.Now()
+
 		for {
 			select {
 			case <-stopCh:
@@ -176,13 +187,30 @@ func main() {
 			default:
 			}
 
-			if client.SessionExpired() {
-				slog.Warn("会话已过期，请发送「重登」命令后重启程序")
-				recordPollErr(errors.New("会话已过期，需重新扫码登录"))
-				if !wait(60 * time.Second) {
+			// 网页重绑进行中：挂起轮询，不与之抢会话（成功后过期位会被清、凭据已换新）
+			if client.RebindActive() {
+				if !wait(2 * time.Second) {
 					return
 				}
 				continue
+			}
+
+			if client.SessionExpired() {
+				slog.Warn("会话已过期：请在网页管理端点「重新扫码绑定」，或等自动探测恢复",
+					"next_probe", expiryBackoff.String())
+				recordPollErr(errors.New("会话已过期，需重新扫码登录"))
+				if !wait(expiryBackoff) {
+					return
+				}
+				if expiryBackoff < time.Hour {
+					if expiryBackoff *= 3; expiryBackoff > time.Hour {
+						expiryBackoff = time.Hour
+					}
+				}
+				// 重要修复：旧代码在这里直接 continue，导致永远不再收消息——于是「重登」
+				// 这条自救指令本身也收不到，机器人只能静默死亡（审计 C1）。
+				// 现在清掉粘性位，让下面真的发一次请求：若会话仍无效，服务端会再次返回 -14 并重新置位。
+				client.AllowProbe()
 			}
 
 			msgs, err := client.GetUpdates()
@@ -201,9 +229,9 @@ func main() {
 				}
 				if strings.Contains(err.Error(), "errcode=-14") ||
 					strings.Contains(err.Error(), "会话已过期") {
-					slog.Warn("会话过期，请发送「重登」命令后重启程序")
+					slog.Warn("会话过期（-14）：需在网页管理端重新扫码绑定", "next_probe", expiryBackoff.String())
 					recordPollErr(errors.New("会话已过期，需重新扫码登录"))
-					if !wait(60 * time.Second) {
+					if !wait(5 * time.Second) {
 						return
 					}
 					continue
@@ -217,26 +245,55 @@ func main() {
 			}
 			// 无错误返回（无论是否有新消息）说明与服务器的长轮询通道正常
 			recordPollOK()
+			expiryBackoff = time.Minute // 连接恢复，重置退避
 
-			for _, msg := range msgs {
+			// 整批都处理成功才提交游标（at-least-once）：中途 panic/停机就不提交，
+			// 下次用旧游标重拉，服务端会重放这批，由 ingest_ledger 保证不重复入库（审计 C9）。
+			batchOK := true
+			for i := range msgs {
+				msg := msgs[i]
 				select {
 				case <-stopCh:
-					return
+					return // 不提交游标：这批会重放，不丢消息
 				default:
 				}
 
-				// 跳过 bot 自己发的消息（防止回环）。
+				// 跳过 bot 自己发的消息（防回环）。
 				// 注意：不能跳过 GetUserID()，因为登录用户给 bot 发消息时
 				// from_user_id 就是登录用户的 ilink_user_id，跳过会导致用户消息全部丢失。
 				if msg.FromUserID == client.GetBotID() {
 					continue
 				}
 
+				key := messageKey(&msg)
+				if process, attempts := ingestShouldProcess(db, key); !process {
+					// 重放但已 done（或已达毒丸上限）：只标记并提交，不重复处理
+					client.MarkProcessed(key)
+					if ingestPoisoned(db, key) {
+						slog.Error("放弃重试该消息（已达重试上限，需人工看日志）", "key", key, "from", msg.FromUserID)
+					}
+					continue
+				} else if attempts > 0 {
+					slog.Info("重试之前失败的消息", "key", key, "attempts", attempts)
+				}
+
 				slog.Info("收到消息", "from", msg.FromUserID, "text", preview(extractText(&msg), 100))
 
 				// 处理消息并回复。HandleMessage 里的重活（画像生成、意图分析、合并）
 				// 都已经放到后台 goroutine，这里只会短暂占用轮询循环。
-				reply := bot.HandleMessage(&msg)
+				// SafeHandleMessage 隔离 panic：单条坏消息不再带走整个进程（审计 C2）。
+				reply, ok := bot.SafeHandleMessage(&msg)
+				if ok {
+					if err := ingestMarkDone(db, key, msg.FromUserID); err != nil {
+						slog.Warn("写收取账本 done 失败", "key", key, "err", err)
+					}
+					client.MarkProcessed(key)
+				} else {
+					n, ferr := ingestMarkFailed(db, key, msg.FromUserID, "handler panic")
+					slog.Error("消息处理失败，不提交游标，等待重放重试", "key", key, "attempts", n, "err", ferr)
+					batchOK = false
+				}
+
 				if reply != "" {
 					if err := client.SendTextWithToken(msg.FromUserID, reply, msg.ContextToken); err != nil {
 						slog.Error("发送回复失败", "to", msg.FromUserID, "err", err)
@@ -244,6 +301,20 @@ func main() {
 						slog.Info("回复已发送", "to", msg.FromUserID, "len", len([]rune(reply)))
 					}
 				}
+			}
+
+			if batchOK {
+				if err := client.CommitCursor(); err != nil {
+					slog.Warn("游标提交失败", "err", err)
+				}
+			}
+
+			// 账本只留最近 7 天，防表无限增长（每 6 小时清一次）
+			if time.Since(lastPrune) > 6*time.Hour {
+				if n, err := ingestPrune(db); err == nil && n > 0 {
+					slog.Info("已清理过期收取账本行", "rows", n)
+				}
+				lastPrune = time.Now()
 			}
 		}
 	}()

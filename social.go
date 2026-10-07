@@ -475,12 +475,21 @@ func extractPhrases(texts []string, topN int) []PhraseStat {
 	return out
 }
 
-// phrasesFromProfiles 汇总各联系人画像里的 FrequentPhrases
+// phrasesFromProfiles 汇总各联系人画像里的 FrequentPhrases。
+//
+// 重要修正：画像落库用的是 **snake_case**（见 profile.go 的 json tag：
+// `communication_style` / `frequent_phrases`），而本函数此前只解 camelCase，
+// 导致生产数据上「对方的口头禅」永远为空（且旧测试的 fixture 也写 camelCase，与被错的
+// 实现自洽所以测不出来）。现在两种命名都解，并按单个画像内去重：camelCase 仅作为
+// 外部/历史来源的兼容路径，不能重复计数。
 func phrasesFromProfiles(profileJSONs []string, topN int) []PhraseStat {
+	type styleBlock struct {
+		PhrasesSnake []string `json:"frequent_phrases"` // 权威：与 profile.go 一致
+		PhrasesCamel []string `json:"frequentPhrases"`  // 兼容：外部/历史来源
+	}
 	type slim struct {
-		CommunicationStyle struct {
-			FrequentPhrases []string `json:"frequentPhrases"`
-		} `json:"communicationStyle"`
+		StyleSnake styleBlock `json:"communication_style"` // 权威
+		StyleCamel styleBlock `json:"communicationStyle"`  // 兼容
 	}
 	counts := map[string]int{}
 	var order []string
@@ -489,15 +498,22 @@ func phrasesFromProfiles(profileJSONs []string, topN int) []PhraseStat {
 		if err := json.Unmarshal([]byte(pj), &s); err != nil {
 			continue
 		}
-		for _, p := range s.CommunicationStyle.FrequentPhrases {
-			p = strings.TrimSpace(p)
-			if p == "" || len([]rune(p)) > 12 {
-				continue
+		seen := map[string]bool{}
+		for _, list := range [][]string{
+			s.StyleSnake.PhrasesSnake, s.StyleSnake.PhrasesCamel,
+			s.StyleCamel.PhrasesSnake, s.StyleCamel.PhrasesCamel,
+		} {
+			for _, p := range list {
+				p = strings.TrimSpace(p)
+				if p == "" || len([]rune(p)) > 12 || seen[p] {
+					continue
+				}
+				seen[p] = true
+				if _, ok := counts[p]; !ok {
+					order = append(order, p)
+				}
+				counts[p]++
 			}
-			if _, ok := counts[p]; !ok {
-				order = append(order, p)
-			}
-			counts[p]++
 		}
 	}
 	sort.SliceStable(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })

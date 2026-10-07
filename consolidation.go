@@ -550,26 +550,53 @@ func MergeFacts(db *sql.DB, keepID int64, loserIDs []int64) error {
 		args[i] = id
 	}
 	now := time.Now().Format(time.RFC3339)
-	// 1) 先删掉与 keep 重复的 loser 证据（同一 message_id+archived 已被 keep 支撑），再迁移其余。
-	if _, err := db.Exec(
+	// 四步必须在一个事务里（投产前审计 C4）：此前逐条自动提交，中途失败会留下
+	// 「证据已迁到 keep、loser 却没标 superseded」的半合并状态，既账不平也无法安全重试。
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("开启合并事务失败: %w", err)
+	}
+	// 证据参数列表（loser id 集合），两份独立副本避免 append 别名互踩。
+	loserArgs := func() []interface{} {
+		out := make([]interface{}, 0, len(args))
+		out = append(out, args...)
+		return out
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM profile_fact_evidence
+		 WHERE fact_id IN (`+ph+`)
+		   AND rowid NOT IN (SELECT MIN(rowid) FROM profile_fact_evidence
+		                    WHERE fact_id IN (`+ph+`) GROUP BY message_id, archived)`,
+		append(loserArgs(), loserArgs()...)...); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("loser 之间证据去重: %w", err)
+	}
+	// 1) 再删掉与 keep 重复的 loser 证据（同一 message_id+archived 已被 keep 支撑）。
+	if _, err := tx.Exec(
 		`DELETE FROM profile_fact_evidence
 		 WHERE fact_id IN (`+ph+`)
 		   AND EXISTS(SELECT 1 FROM profile_fact_evidence k
 		     WHERE k.fact_id=? AND k.message_id=profile_fact_evidence.message_id AND k.archived=profile_fact_evidence.archived)`,
-		append(args, keepID)...); err != nil {
+		append(loserArgs(), keepID)...); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("去重证据: %w", err)
 	}
-	if _, err := db.Exec(
+	if _, err := tx.Exec(
 		`UPDATE profile_fact_evidence SET fact_id=? WHERE fact_id IN (`+ph+`)`,
-		append([]interface{}{keepID}, args...)...); err != nil {
+		append([]interface{}{keepID}, loserArgs()...)...); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("迁移证据: %w", err)
 	}
 	// 2) loser 事实标 superseded（保留行，不删除）。
-	if _, err := db.Exec(
+	if _, err := tx.Exec(
 		`UPDATE profile_facts SET status='superseded', valid_until=?, superseded_by=?, updated_at=?
 		 WHERE id IN (`+ph+`) AND status='active'`,
-		append([]interface{}{now, keepID, now}, args...)...); err != nil {
+		append([]interface{}{now, keepID, now}, loserArgs()...)...); err != nil {
+		tx.Rollback()
 		return fmt.Errorf("supersede loser: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交合并事务失败: %w", err)
 	}
 	return nil
 }

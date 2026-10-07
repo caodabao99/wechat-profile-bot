@@ -567,7 +567,15 @@ func migrate(db *sql.DB) error {
 		// 为何可以重建 profile_facts：主库连接 DSN 未开 foreign_keys（SQLite 默认 OFF），
 		// 故 DROP+RENAME 不会经 ON DELETE CASCADE 波及 profile_fact_evidence；复制时保留原 id，
 		// 使证据的 fact_id 继续对齐。profile_facts 本身属 derived/可重建/不入备份，重建成本可接受。
-		if _, err := db.Exec(`CREATE TABLE profile_facts_new (
+		// 必须是事务：下面四步 CREATE→INSERT→DROP→RENAME 若逐条自动提交，中途断电/磁盘满会
+		// 留下 profile_facts_new 残表或已被 DROP 的主表——下次启动时 CREATE 因表已存在而跳过、
+		// INSERT 又因主表不在而失败，迁移会永久卡住、只能手工修库（投产前审计 C3）。
+		// SQLite 的 DDL 是事务性的，包成一个事务即可整体原子。
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`CREATE TABLE profile_facts_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
 			fact_type TEXT NOT NULL,
@@ -589,22 +597,30 @@ func migrate(db *sql.DB) error {
 			evidence_strength REAL NOT NULL DEFAULT 0,
 			UNIQUE(contact_id, fact_type, fact_key, fact_value)
 		)`); err != nil {
+			tx.Rollback()
 			return err
 		}
 		// 保留原 id / 旧字段值；历史事实视为 AI 派生（source_type='ai'、confidence_type='inferred'）。
-		if _, err := db.Exec(`INSERT INTO profile_facts_new
+		if _, err := tx.Exec(`INSERT INTO profile_facts_new
 			(id, contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at, source_type, confidence_type)
 			SELECT id, contact_id, fact_type, fact_key, fact_value, source, confidence, status, first_seen, last_seen, created_at, updated_at, 'ai', 'inferred'
 			FROM profile_facts`); err != nil {
+			tx.Rollback()
 			return err
 		}
-		if _, err := db.Exec(`DROP TABLE profile_facts`); err != nil {
+		if _, err := tx.Exec(`DROP TABLE profile_facts`); err != nil {
+			tx.Rollback()
 			return err
 		}
-		if _, err := db.Exec(`ALTER TABLE profile_facts_new RENAME TO profile_facts`); err != nil {
+		if _, err := tx.Exec(`ALTER TABLE profile_facts_new RENAME TO profile_facts`); err != nil {
+			tx.Rollback()
 			return err
 		}
-		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_profile_facts_contact ON profile_facts(contact_id, status)`); err != nil {
+		if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_profile_facts_contact ON profile_facts(contact_id, status)`); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
 			return err
 		}
 		// 证据评估列（无 CHECK、纯附加；历史证据都是字面命中 → match_type='exact'、direct=1）。
@@ -854,8 +870,15 @@ func migrate(db *sql.DB) error {
 		}
 		if curSQL != "" && !strings.Contains(curSQL, "'relationship_session'") {
 			// 主库连接 DSN 未开 foreign_keys（SQLite 默认 OFF，同 v19 profile_facts 重建先例），
-			// 故 DROP+RENAME 不会因级联误伤；逐条 Exec 自动提交。
-			if _, err := db.Exec(`CREATE TABLE relationship_action_log_new (
+			// 故 DROP+RENAME 不会因级联误伤。
+			// 四步必须在一个事务里（投产前审计 C3）：逐条自动提交时，断电/磁盘满会留下
+			// relationship_action_log_new 残表或已被 DROP 的账本——而这是不可重建的 audit 真相表，
+			// 丢一次就是丢用户的真实行为记录。
+			tx, txErr := db.Begin()
+			if txErr != nil {
+				return txErr
+			}
+			if _, err := tx.Exec(`CREATE TABLE relationship_action_log_new (
 				id                 INTEGER PRIMARY KEY AUTOINCREMENT,
 				contact_id         INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
 				source             TEXT NOT NULL CHECK(source IN ('decision','coach','goal','project','calendar','manual','relationship_session')),
@@ -875,9 +898,10 @@ func migrate(db *sql.DB) error {
 				decision_fingerprint TEXT NOT NULL DEFAULT '',
 				dismiss_reason     TEXT NOT NULL DEFAULT ''
 			)`); err != nil {
+				tx.Rollback()
 				return err
 			}
-			if _, err := db.Exec(`INSERT INTO relationship_action_log_new
+			if _, err := tx.Exec(`INSERT INTO relationship_action_log_new
 				(id, contact_id, source, source_ref, action_type, action_text, status, deferred_until,
 				 created_at, updated_at, acted_at, outcome, outcome_provenance, outcome_observed_at,
 				 outcome_days, outcome_note, decision_fingerprint, dismiss_reason)
@@ -886,12 +910,18 @@ func migrate(db *sql.DB) error {
 				 created_at, updated_at, acted_at, outcome, outcome_provenance, outcome_observed_at,
 				 outcome_days, outcome_note, decision_fingerprint, dismiss_reason
 				FROM relationship_action_log`); err != nil {
+				tx.Rollback()
 				return err
 			}
-			if _, err := db.Exec(`DROP TABLE relationship_action_log`); err != nil {
+			if _, err := tx.Exec(`DROP TABLE relationship_action_log`); err != nil {
+				tx.Rollback()
 				return err
 			}
-			if _, err := db.Exec(`ALTER TABLE relationship_action_log_new RENAME TO relationship_action_log`); err != nil {
+			if _, err := tx.Exec(`ALTER TABLE relationship_action_log_new RENAME TO relationship_action_log`); err != nil {
+				tx.Rollback()
+				return err
+			}
+			if err := tx.Commit(); err != nil {
 				return err
 			}
 		}
@@ -933,6 +963,30 @@ func migrate(db *sql.DB) error {
 			}
 		}
 		if _, err := db.Exec(`PRAGMA user_version = 27`); err != nil {
+			return err
+		}
+	}
+
+	if version < 28 {
+		// v28: at-least-once 消息收取的持久幂等账本（审计 C9 修复）。
+		// 游标改为「整批处理成功后才提交」，因此服务端会重放已处理过的消息；
+		// 这张表就是重放安全网：done 直接跳过，毒丸按 attempts 上限放弃并告警。
+		// 属运行态缓存（不入备份、可整体清空不丢用户数据），键为 message_id（缺失时 from+时间戳）。
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS ingest_ledger(
+			msg_key    TEXT PRIMARY KEY,
+			from_user  TEXT NOT NULL DEFAULT '',
+			status     TEXT NOT NULL DEFAULT 'done' CHECK(status IN ('done','failed')),
+			attempts   INTEGER NOT NULL DEFAULT 1,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_ingest_ledger_updated ON ingest_ledger(updated_at)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 28`); err != nil {
 			return err
 		}
 	}

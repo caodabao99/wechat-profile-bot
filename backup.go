@@ -39,7 +39,7 @@ const (
 	backupFormatVersion = 1
 	backupDBEntry       = "data.db"
 	backupManifestName  = "MANIFEST.json"
-	backupCurrentDBVer  = 27 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v27）
+	backupCurrentDBVer  = 28 // 当前程序支持的最高 SQLite user_version（须与 migrate() 迁移终点一致，现 v28）
 	backupMaxUnzipBytes = int64(512 << 20)
 	backupMaxEntries    = 20
 )
@@ -76,6 +76,7 @@ var backupTables = []string{
 // 不参与整库拷贝：恢复后这些表与恢复进来的源数据会不一致（fact id 会变、外键会悬），
 // 故恢复末尾直接清空，下次访问时由服务层“缺则重建”自愈（evidence 先于 facts 删，FK 安全）。
 var derivedTables = []string{
+	"ingest_ledger",
 	"profile_fact_evidence",
 	"profile_facts",
 	"relationship_daily_metrics",

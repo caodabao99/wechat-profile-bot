@@ -9,6 +9,38 @@ import (
 	"time"
 )
 
+// authBodyTimeout 是 /api/auth/* 这族「认证前」请求的响应兜底时限。
+// 实测说明：go 的 TimeoutHandler 要等内层 handler 返回后才能把 503 发出去，因此它并不能
+// 单独防住「慢速滴漏 body 长期占住 goroutine」；真正的防护是下面的并发上限 authMaxConcurrent。
+const authBodyTimeout = 15 * time.Second
+
+// authMaxConcurrent 是认证前通道的同时处理数。登录请求本身极轻（几个 JSON），
+// 32 路对真人多次重试也远远够用；但攻击者想靠开几百个滴漏连接耗尽 goroutine/fd 时，
+// 第 33 个就会被直接 429 拒掉——资源占用变成有界，而不是无限增长。
+const authMaxConcurrent = 32
+
+// authGuard 给认证前通道加两道闸：并发上限（打满立即 429）+ 超时兜底。
+// 只给 /api/auth/* 套：其他通道要么走完整认证，要么是大体积上传，不能共用这个时限。
+func (s *apiServer) authGuard(h http.Handler) http.Handler {
+	return http.TimeoutHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authSem == nil { // 构造体没给信号量（老测试/CLI）时退化为不限，避免向 nil channel 发送会永久阻塞
+			h.ServeHTTP(w, r)
+			return
+		}
+		select {
+		case s.authSem <- struct{}{}:
+			defer func() { <-s.authSem }()
+			h.ServeHTTP(w, r)
+		default:
+			if s.guard != nil {
+				s.guard.RecordDenied(clientIP(r), r.URL.Path, "登录通道并发已满")
+			}
+			w.Header().Set("Retry-After", "2")
+			writeErr(w, http.StatusTooManyRequests, "登录通道繁忙，请稍后再试")
+		}
+	}), authBodyTimeout, `{"error":"请求超时，请重新登录"}`)
+}
+
 // 网页端双因素登录的专用接口（/api/auth/*）。
 // 流程：
 //  1. POST /api/auth/login         {token}            → stage=setup（首次，返回绑定二维码）

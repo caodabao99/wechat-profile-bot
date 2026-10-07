@@ -2533,6 +2533,23 @@
         <button class="btn sm" @click="loadStatus" :disabled="statusLoading">{{ statusLoading ? '刷新中…' : '立即刷新' }}</button>
       </div>
 
+      <div class="card">
+        <div class="list-head"><h2>微信会话</h2>
+          <button class="btn sm" type="button" @click="startIlinkRebind"
+            :disabled="bindBusy || (ilinkBind && ilinkBind.active)">{{ bindBusy ? '处理中…' : ((ilinkBind && ilinkBind.active) ? '扫码进行中…' : '重新扫码绑定') }}</button></div>
+        <p class="hint block">会话过期（微信侧返回 -14）是必然事件。过去只能手工删凭据文件并重启；现在直接点右上角按钮，用手机微信扫下方二维码即可，<strong>无需重启程序</strong>，扫成功后消息轮询自动恢复。</p>
+        <p class="hint block" v-if="ilinkBind">
+          登录状态：{{ ilinkBind.logged_in ? '已登录' : '未登录' }}
+          <span class="tag tag-red" v-if="ilinkBind.session_expired">会话已过期，需重新扫码</span>
+          · 重绑状态：{{ ilinkBind.status }}
+        </p>
+        <div class="qr-box" v-if="ilinkBind && ilinkBind.qr_image">
+          <img :src="ilinkBind.qr_image" alt="用微信扫描登录的二维码">
+        </div>
+        <p class="hint block" v-if="ilinkBind && ilinkBind.qr_image">二维码约 8 分钟有效，过期会自动重新获取（最多 3 次）；请在手机上确认授权。</p>
+        <p class="mp-form-err" v-if="ilinkBind && ilinkBind.error">{{ ilinkBind.error }}</p>
+      </div>
+
       <div v-if="!sysStatus && statusLoading" class="card">正在读取服务器状态…</div>
       <div v-if="!sysStatus && !statusLoading" class="card">状态读取失败，点击右上角「立即刷新」重试。</div>
 

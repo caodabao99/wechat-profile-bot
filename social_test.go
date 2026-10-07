@@ -128,7 +128,18 @@ func TestPhrasesFromProfiles(t *testing.T) {
 	if got := phrasesFromProfiles([]string{"{坏JSON", ""}, 5); len(got) != 0 {
 		t.Errorf("非法/空 JSON 应被跳过，got %v", got)
 	}
-	pj := `{"communicationStyle":{"frequentPhrases":["么么哒","  ","超长超长的口头禅超过十二个字符的就不该被统计进来"]}}`
+	// 兼容 camelCase 的外部/历史来源；同一画像内两种键都给同一短语时不得重复计数
+	cm := phrasesFromProfiles([]string{`{"communicationStyle":{"frequentPhrases":["辛苦了"]}}`}, 5)
+	if len(cm) != 1 || cm[0].Phrase != "辛苦了" || cm[0].Count != 1 {
+		t.Fatalf("camelCase 兼容失效，got %+v", cm)
+	}
+	dup := phrasesFromProfiles([]string{`{"communication_style":{"frequent_phrases":["收到"]},"communicationStyle":{"frequentPhrases":["收到"]}}`}, 5)
+	if len(dup) != 1 || dup[0].Count != 1 {
+		t.Fatalf("同一画像内重复短语不应计数两次，got %+v", dup)
+	}
+	// 生产真实形状：画像落库用 snake_case（见 profile.go 的 json tag）。
+	// 旧 fixture 写的是 camelCase，与当时错误的实现自洽，所以一直没暴露「口头禅恒为空」。
+	pj := `{"communication_style":{"frequent_phrases":["么么哒","  ","超长超长的口头禅超过十二个字符的就不该被统计进来"]}}`
 	got := phrasesFromProfiles([]string{pj, pj}, 5)
 	if len(got) == 0 {
 		t.Fatalf("应抽出画像里的口头禅，got %v", got)

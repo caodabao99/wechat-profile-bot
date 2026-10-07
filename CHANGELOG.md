@@ -1,5 +1,30 @@
 # 更新日志
 
+### v7.3.0（2026-10-07）— 投产前审计 9 项缺陷全部修复
+
+第二轮上线前审计（读代码 + 联网核实 iLink 协议约束）确认 9 项问题，本版全部收口，每条都带针对性回归测试。
+
+**消息链路可靠性（最高优先）**
+- **C9 先去重后处理导致丢消息**：旧实现 `GetUpdates` 一拿到消息就标记已见并当场推进游标，处理失败/崩溃即**永久丢失**；且游标只在内存，重启后空游标按协议**可能重放整段历史**。现改为 **at-least-once**：游标「后置提交」（整批处理成功才 `CommitCursor` 并落盘 `ilink_syncbuf.json`）+ 新增持久幂等账本 `ingest_ledger`（migration **v28**，done 跳过、失败重试、3 次判毒丸放弃并告警、7 天自动清理）。`recentIDs` 退化为「已成功处理」的 5 分钟快路径，绝不前置标记。
+- **C1 会话过期后成死端**：`-14` 置粘性位后主循环只 `continue`、**永不再收消息**，于是提示用户发的「重登」命令本身也收不到；`ResetSession` 不删凭据，重启仍跳过扫码 → 唯一出路是手工删文件。现改为：退避探测（60s→×3→上限 60min，对齐官方插件 Session Guard）+ `AllowProbe` 让循环真能再发一次请求 + **网页端「重新扫码绑定」**（`POST /api/wechat/rebind`、`GET /api/wechat/bind`，服务端渲染二维码 PNG，扫成功即自动恢复轮询，无需重启）。
+- **C2 核心链路无 panic 隔离**：`recover` 此前只在归档/助手等旁路。新增 `SafeHandleMessage` / `SafeFlushPending`：panic 被隔离成兜底回复 + 日志，并且**不提交游标**（交给重放重试），单条坏消息不再带走整个进程。
+
+**数据正确性**
+- **C5「对方的口头禅」生产恒为空**：落库是 snake_case（`communication_style`/`frequent_phrases`），读取侧却解 camelCase；旧测试 fixture 也用 camelCase 所以自洽测不出。现两种命名都解并按画像内去重，fixture 改为真实 snake_case。
+- **C6 作息小时/星期分布整体偏 8 小时**：`strftime('%H'/'%w')` 对带偏移的 RFC3339 先转 UTC。加 `'localtime'`（全仓扫描确认这是唯一漏写的一处，其余 6 处均已有）。
+- **C3 迁移表重建非原子**：v19 / v26 的 CREATE→INSERT→DROP→RENAME 逐条自动提交，断电会留下 `*_new` 残表或已 DROP 的主表，下次启动**永久失败需手工修库**。现各包成一个事务；测试把 `user_version` 回卷到 v18 重放迁移，验证收敛、无残表、主表可写。
+- **C4 `MergeFacts` 撞 UNIQUE**：预删只防「loser 与 keep 冲突」，两个 loser 共享同一支撑消息时迁移证据必撞 `UNIQUE(fact_id,message_id,archived)`，且三步无事务会留下半合并。现先在 loser 之间按 `(message_id, archived)` 去重，四步全部包进一个事务。
+
+**安全**
+- **C8 认证前慢 body DoS**：`MaxBytesReader` 只限量不限时，全局 `ReadTimeout` 又设不得（会掐断 200MB 备份上传）。实测 Go 的 `TimeoutHandler` 要等内层 handler 返回才发得出 503，**单独靠它防不住**，因此加的是**并发上限** `authMaxConcurrent=32`：打满立即 429（带 `Retry-After`）并记安全日志，把资源占用变成有界。
+- **C7 明文 HTTP 且程序主动推 `http://公网IP`**：自动探测到公网明文地址时输出 `slog.Warn`，微信「网址」命令的提示改为讲清真实后果（apiToken/TOTP/聊天内容明文过网，拿到 token 即可绕过 2FA 并导出含密钥的备份），并明确要求正式使用先配 `webBaseURL` 走 HTTPS 反代。
+
+- 附带修好两个既有问题：① `TestFacadeAggregateMatchesDetail` 的夹具写无偏移裸格式时间，被 `strftime(...,'localtime')` 日桶整体 +8h，导致本地 16 点后必然失败（已发布的时钟依赖坏测试），改为与生产一致的 RFC3339；② `RebindSnapshot` 读会话字段未持 `c.mu` 的真数据竞争，`-race` 抓到后已修。
+**版本与迁移**：`appVersion` v7.2.0 → **v7.3.0**；SQLite `user_version` **27 → 28**（新增 `ingest_ledger`，登记进表注册表、不入备份、可整体清理）。
+
+
+门禁：`node --check` / gofmt / vet / 三平台 `CGO=0` / U+FFFD=0 / `-race` 覆盖率不低于上一版；新增 `ilink_reliable_test.go` + `audit_fixes_test.go` 覆盖上述每一条。
+
 ### v7.2.0（2026-10-07）— 网页端接入三个 v7 运营面板 + API 一致性双向钉
 
 投产前审计发现：v7 的指挥中心 / 策略学习 / 个性化校准等端点「后端全有、网页零消费」。本版把它们真正接进界面。

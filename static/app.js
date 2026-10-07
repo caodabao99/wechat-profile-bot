@@ -596,6 +596,49 @@ createApp({
     let toastSeq = 0;
 
     // ---------- 基础设施 ----------
+    // ---------- 微信会话重绑（审计 C1）----------
+    // 会话过期(-14) 后旧实现只能删凭据文件重启；现在网页直接出二维码，手机扫码即恢复。
+    const ilinkBind = ref(null);
+    const bindBusy = ref(false);
+    let bindTimer = null;
+
+    async function loadIlinkBind() {
+      try { ilinkBind.value = await api('/api/wechat/bind'); }
+      catch (e) { /* 静默：状态页会定时重取，不打断其他面板 */ }
+    }
+
+    async function startIlinkRebind() {
+      if (bindBusy.value) return;
+      bindBusy.value = true;
+      try {
+        const r = await api('/api/wechat/rebind', { method: 'POST' });
+        toast(r && r.started ? '二维码生成中，稍等几秒…' : '重绑已在进行中', 'ok');
+        pollIlinkBind();
+      } catch (e) {
+        toast(e.message || '启动重绑失败', 'error');
+      } finally {
+        bindBusy.value = false;
+      }
+    }
+
+    // pollIlinkBind 重绑期间每 3 秒取一次状态，拿到二维码或终态即停（不会无限轮询）。
+    function pollIlinkBind() {
+      if (bindTimer) clearTimeout(bindTimer);
+      const tick = async () => {
+        await loadIlinkBind();
+        const st = ilinkBind.value && ilinkBind.value.status;
+        if (st === 'waiting' || st === 'fetching') {
+          bindTimer = setTimeout(tick, 3000);
+        } else if (st === 'confirmed') {
+          toast('重绑成功，消息轮询已自动恢复', 'ok');
+          loadStatus();
+        } else if (st === 'failed') {
+          toast('重绑失败：' + ((ilinkBind.value && ilinkBind.value.error) || '未知原因'), 'error');
+        }
+      };
+      tick();
+    }
+
     function toast(msg, type) {
       const id = ++toastSeq;
       toasts.value.push({ id, msg, type: type || '' });
@@ -848,6 +891,7 @@ createApp({
       if (route.view === 'model') loadModelPage();
       if (route.view === 'status') {
         loadStatus();
+        loadIlinkBind();
         statusTimer = setInterval(loadStatus, 5000);
       }
     }
@@ -4039,6 +4083,7 @@ createApp({
       // 洞察页
       insightTab, switchInsight,
       cc, ccBusy, loadCommandCenter, strat, stratBusy, loadStrategyHistory,
+      ilinkBind, bindBusy, loadIlinkBind, startIlinkRebind,
       calibs, calibBusy, calibForm, calibError, loadCalibrations, saveCalibration, resetCalibrations,
       // v5.3.0 健康仪表盘 / 圈层 / 主题演化（洞察页）
       health, healthBusy, loadHealth, healthColor, bandCount, bandMax, healthFocus, healthSignalText,

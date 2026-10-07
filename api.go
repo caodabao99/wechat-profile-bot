@@ -47,6 +47,9 @@ type apiServer struct {
 	trusted  *trustedClientStore // 可信客户端长效令牌（免重复登录）
 	guard    *securityGuard      // 登录失败计数 + IP 永久封禁 + 安全日志
 	ingestRL *rateLimiter        // /api/ingest 限流，防止 token 泄露后被刷爆 LLM 账单
+	// authSem 是认证前通道（/api/auth/*）的并发上限信号量（容量 authMaxConcurrent）。
+	// nil 视为不限（供构造体缺失该字段的老测试使用），避免向 nil channel 发送永久阻塞。
+	authSem chan struct{}
 }
 
 // clientIP 从请求中提取直连客户端 IP（去掉端口，兼容 IPv4/IPv6）。
@@ -149,9 +152,15 @@ func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config
 		// 没有上限的调用次数意味着账单可以在几小时内被刷爆。这里按 token（无 token
 		// 时按 IP）限制每分钟请求数，正常使用（人工粘贴聊天记录）远达不到这个量。
 		ingestRL: newRateLimiter(ingestRateLimit, ingestRateWindow),
+		authSem:  make(chan struct{}, authMaxConcurrent),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/", s.route)
+	// 认证前通道加两道闸（投产前审计 C8）：并发上限 + 超时。
+	// 为何不是只加超时：实测 go 的 TimeoutHandler 要等内层 handler 读完 body 才能把 503 发出去，
+	// 因此它防不住「慢速滴漏 body 长期占住 goroutine 与连接」；而全局 ReadTimeout 又设不得
+	// （会掐断合法的 200MB 备份上传）。并发上限让这类滥用变成「有界资源」：打满即 429。
+	mux.Handle("/api/auth/", s.authGuard(http.HandlerFunc(s.route)))
 	// 网页管理界面：静态资源不走认证（页面本身无敏感数据，数据接口都在 /api/ 下受 Token 保护）。
 	// ServeMux 按最长前缀匹配，/api/ 请求仍进入带认证的 s.route。
 	mux.HandleFunc("/assets/", handleAssets)
@@ -373,6 +382,9 @@ func (s *apiServer) route(w http.ResponseWriter, r *http.Request) {
 	case parts[0] == "stats":
 		// v6.3 §P12：Smart Paste 去重统计 /api/stats/ingest
 		s.routeStats(w, r, parts[1:])
+	case parts[0] == "wechat":
+		// v7.3 审计 C1：iLink 会话过期后的网页端自助重绑 /api/wechat/{bind,rebind}
+		s.routeWechat(w, r, parts[1:])
 	case parts[0] == "ingest" && r.Method == http.MethodPost:
 		s.hIngest(w, r)
 	default:

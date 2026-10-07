@@ -31,12 +31,22 @@ type ILinkClient struct {
 	// context_token 按用户持久化，重启后可继续回复
 	contextTokens map[string]string
 	tokenPath     string
-	// 消息去重（5分钟滑窗）
+	// 消息去重（5分钟滑窗）。语义重要变更：只记录**已成功处理**的消息，
+	// 绝不在处理之前写入（旧实现在 GetUpdates 里就标记已见，处理失败即永久丢消息）。
 	recentIDs map[string]time.Time
-	// 长轮询游标
+	// 长轮询游标（= 已提交游标，只在整批处理成功后推进）
 	cursor string
+	// 待提交游标：GetUpdates 记下服务端返回的新游标，CommitCursor() 才正式提交并落盘
+	pendingBuf string
 	// 会话过期标记
 	sessionExpired bool
+	// 重绑（网页扫码）状态；用独立锁，避免占用 c.mu 影响收发主链路
+	rebindMu     sync.Mutex
+	rebindActive bool
+	rebindStatus string // idle|fetching|waiting|scaned|confirmed|expired|failed
+	rebindQRData string // data:image/png;base64,...
+	rebindError  string
+	rebindAt     time.Time
 	// 优雅关闭：取消长轮询中的 HTTP 请求
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -385,35 +395,34 @@ func (c *ILinkClient) GetUpdates() ([]ILinkMessage, error) {
 		return nil, fmt.Errorf("getupdates 返回 ret=%d errmsg=%s", resp.Ret, resp.Errmsg)
 	}
 
-	// 更新游标（仅在服务端返回了非空游标时才更新，避免被清空导致从头重复拉取）
+	// 游标「后置提交」：这里只记下服务端给的新游标，不直接推进已提交游标。
+	// 为什么：iLink 协议保证「旧游标会返回其后所有历史数据」，所以只要不在处理成功前推进，
+	// 崩溃/失败后重拉就能拿回同一批消息（at-least-once），再由 ingest_ledger 保证不重复入库。
+	// 仅在服务端返回非空游标时才记录，避免被清空导致从头重拉。
 	if resp.GetUpdatesBuf != "" {
 		c.mu.Lock()
-		c.cursor = resp.GetUpdatesBuf
+		c.pendingBuf = resp.GetUpdatesBuf
 		c.mu.Unlock()
 	}
 
-	// 去重并过滤旧消息
+	// 只做「同一响应内重复」的轻量过滤；真正的不重复保证来自持久账本 ingest_ledger。
+	// 注意：不能在这里把 key 记入 recentIDs——那会让「处理失败但已标记已见」的消息
+	// 在游标回退重拉时被误杀，等于丢消息。
 	var newMsgs []ILinkMessage
-	now := time.Now()
-	c.mu.Lock()
+	inBatch := make(map[string]bool, len(resp.Msgs))
 	for _, msg := range resp.Msgs {
-		key := msg.MessageID.String()
-		if key == "" {
-			key = fmt.Sprintf("%s-%d", msg.FromUserID, msg.CreateTimeMs)
+		key := messageKey(&msg)
+		if key != "" {
+			if inBatch[key] {
+				continue // 同一批内重复
+			}
+			if c.AlreadyProcessed(key) {
+				continue // 5 分钟滑窗内已成功处理过
+			}
+			inBatch[key] = true
 		}
-		if _, seen := c.recentIDs[key]; seen {
-			continue
-		}
-		c.recentIDs[key] = now
 		newMsgs = append(newMsgs, msg)
 	}
-	// 清理过期去重记录（5分钟）
-	for id, t := range c.recentIDs {
-		if now.Sub(t) > 5*time.Minute {
-			delete(c.recentIDs, id)
-		}
-	}
-	c.mu.Unlock()
 
 	return newMsgs, nil
 }

@@ -79,6 +79,7 @@ func init() {
 		{Name: "self_portrait_cache", Type: "cache", Owner: "portrait", Backup: false, Rebuild: true, HasContactID: false, Note: "自我关系画像缓存"},
 		{Name: "intervention_cache", Type: "cache", Owner: "intervention", Backup: false, Rebuild: true, HasContactID: false, Note: "干预学习统计缓存"},
 		{Name: "briefing_cache", Type: "cache", Owner: "briefing", Backup: false, Rebuild: true, HasContactID: false, Note: "主动简报缓存"},
+		{Name: "ingest_ledger", Type: "cache", Owner: "ilink", Backup: false, Rebuild: true, HasContactID: false, Note: "v7.3 审计 C9：at-least-once 收取的持久幂等账本（消息键→done/failed+重试次数）；纯运行态，7天过期可清理，不入备份"},
 		{Name: "today_snooze", Type: "cache", Owner: "today_aggregate", Backup: false, Rebuild: true, HasContactID: true, Note: "v6.3 §P11 TODAY 屏蔽表，过期行自动清理"},
 		{Name: "ingest_stats", Type: "cache", Owner: "ingest_stats", Backup: false, Rebuild: true, HasContactID: true, Note: "v6.3 §P12 Smart Paste 去重统计，90天自动清理"},
 		{Name: "ai_response_cache", Type: "cache", Owner: "context", Backup: false, Rebuild: true, HasContactID: true, Note: "AI 响应缓存，语义键=(contact_id,task,context_version,model,prompt_version)，蓝图 §4.2；按 contact_id 级联清理"},

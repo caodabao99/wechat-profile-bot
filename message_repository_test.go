@@ -65,9 +65,13 @@ func TestFacadeAggregateMatchesDetail(t *testing.T) {
 		t.Fatalf("建归档表: %v", err)
 	}
 	id := regressionContact(t, db, "门面聚合")
-	d1 := time.Now().AddDate(0, 0, -1).Format("2006-01-02 15:04:05")
-	d2 := time.Now().Add(-time.Hour).Format("2006-01-02 15:04:05")
-	d3 := time.Now().AddDate(0, 0, -200).Format("2006-01-02 15:04:05") // 将被归档
+	// 必须用与生产一致的 **带偏移 RFC3339**（storage.go 写入的就是 time.RFC3339）。
+	// 之前用裸格式 "2006-01-02 15:04:05"：SQLite 会把无偏移时间当 UTC，而日桶用
+	// strftime(...,'localtime')，于是整体 +8h；本地时间 16 点后“昨天”与“今天”
+	// 会塌进同一个日桶，导致这个用例仅在下午 4 点前能跑过（时钟依赖坏测试）。
+	d1 := time.Now().AddDate(0, 0, -1).Format(time.RFC3339)
+	d2 := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	d3 := time.Now().AddDate(0, 0, -200).Format(time.RFC3339) // 将被归档
 	insertRawMessage(t, db, "messages", id, "other", "昨天的话", d1, nil)
 	insertRawMessage(t, db, "messages", id, "other", "今天的话", d2, nil)
 	insertRawMessage(t, db, "messages", id, "other", "归档那天的话", d3, nil)

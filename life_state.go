@@ -260,8 +260,10 @@ func gatherLifeRaw(db *sql.DB, now time.Time) (*lifeRaw, error) {
 	}
 
 	// 6) 近 30 天小时/周几分布（并上归档表，否则作息样本会被归档抹掉一部分）。
+	// 必须带 'localtime'：msg_time 是带偏移的 RFC3339，SQLite 的 strftime 会先转 UTC，
+	// 不加修饰符会让早上 8 点的消息被记到 0 点、整体偏 8 小时（仓库内其它日历聚合均已用 localtime）。
 	hourQ, hourArgs := historySelectLocked(db,
-		"CAST(strftime('%H', msg_time) AS INT) AS hh, CAST(strftime('%w', msg_time) AS INT) AS ww",
+		"CAST(strftime('%H', msg_time, 'localtime') AS INT) AS hh, CAST(strftime('%w', msg_time, 'localtime') AS INT) AS ww",
 		"hh, ww, COUNT(*)",
 		HistoryFilter{SinceUnix: now.AddDate(0, 0, -30).Unix(), WithTimeOnly: true}, "GROUP BY hh, ww")
 	if rows, err := db.Query(hourQ, hourArgs...); err == nil {

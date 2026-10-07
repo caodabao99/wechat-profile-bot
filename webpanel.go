@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -154,7 +155,13 @@ func WebPanelURL(cfg *Config) (url string, source string, err error) {
 		port = 17965
 	}
 	if pip, e := getPublicIPv4(); e == nil && pip != "" {
-		return fmt.Sprintf("http://%s:%d/", pip, port), panelSourcePublic, nil
+		pub := fmt.Sprintf("http://%s:%d/", pip, port)
+		// 投产前审计 C7：面板全程 HTTP，而这里会把「http://公网IP」主动推给用户。
+		// 跨公网时 apiToken、TOTP 密钥与全库聊天明文都走http，拿到 token 即可绕过 2FA
+		// 直接调用全部 API（包括导出含密钥的备份）。不能只提「微信会告警」这种轻描写。
+		slog.Warn("面板地址自动探测为公网明文 HTTP，建议配置 HTTPS 反代后再使用",
+			"url", pub, "risk", "apiToken/TOTP/聊天内容明文过网；公网裸奔时等同于凭证可被窃取")
+		return pub, panelSourcePublic, nil
 	}
 	if ip, e := firstLANIPv4(); e == nil && ip != "" {
 		return fmt.Sprintf("http://%s:%d/", ip, port), panelSourceLAN, nil
