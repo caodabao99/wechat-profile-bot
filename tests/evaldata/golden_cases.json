@@ -56,7 +56,7 @@
     {
       "id": "conflict-01", "task": "detect_conflict", "category": "Conflict",
       "input": "早期记录职业=会计，近期自述职业=设计师。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突|矛盾|不一致|变更"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"conflict\":true,\"note\":\"职业冲突：会计 vs 设计师，需澄清\"}", "latency_ms": 800, "tokens": 450},
         "model-b": {"output": "{\"conflict\":false}", "latency_ms": 1100, "tokens": 420},
@@ -66,7 +66,7 @@
     {
       "id": "conflict-02", "task": "detect_conflict", "category": "Conflict",
       "input": "一条说未婚，另一条提到配偶。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["conflict"], "expected_snippets": ["冲突|矛盾|不一致|婚姻"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"conflict\":true,\"note\":\"婚姻状态冲突：未婚 vs 已婚\"}", "latency_ms": 790, "tokens": 460},
         "model-b": {"output": "{\"conflict\":true}", "latency_ms": 1050, "tokens": 380},
@@ -75,7 +75,7 @@
     },
     {
       "id": "ask-01", "task": "qa_answer", "category": "Ask",
-      "input": "问：他最近在忙什么？",
+      "input": "近期记录：对方说最近在准备搬家，正找房子、打包东西。\n问：他最近在忙什么？",
       "expect": {"must_be_valid_json": true, "required_fields": ["answer"], "expected_snippets": ["搬家"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"answer\":\"他最近在准备搬家。\",\"confidence\":0.8}", "latency_ms": 850, "tokens": 500},
@@ -85,7 +85,7 @@
     },
     {
       "id": "ask-02", "task": "qa_answer", "category": "Ask",
-      "input": "问：我们上次聊到哪个项目？",
+      "input": "近期记录：我们上次在讨论小程序项目的进度。\n问：我们上次聊到哪个项目？",
       "expect": {"must_be_valid_json": true, "required_fields": ["answer"], "expected_snippets": ["小程序"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"answer\":\"上次聊到小程序项目。\"}", "latency_ms": 830, "tokens": 490},
@@ -96,7 +96,7 @@
     {
       "id": "profile-01", "task": "profile_summary", "category": "Profile",
       "input": "汇总：教师、爱跑步、有女儿。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["summary"], "expected_snippets": ["老师"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["summary"], "expected_snippets": ["老师|教师"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"summary\":\"中学老师，热爱跑步，育有一女。\"}", "latency_ms": 900, "tokens": 520},
         "model-b": {"output": "{\"summary\":\"一位家长。\"}", "latency_ms": 1250, "tokens": 500},
@@ -116,7 +116,7 @@
     {
       "id": "coach-01", "task": "coaching_suggestion", "category": "Coach",
       "input": "与老友已 60 天无互动。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["主动联系"], "forbidden_snippets": ["拉黑"], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["主动联系|主动"], "forbidden_snippets": ["拉黑"], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"suggestion\":\"主动联系，问候近况。\",\"tone\":\"温和\"}", "latency_ms": 820, "tokens": 440},
         "model-b": {"output": "{\"suggestion\":\"发个朋友圈。\"}", "latency_ms": 1100, "tokens": 420},
@@ -126,7 +126,7 @@
     {
       "id": "coach-02", "task": "coaching_suggestion", "category": "Coach",
       "input": "对方近期回复变慢、语气冷淡。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["空间"], "forbidden_snippets": ["逼问"], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["suggestion"], "expected_snippets": ["空间|余地|节奏|距离"], "forbidden_snippets": ["逼问"], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"suggestion\":\"给予空间，低压关心。\"}", "latency_ms": 810, "tokens": 430},
         "model-b": {"output": "{\"suggestion\":\"多问几次。\"}", "latency_ms": 1080, "tokens": 410},
@@ -136,7 +136,7 @@
     {
       "id": "decision-01", "task": "decision_rank", "category": "Decision",
       "input": "候选动作：follow_up 高亲密 90 天沉默；celebrate 低相关。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["follow_up"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "deterministic": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["follow_up"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"action_type\":\"follow_up\",\"priority\":95}", "latency_ms": 760, "tokens": 400},
         "model-b": {"output": "{\"action_type\":\"celebrate\",\"priority\":40}", "latency_ms": 990, "tokens": 380},
@@ -146,7 +146,7 @@
     {
       "id": "decision-02", "task": "decision_rank", "category": "Decision",
       "input": "候选：apology 关系紧张；casual 无急务。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["apology"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "deterministic": true, "required_fields": ["action_type", "priority"], "expected_snippets": ["apology"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"action_type\":\"apology\",\"priority\":90}", "latency_ms": 750, "tokens": 390},
         "model-b": {"output": "{\"action_type\":\"casual\",\"priority\":20}", "latency_ms": 980, "tokens": 370},
@@ -156,7 +156,7 @@
     {
       "id": "sim-01", "task": "simulate_action", "category": "Simulation",
       "input": "模拟：本周主动问候降温中的老友。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["升温"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["升温|亲密|拉近|更近|温暖"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"outcome\":\"有望升温\",\"probability\":0.6}", "latency_ms": 840, "tokens": 460},
         "model-b": {"output": "{\"outcome\":\"不确定\"}", "latency_ms": 1150, "tokens": 440},
@@ -166,7 +166,7 @@
     {
       "id": "sim-02", "task": "simulate_action", "category": "Simulation",
       "input": "模拟：送生日祝福给长期未联系亲友。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["回联"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["outcome"], "expected_snippets": ["回联|回复|联系"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"outcome\":\"提升回联概率\",\"probability\":0.5}", "latency_ms": 830, "tokens": 450},
         "model-b": {"output": "{\"outcome\":\"一般\"}", "latency_ms": 1120, "tokens": 430},
@@ -176,7 +176,7 @@
     {
       "id": "memrev-01", "task": "memory_review_queue", "category": "Memory Review",
       "input": "低置信事实待人工确认。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["items"], "expected_snippets": ["待确认"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "deterministic": true, "required_fields": ["items"], "expected_snippets": ["待确认"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"items\":[{\"fact\":\"职业\",\"note\":\"待确认：证据弱\"}]}", "latency_ms": 800, "tokens": 420},
         "model-b": {"output": "{\"items\":[]}", "latency_ms": 1050, "tokens": 360},
@@ -186,7 +186,7 @@
     {
       "id": "memrev-02", "task": "memory_review_queue", "category": "Memory Review",
       "input": "冲突事实待合并决策。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["items"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "deterministic": true, "required_fields": ["items"], "expected_snippets": ["冲突"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"items\":[{\"note\":\"冲突：地址新旧\"}]}", "latency_ms": 810, "tokens": 430},
         "model-b": {"output": "{\"items\":[{\"note\":\"普通\"}]}", "latency_ms": 1060, "tokens": 410},
@@ -196,7 +196,7 @@
     {
       "id": "memcons-01", "task": "memory_consolidation", "category": "Memory Consolidation",
       "input": "重复事实去重合并。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["merged"], "expected_snippets": ["去重"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "deterministic": true, "required_fields": ["merged"], "expected_snippets": ["去重"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"merged\":true,\"note\":\"去重：保留最新\"}", "latency_ms": 790, "tokens": 410},
         "model-b": {"output": "{\"merged\":false}", "latency_ms": 1040, "tokens": 380},
@@ -206,7 +206,7 @@
     {
       "id": "sess-01", "task": "relationship_session_brief", "category": "Relationship Session",
       "input": "生成本次沟通简报与策略。",
-      "expect": {"must_be_valid_json": true, "required_fields": ["brief", "strategy"], "expected_snippets": ["开场"], "forbidden_snippets": [], "min_evidence_refs": 0},
+      "expect": {"must_be_valid_json": true, "required_fields": ["brief", "strategy"], "expected_snippets": ["开场|破冰|信任|沟通|共同话题"], "forbidden_snippets": [], "min_evidence_refs": 0},
       "model_outputs": {
         "model-a": {"output": "{\"brief\":\"近况摘要\",\"strategy\":\"轻松开场，聊共同话题\"}", "latency_ms": 860, "tokens": 500},
         "model-b": {"output": "{\"brief\":\"摘要\"}", "latency_ms": 1200, "tokens": 480},

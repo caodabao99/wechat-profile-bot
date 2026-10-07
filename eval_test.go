@@ -59,8 +59,14 @@ func TestGoldenSetCoversAllTaskTypes(t *testing.T) {
 func TestIdealModelScoresPerfect(t *testing.T) {
 	gs := mustLoadGolden(t)
 	r := RunEvaluation(gs, "model-a")
-	if r.TotalCases != len(gs.Cases) {
-		t.Fatalf("TotalCases=%d 应为 %d", r.TotalCases, len(gs.Cases))
+	scored := 0
+	for _, c := range gs.Cases {
+		if !c.Expect.Deterministic {
+			scored++
+		}
+	}
+	if r.TotalCases != scored {
+		t.Fatalf("TotalCases=%d 应为 LLM 用例数 %d", r.TotalCases, scored)
 	}
 	if r.Accuracy != 1.0 {
 		t.Fatalf("model-a 准确率应为 1.0，实得 %g（指标=%v）", r.Accuracy, r.Metrics)

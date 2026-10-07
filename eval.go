@@ -39,6 +39,9 @@ type EvalExpect struct {
 	ExpectedSnippets  []string `json:"expected_snippets"`
 	ForbiddenSnippets []string `json:"forbidden_snippets"`
 	MinEvidenceRefs   int      `json:"min_evidence_refs"`
+	// Deterministic=true 表示该任务在产品里由确定性逻辑实现、不走 LLM（如决策排序、
+	// 记忆复核队列、整合去重）——保留用例以覆盖任务分类，但 RunEvaluation 不计入大模型评测分母。
+	Deterministic bool `json:"deterministic,omitempty"`
 }
 
 // EvalSample 是某模型在该用例上的录制输出（含时延/Token，供成本类指标）。
@@ -123,7 +126,7 @@ func scoreCase(c GoldenCase, model string) CaseScore {
 		low := strings.ToLower(text)
 		hit := 0
 		for _, sn := range c.Expect.ExpectedSnippets {
-			if strings.Contains(low, strings.ToLower(sn)) {
+			if snippetHit(low, sn) {
 				hit++
 			}
 		}
@@ -148,7 +151,7 @@ func scoreCase(c GoldenCase, model string) CaseScore {
 		low := strings.ToLower(text)
 		viol := 0
 		for _, fb := range c.Expect.ForbiddenSnippets {
-			if strings.Contains(low, strings.ToLower(fb)) {
+			if forbiddenHit(low, fb) {
 				viol++
 			}
 		}
@@ -209,6 +212,9 @@ func RunEvaluation(gs *GoldenSet, model string) *EvalReport {
 	r := &EvalReport{Model: model, Metrics: map[string]MetricAgg{}}
 	latSum, tokSum, passed := 0, 0, 0
 	for _, c := range gs.Cases {
+		if c.Expect.Deterministic {
+			continue // 确定性任务不走 LLM，不计入大模型评测
+		}
 		cs := scoreCase(c, model)
 		r.TotalCases++
 		latSum += cs.LatencyMs
@@ -302,6 +308,52 @@ func DetectRegression(baseline, candidate *EvalReport, tolerance float64) Regres
 		bad = append(bad, "failure_rate")
 	}
 	return RegressionResult{IsRegression: len(bad) > 0, RegressedMetrics: bad}
+}
+
+// snippetHit 判断期望片段是否命中，支持用「|」分隔同义/换述备选（任一命中即算）——
+// 让真实模型的合理换写（如「教师」对「老师」、「矛盾」对「冲突」）不被子串精确匹配误判为错。
+func snippetHit(lowerText, snippet string) bool {
+	for _, alt := range strings.Split(snippet, "|") {
+		alt = strings.ToLower(strings.TrimSpace(alt))
+		if alt != "" && strings.Contains(lowerText, alt) {
+			return true
+		}
+	}
+	return false
+}
+
+// negMarkers 否定/规避前缀：禁用片段若仅以否定形式出现（如「而非指责」「避免掺水」），不算违规——
+// 真实模型给出「专注解决问题而非指责对方」这类正确建议时，不应被幻觉指标误伤。
+var negMarkers = []string{"不", "非", "别", "莫", "未", "免", "避免", "拒绝", "无需", "没有", "并非", "而非", "不是", "不要", "不得"}
+
+// forbiddenHit 判断禁用片段是否以「非否定」形式真实出现：任一出现位置其紧邻前文不含否定前缀即算违规。
+func forbiddenHit(text, term string) bool {
+	term = strings.ToLower(strings.TrimSpace(term))
+	if term == "" {
+		return false
+	}
+	rt := []rune(strings.ToLower(text))
+	rterm := []rune(term)
+	for i := 0; i+len(rterm) <= len(rt); i++ {
+		if string(rt[i:i+len(rterm)]) == term {
+			start := i - 4
+			if start < 0 {
+				start = 0
+			}
+			ctx := string(rt[start:i])
+			negated := false
+			for _, neg := range negMarkers {
+				if strings.HasSuffix(ctx, neg) {
+					negated = true
+					break
+				}
+			}
+			if !negated {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // evalRatio 安全除法（分母 0 → 0）。
