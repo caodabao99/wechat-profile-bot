@@ -67,16 +67,8 @@ func main() {
 		slog.Info("已加载保存的登录凭据")
 	}
 
-	// 如未登录，启动扫码流程
-	if !client.IsLoggedIn() {
-		if err := doQRLogin(client); err != nil {
-			slog.Error("扫码登录失败", "err", err)
-			os.Exit(1)
-		}
-		if err := client.SaveCredentials(); err != nil {
-			slog.Error("保存凭据失败", "err", err)
-		}
-	}
+	// 首次绑定放到后面、API 服务就绪之后后台进行（见下方“开始消息轮询”前）：
+	// 否则在 NAS 上会出现“进程在等扫码、面板还打不开”的空窗，看起来就像启动失败。
 
 	// 加载 context token 缓存
 	// 收取账本与游标回读（at-least-once 的前提）：重启后从「上次已成功处理」的位置续拉，
@@ -136,7 +128,14 @@ func main() {
 
 	// 启动 REST API（供 Windows 桌面版远程调用）；apiPort 填负数表示禁用
 	if cfg.APIPort > 0 {
-		apiSrv := startAPIServer(db, llmClient, client, cfg, cfg.APIPort)
+		apiSrv, apiErr := startAPIServer(db, llmClient, client, cfg, cfg.APIPort)
+		if apiErr != nil {
+			// 面板是 NAS/容器下唯一的配置入口，端口绑不上就等于无法配置（包括改端口本身）。
+			// 这种情况直接退出比“看起来在跑但网页打不开”有用得多。
+			slog.Error("API 服务启动失败，进程退出", "err", apiErr,
+				"处置", "把 config.json 的 apiPort 换成空闲端口，或释放占用该端口的进程/旧容器")
+			os.Exit(1)
+		}
 		// 用 Shutdown 而不是 Close：Close 会直接掐断在途请求，
 		// 桌面端那边表现为一次莫名其妙的连接重置。
 		// 这个 defer 注册在 db.Close() 之后，所以会先于关库执行。
@@ -152,6 +151,33 @@ func main() {
 	}
 
 	slog.Info("开始消息轮询，按 Ctrl+C 退出")
+
+	// 未绑定时：API 已启动、面板已可访问，再在后台试一次终端扫码（照顾有终端的部署）。
+	// 无论成败都不影响进程存活：用户可一直在网页「状态 → 重新扫码绑定」里完成扫码。
+	if !client.IsLoggedIn() {
+		go func() {
+			if err := doQRLogin(client, 45*time.Second); err != nil {
+				slog.Warn("扫码登录未完成（不影响面板启动与其他功能）", "err", err,
+					"下一步", "网页「状态」→「重新扫码绑定」")
+				return
+			}
+			if err := client.SaveCredentials(); err != nil {
+				slog.Error("保存登录凭据失败", "err", err)
+				return
+			}
+			slog.Info("微信绑定完成，消息轮询将自动开始")
+		}()
+	}
+
+	// 面板地址：未绑定时提醒用户去哪里扫码。探测失败就回一个通用提示，不阻断启动。
+	panelURL, _, panelErr := WebPanelURL(cfg)
+	if panelErr != nil || panelURL == "" {
+		port := cfg.APIPort
+		if port <= 0 {
+			port = 17965
+		}
+		panelURL = fmt.Sprintf("http://<服务器IP>:%d/", port)
+	}
 
 	// 优雅关闭
 	sigCh := make(chan os.Signal, 1)
@@ -179,12 +205,34 @@ func main() {
 		// 「暂停该账号 60 分钟」做法）。关键是**不再永不 GetUpdates**。
 		expiryBackoff := time.Minute
 		lastHousekeep := time.Now()
+		lastBindHint := time.Time{}
 
 		for {
 			select {
 			case <-stopCh:
 				return
 			default:
+			}
+
+			// 尚未绑定微信（首次部署 / 重绑未完成）：不退进程，而是**守着面板等扫码**。
+			// 旧行为是扫码失败就 os.Exit(1)，在没终端的 NAS 上等于把用户锁在门外。
+			// 每 5 分钟提醒一次防刷屏；期间用户随时可用 /api/wechat/rebind 发起绑定，
+			// 绑定成功后 IsLoggedIn 变真，下一轮就正常进入长轮询。
+			if !client.IsLoggedIn() {
+				if client.RebindActive() {
+					if !wait(2 * time.Second) {
+						return
+					}
+					continue
+				}
+				if time.Since(lastBindHint) > 5*time.Minute {
+					slog.Info("尚未绑定微信：在网页「状态 → 重新扫码绑定」完成扫码后会自动开始收消息", "panel", panelURL)
+					lastBindHint = time.Now()
+				}
+				if !wait(10 * time.Second) {
+					return
+				}
+				continue
 			}
 
 			// 网页重绑进行中：挂起轮询，不与之抢会话（成功后过期位会被清、凭据已换新）
@@ -330,8 +378,9 @@ func main() {
 	slog.Info("已退出")
 }
 
-// doQRLogin 执行扫码登录流程
-func doQRLogin(client *ILinkClient) error {
+// doQRLogin 执行扫码登录流程。wait 是等待扫码/确认的时间上限（容器里没有终端，
+// 传短值让主流程尽快走下去，改由网页面板完成绑定）。
+func doQRLogin(client *ILinkClient, wait time.Duration) error {
 	slog.Info("正在获取二维码...")
 	resp, err := client.GetQRCode()
 	if err != nil {
@@ -344,9 +393,9 @@ func doQRLogin(client *ILinkClient) error {
 	// 链接同时打到控制台和日志：Windows 服务模式没有控制台，只能从 bot.log 里复制
 	fmt.Printf("\n如果终端里的二维码无法识别，请复制下面这个链接到浏览器打开，再用微信扫页面里的二维码：\n%s\n\n", resp.QRCodeURL)
 	slog.Info("二维码链接", "url", resp.QRCodeURL)
-	slog.Info("等待扫码确认...")
+	slog.Info("等待扫码确认...", "最长等待", wait.String())
 
-	if err := client.PollQRCodeStatus(resp.QRCode, 5*time.Minute); err != nil {
+	if err := client.PollQRCodeStatus(resp.QRCode, wait); err != nil {
 		return err
 	}
 

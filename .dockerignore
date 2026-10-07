@@ -1,0 +1,40 @@
+# 构建上下文瘦身：只把编译需要的东西发给 daemon。
+# 这些本地产物若被带进上下文，既拖慢构建，又可能把真实凭据/数据烤进镜像层。
+
+# 本地编译产物与发布物
+wechat-profile-bot
+wechat-profile-bot.exe
+dist/
+build/
+*.exe
+*.tar
+*.tar.gz
+*.zip
+
+# 运行期数据与凭据（绝不能进镜像；容器里由 /config 卷提供）
+config.json
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.log.*
+banned_ips.json
+ilink_credentials.json
+ilink_syncbuf.json
+context_tokens.json
+totp_secret.json
+web_sessions.json
+trusted_clients.json
+security.log
+
+# 开发辅助与版本控制
+.git/
+.github/
+.gitignore
+.gitattributes
+*_test.go
+docs/
+tests/evaldata/*~
+.idea/
+.vscode/
+.DS_Store

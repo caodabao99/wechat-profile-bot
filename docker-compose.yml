@@ -1,41 +1,86 @@
 services:
   wechat-profile-bot:
+    # ── 镜像来源二选一 ──────────────────────────────────────────────
+    # A) 推荐：从 GitHub Releases 下载对应架构的镜像 tar（amd64=Intel/AMD 机型，
+    #    arm64=ARM 机型，如绿联/群晖 Arm 版），在 NAS Docker 界面「本地镜像导入」，
+    #    或 SSH 执行：docker load -i wechat-profile-bot-docker-v7.4.0.tar.gz
+    #    导入后镜像名就是 wechat-profile-bot:v7.4.0，此时请**删掉下面 build: 两行**。
+    # B) 在 NAS 上直接构建（不需要本机装 Go，容器内编译）：
+    #    docker build -t wechat-profile-bot:v7.4.0 .        # ARM 机型加 --platform linux/arm64
     build:
       context: .
       dockerfile: Dockerfile
-    # 本地构建产出的镜像版本号，与 go 源码 sysinfo.go 的 appVersion 保持一致。
-    # 若是 docker load 导入了 Release 附带的镜像 tar，删掉上面的 build: 段即可，
-    # image 名与 tar 内一致（wechat-profile-bot:v7.3.3）。
-    image: wechat-profile-bot:v7.3.3
+    image: wechat-profile-bot:v7.4.0
     container_name: wechat-profile-bot
     restart: unless-stopped
+
+    # host 网络：面板用 http://<NAS的IP>:17965 直接访问，不必做端口映射，
+    # 也避免 bridge 网络下访问外部模型 API 被拦。
+    # 若你的 NAS 要求显式映射，删掉本行并启用下面的 ports:。
+    network_mode: host
+    # ports:
+    #   - "17965:17965"   # 左边是 NAS 上对外暴露的端口，被占用就改左边（同时改下面 healthcheck 的端口）
+
     volumes:
-      # 配置和数据库持久化
+      # 冒号左边建议写成 NAS 上的固定路径，例如 /vol1/1000/docker/wechat-profile-bot/config
+      # 容器内所有数据都落在这里：config.json、数据库、日志、凭据、备份
       - ./config:/config
+
     environment:
       - TZ=Asia/Shanghai
-      # 容器内进程以这个 UID/GID 运行（不再用 root）。
-      # 请改成宿主机上执行 docker 的用户的 id -u / id -g，
-      # 这样 ./config 里的数据库、日志、备份在宿主机上也能正常读写。
-      # 启动时入口脚本会自动把 ./config 的属主改成这里指定的值。
-      # 设 PUID=0 可退回旧行为（以 root 运行）。
+
+      # 容器内进程使用的 UID/GID（不再以 root 跑）。请改成你在 NAS 上执行 docker 的用户的 id，
+      # SSH 里用 `id -u` 与 `id -g` 查看；入口脚本启动时会自动把 ./config 的属主对齐过来。
+      # 若 NAS 上报权限错误、或你就是想用 root 跑，设 PUID=0 可退回旧行为。
       - PUID=1000
       - PGID=1000
-    # host 网络模式，避免 bridge 网络访问外部 API 的问题。
-    # 服务端口由 config.json 的 port 决定（默认 17965），
-    # host 模式下不需要 ports: 映射，直接访问 http://<宿主机IP>:17965
-    network_mode: host
+
+      # ── 以下 WEPB_* 仅用于「首次启动、config.json 还不存在」时引导生成配置 ──
+      # 之后一切以 ./config/config.json 与网页设置为准（改这些环境变量不会覆盖已有配置），
+      # 这样在网页里改过的东西不会被容器重启冲掉。
+      #
+      # 网页管理界面的登录令牌：**强烈建议在这里设成一个你自己的长随机串**，
+      # 否则程序会自动生成一个随机 token 写进 ./config/config.json（需要去文件里查看）。
+      # 登录方式：浏览器打开 http://<NAS的IP>:17965/ → 输入该 token → 首次会弹 TOTP 绑定二维码。
+      # ⚠ 若要把面板暴露到公网，必须先套 HTTPS 反向代理并把地址填到 config.json 的 webBaseURL，
+      #   否则 token / 2FA 密钥 / 聊天内容都会明文过网。仅内网使用可不改。
+      - WEPB_API_TOKEN=请改成一个长随机字符串
+
+      # 你的微信昵称（用于区分聊天记录里哪些消息是你发的；留空则画像质量下降）
+      - WEPB_MY_NAME=你的微信昵称
+
+      # 大模型（OpenAI 兼容接口）。⚠ 不填也能正常启动：相关功能会提示"未配置"，
+      # 你可以启动后在网页「模型与代理」页填写并保存，立刻生效、无需重启。
+      # 例：智谱免费模型 https://open.bigmodel.cn/api/paas/v4 + glm-4.7-flash
+      - WEPB_LLM_API_KEY=sk-xxx
+      - WEPB_LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+      - WEPB_LLM_MODEL=glm-4.7-flash
+
     healthcheck:
       # 业务接口有白名单/鉴权，HTTP 探测会误报，这里只探端口是否在监听。
-      # 若修改了 config.json 里的 port，需同步修改下面的探测端口。
+      # 若改了 config.json 的 apiPort 或上面 ports 的宿主端口，这里要同步改。
       test: ["CMD-SHELL", "nc -w 3 127.0.0.1 17965 </dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
+
     logging:
-      # 限制容器日志体积，防止长期运行撑爆磁盘（业务日志在 ./config/bot.log）
+      # 限制 docker 日志体积（业务日志在 ./config/bot.log，程序自身也会轮转）
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+# ── 启动步骤（NAS SSH）──────────────────────────────────────────────
+#   1. mkdir -p wechat-profile-bot/config && cd wechat-profile-bot   （本文件放该目录）
+#   2. 把上面标了「改成你的」的几项改掉，尤其是 PUID/PGID 与 WEPB_API_TOKEN
+#   3. docker load -i wechat-profile-bot-docker-v7.4.0.tar.gz   （或 docker build -t ... .）
+#   4. docker compose up -d
+#   5. 浏览器打开 http://<NAS的IP>:17965/ ，用 WEPB_API_TOKEN 登录
+#   6. 「模型与代理」页确认模型可用；「状态」页点「重新扫码绑定」，用手机微信扫码 —— 微信绑定
+#      不需要在终端里完成，网页上就能扫（首次启动没扫码也照常运行，不会退出）
+#   7. 之后把微信里收到的聊天记录粘贴给 bot，或在网页端直接录入
+#
+# NAS 图形界面（无 SSH）：在「Compose」里新建项目，把本项目目录指向本文件所在目录，
+# 点启动即可；镜像在项目目录里导入（多数 NAS 的 Docker 界面都有「导入本地镜像」）。

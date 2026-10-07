@@ -420,6 +420,11 @@ func handleSecurityCLI() bool {
 		case "--list-bans":
 			listBansFromCLI()
 			return true
+		case "--init-config":
+			// 只生成/报告 config.json 后退出：供 NAS、容器与打包脚本“先写配置再启动”使用
+			// （v7.4.0 起直接运行不再靠“写模板后退出”这个旧行为）
+			initConfigFromCLI()
+			return true
 		case "--help", "-h":
 			printUsage()
 			return true
@@ -438,6 +443,8 @@ func printUsage() {
   --list-bans        查看被永久封禁的 IP 名单
   --unban <ip>       解除某个 IP 的封禁（误封自己时用这个自救）
   --unban-all        清空整个封禁名单
+  --init-config      只生成 config.json 模板后退出（NAS/容器里想先配好再启动时用；
+                     直接启动也行，未配置项会自动降级并可在网页里改）
   --help, -h         显示本帮助
 
 相关文件（均与数据库同目录）：

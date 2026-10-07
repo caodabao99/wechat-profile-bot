@@ -86,20 +86,22 @@ func configPath() string {
 	return filepath.Join(filepath.Dir(exe), "config.json")
 }
 
-// LoadConfig 读取程序同目录下的 config.json；
-// 文件不存在时自动生成一份默认配置并返回错误，提示用户填写后重启。
+// LoadConfig 读取程序同目录下的 config.json。
+//
+// 首次启动**不再**「写模板 + 报错退出」：那种行为在 NAS/容器里是死循环——进程退了，
+// 用户既打不开网页面板（没服务），也没法在无人值守环境里改文件，表观就是「启动不了」。
+// 现在按内置默认值 + 环境变量引导生成一份可用配置并继续启动；大模型未配置时相关
+// 功能自动降级，用户可在网页「模型与代理」页补配，或直接改 config.json 后重启。
 func LoadConfig() (*Config, error) {
-	p := configPath()
+	p, created, err := createInitialConfigIfAbsent()
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		slog.Info("首次启动：已按默认值与环境变量生成配置文件，继续启动（各项可在网页管理界面修改）", "path", p)
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// 0600：模板里含 llm.apiKey 占位符，用户填完真实密钥后这个文件就是凭据，
-			// 不能对同机器其他用户可读
-			if werr := os.WriteFile(p, []byte(defaultConfigTemplate), 0600); werr != nil {
-				return nil, fmt.Errorf("配置文件不存在，且自动创建失败: %w", werr)
-			}
-			return nil, fmt.Errorf("配置文件不存在，已在程序目录生成默认配置：\n%s\n\n请填写 myName 和 llm.apiKey 后重新启动程序", p)
-		}
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}
 
@@ -120,10 +122,12 @@ func LoadConfig() (*Config, error) {
 		c.APIPort = 17965
 	}
 
-	// 占位符校验：apiKey 没填的话，用户要等到第一次生成画像才看到一条 401，
-	// 中间入库的消息全都没有画像。启动时就拦下来更省事。
+	// 密钥未填不再是致命错误（无终端的容器里退出 = 再也进不去面板）：把占位值
+	// 规范化为空，让 LLM 客户端按「未配置」优雅降级（不会拿 sk-xxx 去撞接口吃 401），
+	// 用户可在网页「模型与代理」页填 Key，也可改 config.json 后重启。
 	if k := strings.TrimSpace(c.LLM.ApiKey); k == "" || k == "sk-xxx" {
-		return nil, fmt.Errorf("config.json 里 llm.apiKey 还是占位值，请填写真实的大模型 API Key 后重新启动")
+		c.LLM.ApiKey = ""
+		slog.Warn("尚未配置大模型 API Key：画像与意图分析会提示不可用，入库与其余功能不受影响；可在网页「模型与代理」页填写后直接生效")
 	}
 	if n := strings.TrimSpace(c.MyName); n == "" || n == "你的微信昵称" {
 		fmt.Fprintf(os.Stderr, "警告: myName 未填写（当前 %q），将无法区分聊天记录里哪些消息是你发的，画像质量会明显下降\n", c.MyName)
@@ -145,6 +149,68 @@ func LoadConfig() (*Config, error) {
 
 	config = &c
 	return &c, nil
+}
+
+// createInitialConfigIfAbsent 在 config.json 不存在时按默认值 + WEPB_* 环境变量生成它。
+// 返回（路径, 是否本次新建, 错误）。LoadConfig 与 --init-config 子命令共用同一函数，
+// 避免两处逻辑漂移（打包脚本就依赖过“无配置时写模板”这一行为）。
+//
+// 权限 0600：文件里会含 llm.apiKey 与 apiToken，填完真实密钥后它就是凭据，不能同机其他用户可读。
+func createInitialConfigIfAbsent() (string, bool, error) {
+	p := configPath()
+	if _, err := os.Stat(p); err == nil {
+		return p, false, nil
+	}
+	if err := writeFileAtomic(p, []byte(initialConfigContent())); err != nil {
+		return p, false, fmt.Errorf("配置文件不存在，且自动创建失败: %w", err)
+	}
+	return p, true, nil
+}
+
+// initConfigFromCLI 处理 --init-config：只生成（或报告已存在）配置模板后退出。
+// 用途：NAS/容器里先落一份可读可改的 config.json 再编辑；也让打包脚本能依赖一个
+// 明确的“写完就退”入口，而不靠“首启动写模板后退出”这种旧行为（v7.4.0 已改掉）。
+func initConfigFromCLI() {
+	p, created, err := createInitialConfigIfAbsent()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if created {
+		fmt.Printf("已生成配置模板：%s\n请编辑其中的 myName 与 llm.apiKey 后启动程序（也可直接启动，在网页里配置）\n", p)
+		return
+	}
+	fmt.Printf("配置文件已存在，未作修改：%s\n", p)
+}
+
+// initialConfigContent 生成首启动配置：在内置模板上做**定点字符串替换**（而不是反
+// 序列化再 Marshal），这样 _comment 说明与字段顺序都保留，用户打开文件仍看得懂。
+//
+// 环境变量只用于无人值守部署（NAS/容器）引导，与 qb-stream 的约定一致：
+// WEPB_MY_NAME / WEPB_API_TOKEN / WEPB_LLM_API_KEY / WEPB_LLM_BASE_URL / WEPB_LLM_MODEL。
+// 配置一旦生成就以 config.json 为准（环境变量不再覆盖），避免网页改完又被容器重启重置。
+func initialConfigContent() string {
+	out := defaultConfigTemplate
+	for _, r := range []struct{ key, env string }{
+		{"myName", "WEPB_MY_NAME"},
+		{"apiToken", "WEPB_API_TOKEN"},
+		{"apiKey", "WEPB_LLM_API_KEY"},
+		{"baseURL", "WEPB_LLM_BASE_URL"},
+		{"model", "WEPB_LLM_MODEL"},
+	} {
+		if v := strings.TrimSpace(os.Getenv(r.env)); v != "" {
+			out = setJSONStringField(out, r.key, v)
+		}
+	}
+	return out
+}
+
+// setJSONStringField 把 `"key": "..."` 的值换成 v（v 里的反斜杠与引号转义）。
+func setJSONStringField(content, key, v string) string {
+	re := regexp.MustCompile(`("` + regexp.QuoteMeta(key) + `"\s*:\s*)"[^"]*"`)
+	esc := strings.ReplaceAll(v, `\`, `\\`)
+	esc = strings.ReplaceAll(esc, `"`, `\"`)
+	return re.ReplaceAllString(content, `${1}"`+esc+`"`)
 }
 
 // saveConfigPreserveComments 仅替换配置文件中的 apiToken 字段值，保留 _comment 等注释。

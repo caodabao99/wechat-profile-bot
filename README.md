@@ -1,6 +1,6 @@
 # wechat-profile-bot
 
-![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.3.3-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-73.4%25-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.4.0-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-73.5%25-brightgreen)
 
 **把微信聊天记录变成一台「关系操作系统」。** 粘贴记录 → 自动入库去重 → 抽取**可溯源**的可信事实（事实/推断分层、冲突进人工复核）→ **确定性评分**给出「今天最该联系的人」与依据 → 行动后自动回测回暖率。纯本地 SQLite、单二进制部署；**不读微信数据库、不监控、不自动发消息**，LLM 全失效时核心功能照常工作。
 
@@ -23,7 +23,7 @@
 ```bash
 # 方式 A：下载 Release 二进制（win/linux），或
 # 方式 B：Docker —— 下载镜像 tar 后
-docker load -i wechat-profile-bot-docker-v7.3.3.tar.gz
+docker load -i wechat-profile-bot-docker-v7.4.0.tar.gz
 docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登录
 ```
 
@@ -97,7 +97,7 @@ docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.3.3.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.4.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -114,7 +114,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.3.3.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.4.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -330,18 +330,26 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 ## Docker 部署
 
-镜像未发布到 Docker Hub，两种方式任选：
+镜像未发布到 Docker Hub，两种来源任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.3.3.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.3.3.tar.gz`，得到 `wechat-profile-bot:v7.3.3` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.4.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.4.0.tar.gz`，得到 `wechat-profile-bot:v7.4.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
-### 方式一：docker compose（推荐）
+### NAS 部署（最常用路径，5 步）
 
-在项目目录执行，compose 会自动本地构建镜像并启动：
+> 关键前提：**先确认 CPU 架构**——Intel/AMD 机型用 amd64 镜像，ARM 机型（不少绿联/群晖/极空间）用 arm64 镜像，架构不对会直接报 `exec format error`。不确定的话在 NAS SSH 里执行 `uname -m`（`x86_64` → amd64；`aarch64`/`arm64` → arm64）。
 
-```bash
-docker compose up -d --build
-```
+1. 到 Releases 下载对应架构的产物：**x86_64 机型**直接下 `wechat-profile-bot-docker-v7.4.0.tar.gz` 导入即可；**ARM64 机型**若 Releases 没提供 arm64 镜像包，就用同名的 `wechat-profile-bot-v7.4.0.zip`（或 git 克隆仓库），**在 NAS 上直接 `docker build`**——镜像内编译，本机不需要装 Go（这也是最不会踩架构坑的做法）
+2. 导入镜像：NAS 的 Docker 界面里用「本地镜像导入」，或 SSH：`docker load -i wechat-profile-bot-docker-v7.4.0.tar.gz`（ARM 机型在存放 Dockerfile 的目录里执行 `docker build -t wechat-profile-bot:v7.4.0 .`）
+3. 编辑 `docker-compose.yml`：**删掉开头 `build:` 那两行**（用导入的镜像，不需要构建），并把 `PUID/PGID` 改成你的用户 id、`WEPB_API_TOKEN` 改成自己的长随机串（其余可不改）
+
+   > 想先拿到一份 `config.json` 手工填好再启动（而不是启动后去网页改）：
+   > `docker run --rm -v $(pwd)/config:/config --entrypoint /app/wechat-profile-bot wechat-profile-bot:v7.4.0 --init-config`
+   > 会在 `./config` 下生成模板后退出（权限 0600）。
+4. 启动：`docker compose up -d`（无 SSH 时在 NAS 的 Compose 界面里指向该目录点启动）
+5. 浏览器打开 `http://<NAS的IP>:17965/` → 输入 `WEPB_API_TOKEN` → 首次会弹 TOTP 绑定二维码 → 进「模型与代理」填密钥、「状态」点「重新扫码绑定」
+
+数据全部落在该目录的 `config/` 子目录里（配置、数据库、日志、凭据、备份），**备份这个目录就等于备份全部**。面板若需从外网访问，必须先上 HTTPS 反向代理（详见「安全模型」一节）。
 
 ### 方式二：手动构建并运行
 
@@ -355,7 +363,17 @@ docker run -d --name wechat-profile-bot --restart unless-stopped \
   wechat-profile-bot:latest
 ```
 
-配置和数据保存在 `./config` 目录。首次启动会在该目录生成 `config.json` 模板并退出，填好配置后再启动一次；启动日志里会打印二维码链接，用手机微信扫码绑定。
+配置和数据保存在 `./config` 目录。**首次启动无需预先填写配置**：程序会按默认值（可用下面的 `WEPB_*` 环境变量引导）自动生成 `config.json` 并继续启动，面板立刻可访问；大模型未配置时相关功能只是提示“未配置”，不会阻止启动。微信绑定也不用在终端完成：进面板「状态 → 重新扫码绑定」，网页上直接出二维码，手机扫完就自动开始收消息（终端二维码链接仍会同时打印到日志）。
+
+可用于引导的环境变量（**仅首次启动、`config.json` 尚不存在时生效**，之后以文件与网页设置为准，避免容器重启把你在网页里改的配置冲掉）：
+
+| 变量 | 作用 | 不填的后果 |
+|---|---|---|
+| `WEPB_API_TOKEN` | 网页面板登录令牌（建议自己设一个长随机串） | 自动生成随机值并写进 `config.json`（得去文件里查） |
+| `WEPB_MY_NAME` | 你的微信昵称，用于区分哪些消息是你发的 | 画像质量下降（启动日志会提醒） |
+| `WEPB_LLM_API_KEY` | 大模型密钥 | 画像/意图分析提示“未配置”，其他功能正常；可在网页「模型与代理」页补配 |
+| `WEPB_LLM_BASE_URL` | OpenAI 兼容接口地址 | 用模板默认值 |
+| `WEPB_LLM_MODEL` | 模型名 | 用模板默认值 |
 
 ### 容器不再以 root 运行
 

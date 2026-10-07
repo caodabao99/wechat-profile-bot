@@ -138,8 +138,11 @@ func checkIPWhitelist(r *http.Request, whitelist, trustedProxies []string) bool 
 	return ipInList(ip, ipStr, whitelist)
 }
 
-// startAPIServer 启动 HTTP API 服务（供 Windows 桌面版远程调用）
-func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config, port int) *http.Server {
+// startAPIServer 启动 HTTP API 服务（供 Windows 桌面版远程调用）。
+//
+// 端口绑定是**同步**的，失败就返回错误：网页面板是 Docker/NAS 部署下唯一的配置入口，
+// 端口被占用却继续跑，用户只会看到“容器在运行但网页打不开”，比明确失败难排查得多。
+func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config, port int) (*http.Server, error) {
 	s := &apiServer{
 		db:       db,
 		llm:      llm,
@@ -183,6 +186,12 @@ func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config
 		//                   「重新生成画像」要连调两次约 244s，意图分析上限 100s
 		// 这两个阶段的取消由各请求自己的 ctx（r.Context()）负责，客户端断开会正常传播。
 	}
+	// 先把端口真正绑上：端口冲突、权限不足这类问题在启动瞬间就能知道，
+	// 而不是进 goroutine 后只留一行错误日志。
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("监听 %s 失败（端口 %d 很可能已被其他程序或旧容器占用）: %w", srv.Addr, port, err)
+	}
 	go func() {
 		slog.Info("API 服务已启动", "addr", fmt.Sprintf("http://0.0.0.0:%d/api/", port))
 		slog.Info("网页管理界面", "addr", fmt.Sprintf("http://0.0.0.0:%d/", port))
@@ -208,11 +217,11 @@ func startAPIServer(db *sql.DB, llm *LLMClient, client *ILinkClient, cfg *Config
 			"threshold", maxAuthFailures, "action", "永久封禁",
 			"securityLog", securityLogPath())
 		slog.Info("ingest 接口限流已启用", "limit", ingestRateLimit, "window", ingestRateWindow.String())
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("API 服务错误", "err", err)
 		}
 	}()
-	return srv
+	return srv, nil
 }
 
 // withSecurity 在业务路由外层套两道防护：安全响应头 + IP 封禁拦截。
