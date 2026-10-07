@@ -154,3 +154,46 @@ func TestRegisteredAPIDomainsAreConsumedOrDocumented(t *testing.T) {
 	}
 	t.Logf("B) %d 个后端 API 域均「已接入前端」或「已登记 README」", len(reg))
 }
+
+// uiFieldContract 是「文档声称由网页使用的响应字段」契约表。
+//
+// 为何单独维护一份小表而不是自动扫描：文档里字段名淹在自然语句里，无法可靠地判定
+// 哪个是「前端要用」的。而这类声明一旦脱离实现就会变成空话——投产前审计 F1 抓到的
+// 正是：README 写「cooldown_seconds 供前端置灰按钮」，而 static/ 里对它 0 引用。
+// 新增此类声明时在下表加一行即可，why 列就是它的存在理由。
+var uiFieldContract = []struct{ field, why string }{
+	{"cooldown_seconds", "重绑冷却期置灰按钮并显示剩余秒数"},
+	{"session_expired", "提示会话已过期、需重新扫码"},
+	{"logged_in", "显示当前登录状态"},
+	{"qr_image", "直接作为 <img> src 展示重绑二维码"},
+	{"accuracy", "模型能力成绩单的准确率"},
+	{"verdict", "模型能力结论行"},
+}
+
+// TestDocumentedUIFieldsAreActuallyUsedByFrontend 双向钉：契约里的字段必须
+// 同时出现在前端（真被使用）与 README（真被写清），两者缺一个就红。
+func TestDocumentedUIFieldsAreActuallyUsedByFrontend(t *testing.T) {
+	front := readFrontend(t)
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Skipf("读不到 README.md: %v", err)
+	}
+	doc := string(readme)
+
+	var unusedInUI, missingInDoc []string
+	for _, c := range uiFieldContract {
+		if !strings.Contains(front, c.field) {
+			unusedInUI = append(unusedInUI, c.field+"("+c.why+")")
+		}
+		if !strings.Contains(doc, c.field) {
+			missingInDoc = append(missingInDoc, c.field)
+		}
+	}
+	if len(unusedInUI) > 0 {
+		t.Errorf("文档声称前端会用的字段在 static/ 里找不到引用（假 UI 承诺）：%v", unusedInUI)
+	}
+	if len(missingInDoc) > 0 {
+		t.Errorf("契约字段未在 README 说明（用户无从得知该行为）：%v", missingInDoc)
+	}
+	t.Logf("契约：%d 个前端使用的响应字段均已在代码与 README 双侧对齐", len(uiFieldContract))
+}

@@ -1,6 +1,6 @@
 # wechat-profile-bot
 
-![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.3.1-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-73.4%25-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.3.2-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-73.4%25-brightgreen)
 
 **把微信聊天记录变成一台「关系操作系统」。** 粘贴记录 → 自动入库去重 → 抽取**可溯源**的可信事实（事实/推断分层、冲突进人工复核）→ **确定性评分**给出「今天最该联系的人」与依据 → 行动后自动回测回暖率。纯本地 SQLite、单二进制部署；**不读微信数据库、不监控、不自动发消息**，LLM 全失效时核心功能照常工作。
 
@@ -23,7 +23,7 @@
 ```bash
 # 方式 A：下载 Release 二进制（win/linux），或
 # 方式 B：Docker —— 下载镜像 tar 后
-docker load -i wechat-profile-bot-docker-v7.3.1.tar.gz
+docker load -i wechat-profile-bot-docker-v7.3.2.tar.gz
 docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登录
 ```
 
@@ -97,7 +97,7 @@ docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.3.1.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.3.2.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -114,7 +114,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.3.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.3.2.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -332,7 +332,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.3.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.3.1.tar.gz`，得到 `wechat-profile-bot:v7.3.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.3.2.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.3.2.tar.gz`，得到 `wechat-profile-bot:v7.3.2` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -623,11 +623,11 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/strategy/history` | v7 §8 策略学习视图（按策略类型聚合回暖率 + Wilson CI）。v7.2.0 起已接入网页「洞察 → 策略学习」 |
 | GET/POST | `/api/calibration`、`/api/calibration/reset` | v7 §9 个性化软校准（限幅 + 时间衰减，不改确定性 Priority）。v7.2.0 起已接入网页「洞察 → 个性化校准」 |
 | GET/PUT | `/api/llm/router` | v7 §5.3 任务级 Model Router（主/备档案、`local_only` 隐私、超时/温度/上限）；策略本身每次调用由后端生效，但**暂无管理界面**（仅 API 读写） |
-| POST | `/api/llm/capability` | v7.1 模型能力测试：7 条探针（过度报警/过度抽取/幻觉/拒答/冲突/时间推理）给当前活动模型出成绩单；single-flight，未配置优雅返回 |
+| POST | `/api/llm/capability` | v7.1 模型能力测试：7 条探针（过度报警/过度抽取/幻觉/拒答/冲突/时间推理）给当前活动模型出成绩单；结果字段 `accuracy`（准确率）、`verdict`（结论行）、`passed`/`total`、`skipped_rate_limit`/`errored`（未完成不计入分母）均由网页直接渲染；single-flight，未配置优雅返回 |
 | GET | `/api/system/data-health`、POST `.../data-health/rebuild` | v7 §21 数据健康总览与**仅重建派生**（路径在 `/api/system/` 下，非 `/api/data/health`；暂无网页入口，供运维与 API 调用） |
 | GET | `/api/today`、POST `/api/today/snooze` | v6.3.0 Action Center 2.0 聚合与稍后（当前网页首页未接入，另走 `decision/today`） |
 | GET | `/api/stats/ingest` | v6.3.0 Smart Paste 去重统计（解析/新增/重复/异常计数，按联系人聚合；当前无 UI 消费，供排障与 API 调用） |
-| GET | `/api/wechat/bind` | v7.3 会话重绑状态（`status`/`logged_in`/`session_expired`/`cooldown_seconds`，`waiting` 时带可直接 `<img>` 显示的二维码 dataURL） |
+| GET | `/api/wechat/bind` | v7.3 会话重绑状态。回传字段均由网页使用：`logged_in`（登录状态）、`session_expired`（过期时提示需重绑）、`status`（idle/fetching/waiting/scaned/confirmed/expired/failed）、`qr_image`（**dataURL 二维码**，直接作 `<img src>` 展示）、`cooldown_seconds`（冷却剩余秒数，驱动按钮置灰与倒计时）、`error` |
 | POST | `/api/wechat/rebind` | v7.3 发起重新扫码：先**暂存**旧凭据/游标/context_token（失败时原样回滚，不会因一次误点丢掉可用会话），再取二维码并等待扫码；成功后自动恢复消息轮询（无需重启）。幂等且带 **5 分钟冷却**：冷却中返回 429 + `Retry-After` |
 
 验证示例：
@@ -640,7 +640,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 在网页管理界面顶部点「备份」页：
 
-- **导出备份**：下载一个 `wechat-profile-backup-日期.zip`，内含全部联系人、消息、画像历史、合并记录，以及 `config.json`、`ilink_credentials.json`、`totp_secret.json`（网页登录态 `web_sessions.json` 刻意不包含）
+- **导出备份**：下载一个 `wechat-profile-backup-日期.zip`，内含全部联系人、消息、画像历史、合并记录，以及 `config.json`、`ilink_credentials.json`、`ilink_syncbuf.json`、`totp_secret.json`（网页登录态 `web_sessions.json` 刻意不包含）。长轮询游标与登录凭据**同进同出**：用不含游标的旧备份恢复时，程序会自动清除本地不匹配的游标（宁可从头重拉，也不会旧令牌配新游标；重放部分由 30 天账本与 `msg_hash` 去重兜底）
 - **导入恢复**：选择之前导出的 zip，当前数据库会被整体替换；恢复前自动在数据目录留一份 `auto-backup-pre-restore-时间.zip`，恢复配置文件后需重启服务才生效
 - **操作记录**：页面下方显示最近 50 次备份/恢复操作（时间、来源端、文件名、结果），失败操作标红
 
@@ -652,7 +652,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 
 | | 说明 |
 |---|---|
-| 加密范围 | 只加密 `config.json`、`ilink_credentials.json`、`totp_secret.json`（模型 API Key、微信登录凭据、2FA 密钥） |
+| 加密范围 | 只加密 `config.json`、`ilink_credentials.json`、`totp_secret.json`（模型 API Key、微信登录凭据、2FA 密钥）；`ilink_syncbuf.json` 仅是一个不透明的长轮询偏移量，不含消息内容，因此**不加密** |
 | 不加密 | `data.db`（聊天记录）和 `MANIFEST.json` 始终是明文，zip 也仍是标准格式，可用任意解压软件打开查看 |
 | 加密算法 | PBKDF2-HMAC-SHA256 派生密钥（120000 次迭代）+ AES-256-GCM，文件在 zip 内改名为 `原名.enc` |
 | 留空 | 和以前完全一样，明文保存，任何机器都能直接导入 |

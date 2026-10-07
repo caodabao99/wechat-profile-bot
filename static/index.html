@@ -2536,7 +2536,10 @@
       <div class="card">
         <div class="list-head"><h2>微信会话</h2>
           <button class="btn sm" type="button" @click="startIlinkRebind"
-            :disabled="bindBusy || (ilinkBind && ilinkBind.active)">{{ bindBusy ? '处理中…' : ((ilinkBind && ilinkBind.active) ? '扫码进行中…' : '重新扫码绑定') }}</button></div>
+            :disabled="bindBusy || (ilinkBind && ilinkBind.active) || (ilinkBind && ilinkBind.cooldown_seconds > 0)">{{
+            bindBusy ? '处理中…' : ((ilinkBind && ilinkBind.active) ? '扫码进行中…' :
+              ((ilinkBind && ilinkBind.cooldown_seconds > 0) ? ('冷却中，' + ilinkBind.cooldown_seconds + ' 秒后可重试') : '重新扫码绑定')) }}</button></div>
+        <p class="hint block" v-if="ilinkBind && ilinkBind.cooldown_seconds > 0">刚发起过一次重绑。连续取二维码会被微信服务端限流，因此需等 {{ ilinkBind.cooldown_seconds }} 秒。</p>
         <p class="hint block">会话过期（微信侧返回 -14）是必然事件。过去只能手工删凭据文件并重启；现在直接点右上角按钮，用手机微信扫下方二维码即可，<strong>无需重启程序</strong>，扫成功后消息轮询自动恢复。</p>
         <p class="hint block" v-if="ilinkBind">
           登录状态：{{ ilinkBind.logged_in ? '已登录' : '未登录' }}

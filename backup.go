@@ -103,6 +103,19 @@ var runtimeTables = []string{
 	"ingest_ledger",
 }
 
+// sidecarCredentialFiles 是「与会话/密钥同生同死」的旁路文件白名单（单一来源）：
+// 备份打包、恢复前自动备份、恢复落盘三处共用，避免各处手写一份清单而漂移。
+//
+// v7.3.2 起包含 ilink_syncbuf.json（投产前审计 F2）：长轮询游标必须与登录凭据**同进同出**。
+// 只恢凭据而不恢游标，会得到「旧会话令牌 + 新会话游标」的错配：服务端可能对这个 buf 报错，
+// 也可能从头重放。两者分开备份只会把这种错配常态化。
+var sidecarCredentialFiles = []string{
+	"config.json",
+	"ilink_credentials.json",
+	"ilink_syncbuf.json",
+	"totp_secret.json",
+}
+
 // restoreSkipTables 永不参与恢复拷贝的表：派生表（自愈）+ 运行态表 + backup_log（恢复审计日志本身，
 // 清掉等于抹掉这次操作的记录，保留）。FTS 虚表/影子表与 sqlite_* 由 listRestoreTables 的查询过滤。
 var restoreSkipTables = func() map[string]bool {
@@ -632,7 +645,7 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 	// 2. 恢复前自动备份（防误操作，长期保留）
 	summary := &BackupSummary{Files: []string{}}
 	if makeSafety {
-		safetyPath, safetyCleanup, err := buildBackupZipLocked(db, sidecarDir, []string{"config.json", "ilink_credentials.json", "totp_secret.json"}, "")
+		safetyPath, safetyCleanup, err := buildBackupZipLocked(db, sidecarDir, sidecarCredentialFiles, "")
 		if err != nil {
 			return nil, fmt.Errorf("生成恢复前自动备份失败: %w", err)
 		}
@@ -818,6 +831,21 @@ func RestoreBackupZipWithPassword(db *sql.DB, zipPath, sidecarDir string, makeSa
 	for _, f := range files {
 		summary.Files = append(summary.Files, filepath.Base(f.dest))
 	}
+
+	// 游标与凭据必须配对（投产前审计 F2）：备份带回了登录凭据却没有游标（v7.3 之前的备份就如此），
+	// 说明本地那个游标属于**另一个会话**；留着它等于「旧令牌 + 新游标」错配。
+	// 清掉更确定：宁可从头拉，30 天账本与 msg_hash 会挡住重复入库。
+	if _, hasCred := sidecars["ilink_credentials.json"]; hasCred {
+		if _, hasBuf := sidecars["ilink_syncbuf.json"]; !hasBuf {
+			cur := filepath.Join(sidecarDir, "ilink_syncbuf.json")
+			if err := os.Remove(cur); err == nil {
+				slog.Warn("备份内不含游标文件，已清除本地游标：恢复后将从头拉取（账本会挡住重复入库）", "file", cur)
+			} else if !os.IsNotExist(err) {
+				slog.Warn("恢复后清除不匹配的游标文件失败", "file", cur, "err", err)
+			}
+		}
+	}
+
 	summary.NeedRestart = len(summary.Files) > 0
 	return summary, nil
 }
@@ -838,8 +866,12 @@ func stageRestoreSidecars(sidecars map[string]string, dir string) (files []*rest
 		}
 	}()
 	names := []string{}
+	allowed := make(map[string]bool, len(sidecarCredentialFiles))
+	for _, n := range sidecarCredentialFiles {
+		allowed[n] = true
+	}
 	for name := range sidecars {
-		if name == "config.json" || name == "ilink_credentials.json" || name == "totp_secret.json" {
+		if allowed[name] {
 			names = append(names, name)
 		}
 	}

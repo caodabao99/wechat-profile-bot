@@ -16,6 +16,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -103,6 +104,18 @@ func (c *ILinkClient) CommittedCursor() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.cursor
+}
+
+// ResetCursor 放弃当前游标（内存 + 磁盘），下次从头拉。
+// 用于整库恢复之后：恢复进来的会话与本地游标不属于同一会话（投产前审计 F2）。
+// 不会丢数据：重放的消息由 ingest_ledger 去重，内容层还有 msg_hash 兜底。
+func (c *ILinkClient) ResetCursor() {
+	c.mu.Lock()
+	c.cursor, c.pendingBuf = "", ""
+	c.mu.Unlock()
+	if err := os.Remove(c.syncBufPath()); err != nil && !os.IsNotExist(err) {
+		slog.Warn("清除游标文件失败", "err", err)
+	}
 }
 
 // MarkProcessed 把消息记入「已处理」滑窗。只在处理成功后调用。

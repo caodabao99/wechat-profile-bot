@@ -321,3 +321,71 @@ func TestRotateIfNeededTruncatesAndKeepsHistory(t *testing.T) {
 		t.Fatalf("不存在的文件应静默跳过，实得 rotated=%v err=%v", r, err)
 	}
 }
+
+// F2：游标必须与登录凭据配成一对进备份；用缺游标的旧备份恢复时要清掉本地不匹配的游标。
+// （v7.3 只持久化了游标却没收进 sidecar 白名单 → 恢复会得到「旧令牌 + 新游标」错配。）
+func TestBackupSidecarPairsCursorWithCredentials(t *testing.T) {
+	if len(botSidecarFiles) != len(sidecarCredentialFiles) {
+		t.Fatalf("备份清单应单一来源，实得 API 侧 %d 项 / backup.go %d 项", len(botSidecarFiles), len(sidecarCredentialFiles))
+	}
+	var hasBuf, hasCred bool
+	for _, n := range sidecarCredentialFiles {
+		switch n {
+		case "ilink_syncbuf.json":
+			hasBuf = true
+		case "ilink_credentials.json":
+			hasCred = true
+		}
+	}
+	if !hasBuf || !hasCred {
+		t.Fatal("游标与凭据必须在同一份 sidecar 白名单里（同进同出）")
+	}
+
+	src, dst := regressionDB(t), regressionDB(t)
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "ilink_credentials.json"), []byte(`{"bot_token":"TOK"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dstDir, "ilink_syncbuf.json")
+	if err := os.WriteFile(stale, []byte(`{"cursor":"STALE"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	zipPath, cleanup, err := BuildBackupZip(src, srcDir, []string{"ilink_credentials.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if _, err := RestoreBackupZipWithPassword(dst, zipPath, dstDir, false, ""); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("备份内没有游标时，本地不匹配游标必须被清除（否则旧令牌配新游标）")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "ilink_credentials.json")); err != nil {
+		t.Fatalf("凭据应正常恢复: %v", err)
+	}
+}
+
+// F2：ResetCursor 必须同时清内存与磁盘，否则当前进程还会拿旧会话游标去请求。
+func TestResetCursorClearsMemoryAndFile(t *testing.T) {
+	c := NewILinkClient(filepath.Join(t.TempDir(), "ilink_credentials.json"))
+	defer c.Shutdown()
+	if err := os.WriteFile(c.syncBufPath(), []byte(`{"cursor":"C1"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.cursor, c.pendingBuf = "C1", "C2"
+	c.mu.Unlock()
+
+	c.ResetCursor()
+
+	if c.CommittedCursor() != "" || c.PendingCursor() != "" {
+		t.Fatalf("内存游标应被清空，实得 %q / %q", c.CommittedCursor(), c.PendingCursor())
+	}
+	if _, err := os.Stat(c.syncBufPath()); !os.IsNotExist(err) {
+		t.Fatal("游标文件应被删除")
+	}
+	c.ResetCursor() // 文件已不存在时重复调用应安全
+}

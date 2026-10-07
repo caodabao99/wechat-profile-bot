@@ -168,6 +168,11 @@ func TestRestoreRollsBackSidecarsAndDB(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dstDir, name), []byte("old"), 0640); err != nil {
 			t.Fatal(err)
 		}
+		// 必须显式 Chmod：WriteFile 的 mode 会被 umask 削减（umask 077 下 0640 会变 0600），
+		// 而下面断言的是「恢复保留原文件权限 0640」——不固定夹具权限就会依赖运行环境（审计 F3）。
+		if err := os.Chmod(filepath.Join(dstDir, name), 0640); err != nil {
+			t.Fatal(err)
+		}
 	}
 	zip, cleanup, err := BuildBackupZip(src, srcDir, names)
 	if err != nil {

@@ -22,10 +22,11 @@ type backupPasswordRequest struct {
 	Password string `json:"password"`
 }
 
-// botSidecarFiles 服务端备份随带的旁路文件：
-// 模型配置、微信登录凭据、2FA 密钥——换服务器部署时免去重新扫码和重新配置。
-// web_sessions.json（网页会话）刻意不备份，新机要求重新登录。
-var botSidecarFiles = []string{"config.json", "ilink_credentials.json", "totp_secret.json"}
+// botSidecarFiles 服务端备份随带的旁路文件：模型配置、微信登录凭据与其**配套游标**、2FA 密钥
+// —— 换服务器部署时免去重新扫码和重新配置。清单单一来源在 backup.go（三处共用，避免漂移）。
+// web_sessions.json（网页会话）与 context_tokens.json 刻意不备份：前者要求新机重新登录，
+// 后者只能由对方先发消息重建，备份旧的反而易于发错会话。
+var botSidecarFiles = sidecarCredentialFiles
 
 // backupSource 判断请求来自网页端还是桌面端：
 // 网页端使用会话令牌（session token），桌面端使用 apiToken。
@@ -123,6 +124,22 @@ func (s *apiServer) hBackupImport(w http.ResponseWriter, r *http.Request) {
 	tmp.Close()
 
 	summary, err := restoreBotBackup(s.db, tmpPath, dataDir(), true, password)
+	if err == nil && s.client != nil {
+		// 备份带了凭据却没带游标时，backup.go 已删掉磁盘上的不匹配游标；
+		// 内存里这一份也必须清，否则当前进程仍会拿旧会话的游标去请求（投产前审计 F2）。
+		hasCred, hasBuf := false, false
+		for _, f := range summary.Files {
+			switch f {
+			case "ilink_credentials.json":
+				hasCred = true
+			case "ilink_syncbuf.json":
+				hasBuf = true
+			}
+		}
+		if hasCred && !hasBuf {
+			s.client.ResetCursor()
+		}
+	}
 	if err != nil {
 		slog.Warn("导入备份失败", "err", err)
 		LogBackupAction(s.db, "import", backupSource(r, s.sessions), hdr.Filename, hdr.Size, err.Error(), false)

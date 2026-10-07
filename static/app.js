@@ -616,6 +616,7 @@ createApp({
         pollIlinkBind();
       } catch (e) {
         toast(e.message || '启动重绑失败', 'error');
+        loadIlinkBind(); // 拉回最新状态：冷却中时按钮会置灰并显示剩余秒数
       } finally {
         bindBusy.value = false;
       }
