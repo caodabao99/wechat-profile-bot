@@ -1,5 +1,18 @@
 # 更新日志
 
+### v7.2.0（2026-10-07）— 网页端接入三个 v7 运营面板 + API 一致性双向钉
+
+投产前审计发现：v7 的指挥中心 / 策略学习 / 个性化校准等端点「后端全有、网页零消费」。本版把它们真正接进界面。
+
+- **洞察页新增 3 个子标签**：**指挥中心**（`GET /api/command-center` 六栏 Top3 只读聚合）、**策略学习**（`GET /api/strategy/history` 回暖率 + Wilson 95% 置信区间 + 样本少标记）、**个性化校准**（`/api/calibration` 列表 / 记录 / 按对象撤销 / 清空；`feedback` 用后端封闭枚举做下拉，杜绝填了未知值被拒）。
+- **`static_api_pin_test.go` 双向钉**：前端每个 `/api/` 调用必须有后端路由；后端每个 API 域必须「被前端消费」或「登记 README」。首跑即抓出 `/api/stats/ingest` 自 v6.3.0 起前端零引用、文档零登记的孤儿端点。
+- **`bot_dispatch_test.go`**：补齐 `bot.go`（1058 行）此前为零的 `NewBot`/`HandleMessage` 分发测试，含「已注册命令必须出现在帮助文本」一致性钉。
+- **文档归因纠正**：`V7_IMPLEMENTATION_REPORT.md` 的 UI(Web) 行由虚标 ✅ 改为据实描述；README 截图标注由「首页·指挥中心」改为真实装配来源；不存在的 `data/health` 路径订正为 `system/data-health`。
+- 覆盖率 72.4% → **73.2%**；真实 HTTP 并发压测（16 路读 20 端点 + 3 路并发触发最长持锁重建）412 请求，无死锁、无 5xx、响应体全部合法 JSON。
+- 如实标注：`/api/llm/router`（策略本身由后端每次调用生效，但**无管理界面**）与 `/api/system/data-health` 仍为 API-only，尚未接进网页。
+
+无破坏性 API 变更；SQLite `user_version` 不变（27）。
+
 ### v7.1.1（2026-10-07）— 补丁：发布包内补齐 LICENSE 与新 README
 
 纯打包内容修正，无代码行为变更：v7.1.0 的 tag 早于「MIT LICENSE 入库」与「README 首屏重构 + 截图 + CHANGELOG 拆分」两个提交，导致下载包内缺 LICENSE、README 为旧版。本补丁把二者纳入发布包。

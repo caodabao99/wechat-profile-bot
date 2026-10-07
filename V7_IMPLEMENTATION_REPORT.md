@@ -43,7 +43,7 @@ v7.0 不是「更多 AI 功能」，而是把既有系统**收口成一台会自
 | 4 | 修改表 | ✅ | `relationship_action_log` 增 `outcome/outcome_provenance/decision_fingerprint`（v26）；`ai_response_cache` 主键锁五分量 |
 | 5 | Migration | ✅ | `storage.go` user_version 26→27，幂等 `CREATE TABLE IF NOT EXISTS`；`backupCurrentDBVer=27` 与 migrate 终点一致（单一来源） |
 | 6 | API | ✅ | 新增域：`command-center`/`opportunity`/`strategy/history`/`calibration` + `contacts/{id}/brief`·`/session` + `llm/{router,usage,budget}` + `system/data-health`（注：非 `data/health`）；只读、缺失优雅降级不 500 |
-| 7 | UI（Web） | ◐ **PARTIAL（本行已于 v7.1.1 后修正归因）** | 上述 v7 端点**均未被本仓 `static/` 调用**（已 grep 验证）：`brief`/`session`/`opportunity` 由**桌面端 v4.0.0** 消费；`command-center`/`strategy/history`/`calibration`/`llm/router` 当前**无任何 UI 消费者**（仅 API）；网页首页「今天值得做」是由 `decision/today` + `memory/review` + `risks` + `portfolio` 四个旧端点拼装。原表述“首页 Command Center 六栏”不属本仓网页，特此纠正 |
+| 7 | UI（Web） | ◐ PARTIAL（v7.2.0 已大幅收敛） | v7 交付时这些端点**均未被本仓 `static/` 调用**（原“首页 Command Center 六栏”为虚标，已于本次审计纠正）。现状：**指挥中心 / 策略学习 / 个性化校准** 已在 v7.2.0 接入网页「洞察」页新增子标签（并有 `static_api_pin_test.go` 双向钉防再退化）；`brief`/`session`/`opportunity` 由桌面端 v4.0.0 消费；`llm/router`（无管理界面）与 `system/data-health`（无网页入口）仍为 API-only；网页首页仍由 `decision/today` + `memory/review` + `risks` + `portfolio` 四端点拼装 |
 | 8 | Context 接管率 | ✅ | 唯一入口 `BuildContactContext`（`context.go:150`），全仓仅此一份；Context Task Registry 登记 22 任务（预算/所需块/cacheable/requiresLLM 单一来源）。无第二套 Context Engine（§32 审计 0 命中） |
 | 9 | Model Router | ✅ | `llm_router.go`（+`llm_router_test.go` 434 行）按任务选模、成本/能力路由 |
 | 10 | Cost Governance | ✅ | `llm_budget.go` 任务级归因 + 日预算护栏 + 交互式豁免；`llm_usage.go` today/7d/30d 聚合 |

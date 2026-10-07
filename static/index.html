@@ -1526,6 +1526,9 @@
         <a href="#" :class="{active: insightTab==='life'}" @click.prevent="switchInsight('life')">人生总览</a>
         <a href="#" :class="{active: insightTab==='lifeproj'}" @click.prevent="switchInsight('lifeproj')">未来推演</a>
         <a href="#" :class="{active: insightTab==='lifets'}" @click.prevent="switchInsight('lifets')">人生年表</a>
+        <a href="#" :class="{active: insightTab==='cmd'}" @click.prevent="switchInsight('cmd')">指挥中心</a>
+        <a href="#" :class="{active: insightTab==='strategy'}" @click.prevent="switchInsight('strategy')">策略学习</a>
+        <a href="#" :class="{active: insightTab==='calib'}" @click.prevent="switchInsight('calib')">个性化校准</a>
       </nav>
 
       <!-- ---- 聊天记录全文搜索 ---- -->
@@ -2419,6 +2422,103 @@
             </ul>
             <p class="empty" v-if="learn.intervention.totalResolved===0">还没有回测样本。当你在周计划里联系某人，系统 14 天后会自动回测，数据攒够这里就有结论。</p>
           </template>
+        </div>
+      </template>
+      <!-- ---- v7 指挥中心：六栏 Top3 只读编排（无 LLM 也完全工作） ---- -->
+      <template v-if="insightTab==='cmd'">
+        <div class="card">
+          <div class="list-head"><h2>指挥中心</h2>
+            <button class="btn sm" type="button" @click="loadCommandCenter" :disabled="ccBusy">{{ ccBusy ? '加载中…' : '刷新' }}</button></div>
+          <p class="hint block" v-if="cc">生成时间 {{ cc.generated_at }} · 纯确定性只读聚合，不触发任何写操作</p>
+          <div class="status-grid" v-if="cc">
+            <div><h3>今天最值得做</h3>
+              <ul><li v-for="(t,i) in cc.today" :key="'t'+i">{{ t.name }}<span class="hint" v-if="t.why"> — {{ t.why }}</span> <span class="tag">{{ t.priority }}</span></li></ul>
+              <p class="hint" v-if="!cc.today||!cc.today.length">暂无</p></div>
+            <div><h3>记忆待核对</h3>
+              <ul><li v-for="(m,i) in cc.memory" :key="'m'+i">{{ m.name }}：{{ m.fact }} <span class="tag tag-red" v-if="m.has_conflict">有冲突</span></li></ul>
+              <p class="hint" v-if="!cc.memory||!cc.memory.length">暂无</p></div>
+            <div><h3>关系风险</h3>
+              <ul><li v-for="(r,i) in cc.risk" :key="'r'+i">{{ r.name }}：{{ r.title }} <span class="tag">{{ r.severity }}</span></li></ul>
+              <p class="hint" v-if="!cc.risk||!cc.risk.length">暂无</p></div>
+            <div><h3>项目信号</h3>
+              <ul><li v-for="(p,i) in cc.project" :key="'p'+i">{{ p.name }}：{{ p.title }} <span class="tag">{{ p.signal }}</span></li></ul>
+              <p class="hint" v-if="!cc.project||!cc.project.length">暂无</p></div>
+            <div><h3>人际资产预算</h3>
+              <div class="dr-rows">
+                <div class="dr-row"><span class="dr-k">周预算 / 已用</span><span class="dr-v">{{ cc.portfolio.weekly_budget_minutes }} / {{ cc.portfolio.used_minutes }} 分钟<span class="hint" v-if="cc.portfolio.used_is_estimate">（估算）</span></span></div>
+                <div class="dr-row"><span class="dr-k">已分配</span><span class="dr-v">{{ cc.portfolio.allocated_minutes }} 分钟 <span class="tag tag-red" v-if="cc.portfolio.over_budget">超预算</span></span></div>
+              </div></div>
+            <div><h3>AI 用量</h3>
+              <div class="dr-rows">
+                <div class="dr-row"><span class="dr-k">今日 tokens / 预算</span>
+                  <span class="dr-v">{{ cc.ai.used_today }} / <template v-if="cc.ai.unlimited">不限</template><template v-else>{{ cc.ai.daily_budget }}</template> <span class="tag tag-red" v-if="cc.ai.over">已用尽</span></span></div>
+                <div class="dr-row"><span class="dr-k">最耗任务</span><span class="dr-v">{{ cc.ai.top_task || '—' }}（{{ cc.ai.top_task_tokens || 0 }} tokens）</span></div>
+                <div class="dr-row"><span class="dr-k">最常用模型</span><span class="dr-v">{{ cc.ai.top_model || '—' }}（{{ cc.ai.top_model_calls || 0 }} 次）</span></div>
+              </div></div>
+          </div>
+          <p class="empty" v-else>{{ ccBusy ? '加载中…' : '暂无数据，点「刷新」。' }}</p>
+        </div>
+      </template>
+
+      <!-- ---- v7 策略学习：历史上哪类动作真有效（只读，措辞不谈因果） ---- -->
+      <template v-if="insightTab==='strategy'">
+        <div class="card">
+          <div class="list-head"><h2>策略学习</h2>
+            <button class="btn sm" type="button" @click="loadStrategyHistory" :disabled="stratBusy">{{ stratBusy ? '计算中…' : '重新计算' }}</button></div>
+          <p class="hint block">从已有的行动账本回测：做过哪类动作的关系，后来互动回暖了。结论仅表述相关性，绝不声称因果；样本不足时只报基线率。</p>
+          <div class="dr-rows" v-if="strat">
+            <div class="dr-row"><span class="dr-k">账本行数 / 已观测</span><span class="dr-v">{{ strat.totalRows }} / {{ strat.totalObserved }}</span></div>
+            <div class="dr-row" v-if="strat.dataNote"><span class="dr-k">数据说明</span><span class="dr-v">{{ strat.dataNote }}</span></div>
+          </div>
+          <table v-if="strat && strat.stats && strat.stats.length">
+            <thead><tr><th>策略</th><th>样本</th><th>正/中/负</th><th>回暖率</th><th>95% 置信区间</th><th>结论</th></tr></thead>
+            <tbody><tr v-for="(s,i) in strat.stats" :key="'s'+i">
+              <td>{{ s.strategy_label }}</td>
+              <td>{{ s.sample_count }}<span class="tag" v-if="s.low_sample">样本少</span></td>
+              <td>{{ s.positive }}/{{ s.neutral }}/{{ s.negative }}</td>
+              <td>{{ s.success_rate.toFixed(0) }}%</td>
+              <td>[{{ s.wilson_low.toFixed(0) }}, {{ s.wilson_high.toFixed(0) }}]</td>
+              <td class="hint">{{ s.verdict }}</td>
+            </tr></tbody>
+          </table>
+          <p class="empty" v-else>暂无可回测的样本。在周计划里联系某人，14 天后系统会自动回测互动是否回暖。</p>
+          <ul v-if="strat && strat.insights && strat.insights.length">
+            <li v-for="(x,i) in strat.insights" :key="'i'+i" class="hint">{{ x }}</li>
+          </ul>
+        </div>
+      </template>
+
+      <!-- ---- v7 个性化校准：你给的反馈微调软权重，不改确定性规则 ---- -->
+      <template v-if="insightTab==='calib'">
+        <div class="card">
+          <div class="list-head"><h2>个性化校准</h2>
+            <button class="btn sm" type="button" @click="resetCalibrations('')" :disabled="!calibs.length">清空全部</button></div>
+          <p class="hint block">每条反馈只折算为<strong>有界且随时间衰减</strong>的软权重；不会修改确定性 Priority，也不会一次反馈永久改掉算法。</p>
+          <form class="search-row" @submit.prevent="saveCalibration">
+            <input class="text-input grow" v-model.trim="calibForm.target" maxlength="60" placeholder="对象：联系人昵称或标签名">
+            <select class="text-input" v-model="calibForm.feedback">
+              <option value="">选择反馈…</option>
+              <option value="relationship_important">这个关系很重要</option>
+              <option value="contact_low_frequency">这个人不需要频繁联系</option>
+              <option value="risk_inaccurate">这个风险判断不准</option>
+              <option value="suggestion_unsuitable">这个建议不合适</option>
+              <option value="reminder_too_frequent">这个提醒太频繁</option>
+            </select>
+            <button class="btn primary" type="submit">记录</button>
+          </form>
+          <p class="mp-form-err" v-if="calibError">{{ calibError }}</p>
+          <table v-if="calibs.length">
+            <thead><tr><th>对象</th><th>反馈</th><th>权重</th><th>来源</th><th>更新</th><th></th></tr></thead>
+            <tbody><tr v-for="(c,i) in calibs" :key="'c'+i">
+              <td>{{ c.target }}<span class="hint">（{{ c.target_type }}）</span></td>
+              <td>{{ c.feedback }}</td>
+              <td>{{ c.weight > 0 ? '+' : '' }}{{ c.weight.toFixed(2) }}</td>
+              <td class="hint">{{ c.source }}</td>
+              <td class="hint">{{ c.updated_at }}</td>
+              <td><button class="btn ghost xs" type="button" @click="resetCalibrations(c.target)">撤销</button></td>
+            </tr></tbody>
+          </table>
+          <p class="empty" v-else>{{ calibBusy ? '加载中…' : '还没有校准记录。' }}</p>
         </div>
       </template>
     </section>

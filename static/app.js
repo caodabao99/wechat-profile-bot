@@ -1793,7 +1793,52 @@ createApp({
 
     // ---------- 洞察页 ----------
     const insightTab = ref('briefing');
-    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false, health: false, circles: false, topics: false, flow: false });
+    const insightLoaded = reactive({ report: false, social: false, dup: false, period: false, graph: false, life: false, lifeproj: false, lifets: false, briefing: false, network: false, self: false, learning: false, trend: false, health: false, circles: false, topics: false, flow: false, cmd: false, strategy: false, calib: false });
+
+    // ---------- v7 运营面板：指挥中心 / 策略学习 / 个性化校准 ----------
+    // 这三个后端能力早已实现并有 handler 测试，但此前无任何 UI 消费；在此接入。
+    const cc = ref(null); const ccBusy = ref(false);
+    const strat = ref(null); const stratBusy = ref(false);
+    const calibs = ref([]); const calibBusy = ref(false);
+    const calibForm = reactive({ target: '', feedback: '' });
+    const calibError = ref('');
+
+    async function loadCommandCenter() {
+      if (ccBusy.value) return; ccBusy.value = true;
+      try { const r = await api('/api/command-center'); cc.value = (r && r.data) ? r.data : null; }
+      catch (e) { toast(e.message || '指挥中心加载失败', 'error'); }
+      finally { ccBusy.value = false; }
+    }
+    async function loadStrategyHistory() {
+      if (stratBusy.value) return; stratBusy.value = true;
+      try { strat.value = await api('/api/strategy/history'); }
+      catch (e) { toast(e.message || '策略历史加载失败', 'error'); }
+      finally { stratBusy.value = false; }
+    }
+    async function loadCalibrations() {
+      if (calibBusy.value) return; calibBusy.value = true;
+      try { const r = await api('/api/calibration'); calibs.value = (r && r.items) || []; }
+      catch (e) { toast(e.message || '校准读取失败', 'error'); }
+      finally { calibBusy.value = false; }
+    }
+    async function saveCalibration() {
+      calibError.value = '';
+      if (!calibForm.target.trim() || !calibForm.feedback.trim()) { calibError.value = '对象与反馈都不能为空'; return; }
+      try {
+        await api('/api/calibration', { method: 'POST', body: { target: calibForm.target.trim(), feedback: calibForm.feedback.trim(), source: 'manual' } });
+        toast('已记录：仅微调软权重，不改确定性规则', 'ok');
+        calibForm.target = ''; calibForm.feedback = '';
+        loadCalibrations();
+      } catch (e) { calibError.value = e.message || '保存失败'; }
+    }
+    async function resetCalibrations(target) {
+      if (!confirm(target ? ('撤销「' + target + '」的全部校准？') : '清空全部校准，恢复默认？')) return;
+      try {
+        const r = await api('/api/calibration/reset', { method: 'POST', body: target ? { target } : {} });
+        toast('已撤销 ' + ((r && r.removed) || 0) + ' 条', 'ok');
+        loadCalibrations();
+      } catch (e) { toast(e.message || '操作失败', 'error'); }
+    }
     function switchInsight(tab) {
       insightTab.value = tab;
       if (tab === 'report' && !insightLoaded.report) loadReport();
@@ -1818,6 +1863,10 @@ createApp({
         if (!topicsContact.value && contacts.value.length) topicsContact.value = contacts.value[0].id;
         if (topicsContact.value) loadTopicsFor(topicsContact.value);
       }
+      // v7 运营面板：指挥中心/策略学习为只读聚合；校准页总是重读（避免刚写入看到旧列表）。
+      if (tab === 'cmd' && !insightLoaded.cmd) { insightLoaded.cmd = true; loadCommandCenter(); }
+      if (tab === 'strategy' && !insightLoaded.strategy) { insightLoaded.strategy = true; loadStrategyHistory(); }
+      if (tab === 'calib') { insightLoaded.calib = true; loadCalibrations(); }
       // 趋势是四个高阶子页共用的便利层：首次进入任一页顺带拉一次，失败静默。
       if ((tab === 'briefing' || tab === 'network' || tab === 'self' || tab === 'learning') && !insightLoaded.trend) { insightLoaded.trend = true; loadTrend(); }
     }
@@ -3989,6 +4038,8 @@ createApp({
       openBatchTag, toggleBatchTag, applyBatchTag, openTagEdit, toggleTagEdit, saveTagEdit,
       // 洞察页
       insightTab, switchInsight,
+      cc, ccBusy, loadCommandCenter, strat, stratBusy, loadStrategyHistory,
+      calibs, calibBusy, calibForm, calibError, loadCalibrations, saveCalibration, resetCalibrations,
       // v5.3.0 健康仪表盘 / 圈层 / 主题演化（洞察页）
       health, healthBusy, loadHealth, healthColor, bandCount, bandMax, healthFocus, healthSignalText,
       // v5.4.0 #1 关系断点预警
