@@ -1,6 +1,8 @@
 # 编译产物
 wechat-profile-bot
 wechat-profile-bot.exe
+dist/
+build/
 *.db
 *.db-wal
 *.db-shm
