@@ -42,8 +42,8 @@ v7.0 不是「更多 AI 功能」，而是把既有系统**收口成一台会自
 | 3 | 新增表 | ✅ | `personal_calibration_profile`（migration v27，唯一新真相表；其余子系统一律复用既有表，零重复真相层） |
 | 4 | 修改表 | ✅ | `relationship_action_log` 增 `outcome/outcome_provenance/decision_fingerprint`（v26）；`ai_response_cache` 主键锁五分量 |
 | 5 | Migration | ✅ | `storage.go` user_version 26→27，幂等 `CREATE TABLE IF NOT EXISTS`；`backupCurrentDBVer=27` 与 migrate 终点一致（单一来源） |
-| 6 | API | ✅ | 新增域：`command-center`/`opportunity`/`strategy`/`calibration` + `contacts/{id}/brief`·`/session` + `llm/{router,usage,budget}` + `data/health`；只读、缺失优雅降级不 500 |
-| 7 | UI（Web） | ✅ | 首页 Command Center 六栏 Top3、联系前简报、关系会话、机会发现、记忆维护、模型路由面板 |
+| 6 | API | ✅ | 新增域：`command-center`/`opportunity`/`strategy/history`/`calibration` + `contacts/{id}/brief`·`/session` + `llm/{router,usage,budget}` + `system/data-health`（注：非 `data/health`）；只读、缺失优雅降级不 500 |
+| 7 | UI（Web） | ◐ **PARTIAL（本行已于 v7.1.1 后修正归因）** | 上述 v7 端点**均未被本仓 `static/` 调用**（已 grep 验证）：`brief`/`session`/`opportunity` 由**桌面端 v4.0.0** 消费；`command-center`/`strategy/history`/`calibration`/`llm/router` 当前**无任何 UI 消费者**（仅 API）；网页首页「今天值得做」是由 `decision/today` + `memory/review` + `risks` + `portfolio` 四个旧端点拼装。原表述“首页 Command Center 六栏”不属本仓网页，特此纠正 |
 | 8 | Context 接管率 | ✅ | 唯一入口 `BuildContactContext`（`context.go:150`），全仓仅此一份；Context Task Registry 登记 22 任务（预算/所需块/cacheable/requiresLLM 单一来源）。无第二套 Context Engine（§32 审计 0 命中） |
 | 9 | Model Router | ✅ | `llm_router.go`（+`llm_router_test.go` 434 行）按任务选模、成本/能力路由 |
 | 10 | Cost Governance | ✅ | `llm_budget.go` 任务级归因 + 日预算护栏 + 交互式豁免；`llm_usage.go` today/7d/30d 聚合 |

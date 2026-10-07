@@ -1,6 +1,6 @@
 # wechat-profile-bot
 
-![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.1.1-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-72.4%25-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.1.1-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-73.2%25-brightgreen)
 
 **把微信聊天记录变成一台「关系操作系统」。** 粘贴记录 → 自动入库去重 → 抽取**可溯源**的可信事实（事实/推断分层、冲突进人工复核）→ **确定性评分**给出「今天最该联系的人」与依据 → 行动后自动回测回暖率。纯本地 SQLite、单二进制部署；**不读微信数据库、不监控、不自动发消息**，LLM 全失效时核心功能照常工作。
 
@@ -8,9 +8,9 @@
 
 ## 界面速览
 
-| 首页 · 指挥中心：只呈现「值得行动」的人，每条附依据 | 洞察 · 社交网络：自研 SVG 力导向图（圈簇 / 桥梁人物 / 脆弱度） |
+| 首页 · 今天值得做（由 `decision/today` + `memory/review` + `risks` + `portfolio` 四端点拼装） | 洞察 · 社交网络：自研 SVG 力导向图（圈簇 / 桥梁人物 / 脆弱度） |
 |---|---|
-| ![指挥中心](docs/screenshots/command-center.png) | ![社交网络](docs/screenshots/relationship-graph.png) |
+| ![首页：今天值得做](docs/screenshots/command-center.png) | ![社交网络](docs/screenshots/relationship-graph.png) |
 
 | 模型与代理：多档案 / 代理 / 用量 / 自定义请求参数（`extraBody`）/ 一键验证模型能力 | |
 |---|---|
@@ -610,6 +610,17 @@ Docker 下把命令换成 `docker exec wechat-profile-bot /app/wechat-profile-bo
 | GET | `/api/insight/trend?weeks=12` | 高阶洞察趋势历史（升序周快照，供前端 sparkline；只读非自愈，无历史返回 `weeks:[]`） |
 | GET | `/api/data/export?redact=0|1&include=archive,derived` | 全量开放 JSON 导出（`redact=1` 脱敏；默认含活动数据、不含归档/派生；附件下载） |
 | POST | `/api/insight/recompute` | 后台异步重算四件套 + 简报（立即返回，不阻塞） |
+| GET | `/api/command-center` | v7 §13 指挥中心六栏 Top3（只读编排，无 LLM 也工作）。**注意：网页首页未调用此端点**（由上述四个旧端点拼装） |
+| GET | `/api/opportunity?q=&top=` | v7 §15 机会发现“谁可能帮我”（只读检索；桌面端 v4.0.0 已消费） |
+| GET | `/api/contacts/{id}/brief` | v7 §14 联系前简报（`layer:"DETERMINISTIC"` 纯确定性；桌面端消费） |
+| GET | `/api/contacts/{id}/session` | v7 §7 关系会话（brief + 策略 + 观察计划只读编排；桌面端消费） |
+| GET | `/api/strategy/history` | v7 §8 策略学习视图（按策略类型聚合回暖率 + Wilson CI；当前无 UI 消费者） |
+| GET/POST | `/api/calibration`、`/api/calibration/reset` | v7 §9 个性化软校准（限幅 + 时间衰减，不改确定性 Priority；当前无 UI 消费者） |
+| GET/PUT | `/api/llm/router` | v7 §5.3 任务级 Model Router（主/备档案、`local_only` 隐私、超时/温度/上限） |
+| POST | `/api/llm/capability` | v7.1 模型能力测试：7 条探针（过度报警/过度抽取/幻觉/拒答/冲突/时间推理）给当前活动模型出成绩单；single-flight，未配置优雅返回 |
+| GET | `/api/system/data-health`、POST `.../data-health/rebuild` | v7 §21 数据健康总览与**仅重建派生**（路径在 `/api/system/` 下，非 `/api/data/health`） |
+| GET | `/api/today`、POST `/api/today/snooze` | v6.3.0 Action Center 2.0 聚合与稍后（当前网页首页未接入，另走 `decision/today`） |
+| GET | `/api/stats/ingest` | v6.3.0 Smart Paste 去重统计（解析/新增/重复/异常计数，按联系人聚合；当前无 UI 消费，供排障与 API 调用） |
 
 验证示例：
 
