@@ -8,6 +8,7 @@ package main
 // 两侧清单都从源码/静态资源扫出，不维护手工名单，避免名单本身过期。
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -97,6 +98,39 @@ func normalizeAPIPath(raw string) string {
 	return strings.TrimRight(s, "/")
 }
 
+// TestNoDuplicateFunctionNamesInFrontend 钉住一类 node --check 根本抽不到的静默 bug：
+// JS 允许同一作用域内重复的 function 声明，后者会**无声地覆盖**前者。
+// 本项目就因此坑过一次：洞察页与详情页各有一个 loadTrend，后者覆盖前者，
+// 导致洞察页拿 route.id=0 去请求 /api/contacts/0/trend（控制台 404，趋势 sparkline 一直取不到数据）。
+// 规则：缩进相同（视为同一块作用域）的 function / async function 声明，名字不得重复。
+func TestNoDuplicateFunctionNamesInFrontend(t *testing.T) {
+	b, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("读 static/app.js 失败: %v", err)
+	}
+	re := regexp.MustCompile(`^([ \t]+)(?:async[ \t]+)?function[ \t]+([A-Za-z0-9_$]+)[ \t]*\(`)
+	seen := map[string]string{}
+	var dups []string
+	for i, line := range strings.Split(string(b), "\n") {
+		m := re.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		key := m[1] + "\x00" + m[2]
+		if prev, ok := seen[key]; ok {
+			dups = append(dups, fmt.Sprintf("%s（第 %s 行与第 %d 行同缩进重名，后者会静默覆盖前者）", m[2], prev, i+1))
+			continue
+		}
+		seen[key] = fmt.Sprint(i + 1)
+	}
+	if len(dups) > 0 {
+		sort.Strings(dups)
+		t.Fatalf("前端存在同作用域重名函数（会造成静覆盖）：%v", dups)
+	}
+	t.Logf("前端 %d 个函数声明无同缩进重名", len(seen))
+}
+
+// TestFrontendAPICallsHaveBackend 钉住：前端每个 /api/ 调用必须能找到后端路由。
 func TestFrontendAPICallsHaveBackend(t *testing.T) {
 	reg := registeredDomains(t)
 	front := readFrontend(t)

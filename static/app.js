@@ -1913,7 +1913,7 @@ createApp({
       if (tab === 'strategy' && !insightLoaded.strategy) { insightLoaded.strategy = true; loadStrategyHistory(); }
       if (tab === 'calib') { insightLoaded.calib = true; loadCalibrations(); }
       // 趋势是四个高阶子页共用的便利层：首次进入任一页顺带拉一次，失败静默。
-      if ((tab === 'briefing' || tab === 'network' || tab === 'self' || tab === 'learning') && !insightLoaded.trend) { insightLoaded.trend = true; loadTrend(); }
+      if ((tab === 'briefing' || tab === 'network' || tab === 'self' || tab === 'learning') && !insightLoaded.trend) { insightLoaded.trend = true; loadInsightTrend(); }
     }
 
     // ---------- 关系图谱 ----------
@@ -2071,7 +2071,11 @@ createApp({
     }
 
     // 趋势周环比：便利层，首次进入洞察子页即加载；失败/无历史静默（不打断子页主体内容）。
-    async function loadTrend() {
+    // 洞察页共用的趋势层（近 12 周快照）。名字必须与详情页的 loadTrend（/api/contacts/{id}/trend）
+    // 区分：两者曾同名，JS 允许重复的函数声明，后者静默覆盖前者，导致洞察页拿 route.id=0
+    // 去请求详情接口（控制台 404，且趋势 sparkline 一直取不到数据）。现由
+    // static_api_pin_test.go 的同名函数守护钉防止再发生。
+    async function loadInsightTrend() {
       try {
         const data = await api('/api/insight/trend?weeks=12');
         trend.enabled = data.enabled !== false;
@@ -2440,7 +2444,7 @@ createApp({
       else if (insightTab.value === 'learning') loadIntervention();
       else if (insightTab.value === 'life') loadLifeState();
       else if (insightTab.value === 'lifeproj') loadLifeProjection();
-      loadTrend();   // 手动重算后趋势也要刷新（本周可能刚追加新快照）
+      loadInsightTrend();   // 手动重算后趋势也要刷新（本周可能刚追加新快照）
     }
 
     async function recomputeInsights() {
@@ -4102,7 +4106,7 @@ createApp({
       advBusy, net, selfpt, learn, brief,
       loadNetwork, loadSelfPortrait, loadIntervention, loadBriefing, recomputeInsights,
       // 趋势周环比 + 数据导出
-      trend, loadTrend, trendSeries, sparkPoints,
+      trend, loadInsightTrend, trendSeries, sparkPoints,
       // v4.6.0 关系知识图谱（手写 SVG 力导向）
       netGraph, netHover, netGRef, netEdgeGeo,
       netRadius, netEdgeWidth, netClusterColor, netShowLabel, netTransform,
