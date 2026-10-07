@@ -21,9 +21,12 @@ import (
 // ingestMaxAttempts 是同一条消息允许的处理尝试次数；超过即放弃（防坏消息无限重放）。
 const ingestMaxAttempts = 3
 
-// ingestLedgerTTL 是账本行的保留期。消息重放只会发生在不久之前，7 天足够覆盖
-// 长时间停机后的补拉，又能防止表随运行年限无限增长。
-const ingestLedgerTTL = 7 * 24 * time.Hour
+// ingestLedgerTTL 是账本行的保留期。
+// 为什么是 30 而不是 7 天（投产前审计 N3）：重绑（-14 后重新扫码）会把游标归零，
+// 而协议规定空/旧游标会重放其后的历史；账本只要比这个重放窗口短，超出部分就会被
+// 重新跑一遍 LLM（内容靠 msg_hash 兜底不会重复入库，但额度白花）。30 天足以覆盖常见重放窗口，
+// 且行数量级很小（每条消息一行），不致表胀。
+const ingestLedgerTTL = 30 * 24 * time.Hour
 
 // ensureIngestLedger 建表（幂等）。迁移里已建，这里供测试与老库热升级兜底。
 func ensureIngestLedger(db *sql.DB) error {

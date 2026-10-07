@@ -76,7 +76,6 @@ var backupTables = []string{
 // 不参与整库拷贝：恢复后这些表与恢复进来的源数据会不一致（fact id 会变、外键会悬），
 // 故恢复末尾直接清空，下次访问时由服务层“缺则重建”自愈（evidence 先于 facts 删，FK 安全）。
 var derivedTables = []string{
-	"ingest_ledger",
 	"profile_fact_evidence",
 	"profile_facts",
 	"relationship_daily_metrics",
@@ -96,11 +95,22 @@ var derivedTables = []string{
 	"insight_trend_history",
 }
 
-// restoreSkipTables 永不参与恢复拷贝的表：派生表（自愈）+ backup_log（恢复审计日志本身，
+// runtimeTables 是「纯运行态」表：既不该进备份（与派生表同理，它们与恢复进来的源数据不匹配），
+// 也**绝不能被「仅重建派生」/「恢复末尾清空」误删**——它们存的不是派生结果，而是防重放、
+// 防反复报错的运行记忆（如 ingest_ledger 的 done/失败 次数）。把它混进 derivedTables 会让
+// 管理员点一次「重建派生」就抹掉去重凭据，导致未提交的消息重新跑一遍 LLM（投产前审计 N1）。
+var runtimeTables = []string{
+	"ingest_ledger",
+}
+
+// restoreSkipTables 永不参与恢复拷贝的表：派生表（自愈）+ 运行态表 + backup_log（恢复审计日志本身，
 // 清掉等于抹掉这次操作的记录，保留）。FTS 虚表/影子表与 sqlite_* 由 listRestoreTables 的查询过滤。
 var restoreSkipTables = func() map[string]bool {
 	m := map[string]bool{"backup_log": true}
 	for _, t := range derivedTables {
+		m[t] = true
+	}
+	for _, t := range runtimeTables {
 		m[t] = true
 	}
 	return m

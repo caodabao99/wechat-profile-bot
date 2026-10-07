@@ -193,7 +193,7 @@ func TestIngestPruneRemovesOldRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO ingest_ledger(msg_key, from_user, status, attempts, updated_at)
-		VALUES('ancient','u1','done',1, datetime('now','-30 days'))`); err != nil {
+		VALUES('ancient','u1','done',1, datetime('now','-40 days'))`); err != nil {
 		t.Fatal(err)
 	}
 	n, err := ingestPrune(db)

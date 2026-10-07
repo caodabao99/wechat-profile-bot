@@ -8,15 +8,17 @@ package main
 // 现在把恢复动作搬到永远可达的网页端：删凭据 → 出二维码 → 用户手机微信扫码 → 自动恢复轮询。
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
 // routeWechat /api/wechat/* 子路由。
 //
 //	GET  /api/wechat/bind    → 当前重绑与会话状态（waiting 时含二维码 dataURL，前端可直接 <img>）
-//	POST /api/wechat/rebind  → 启动一次重新扫码（幂等：已在进行则不重复取码）
+//	POST /api/wechat/rebind  → 启动一次重新扫码（幂等；5 分钟冷却，冷却中返回 429）
 func (s *apiServer) routeWechat(w http.ResponseWriter, r *http.Request, sub []string) {
 	if len(sub) != 1 {
 		writeErr(w, http.StatusNotFound, "未知接口: /api/wechat/"+strings.Join(sub, "/"))
@@ -40,6 +42,11 @@ func (s *apiServer) routeWechat(w http.ResponseWriter, r *http.Request, sub []st
 		}
 		started, err := s.client.StartRebind()
 		if err != nil {
+			if errors.Is(err, errRebindCooldown) { // 冷却中：可重试，不是服务故障
+				w.Header().Set("Retry-After", strconv.Itoa(int(rebindCooldown.Seconds())))
+				writeErr(w, http.StatusTooManyRequests, "重绑刚试过，正在冷却中（连续取码会被微信服务端限流）")
+				return
+			}
 			writeErr(w, http.StatusInternalServerError, "启动重绑失败: "+err.Error())
 			return
 		}

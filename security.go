@@ -92,6 +92,13 @@ func newSecurityGuard() *securityGuard {
 
 	// 独立安全日志。打开失败时退回 slog 默认输出，功能不受影响
 	logPath := securityLogPath()
+	// 先轮转再打开：security.log 记录登录失败/封禁/限流/429，长时间被探测时增速很快，
+	// 不设上限会吃满磁盘（投产前审计 N5）
+	if rotated, err := rotateIfNeeded(logPath, logMaxBytes, logKeep); err != nil {
+		slog.Warn("security.log 轮转失败，本次跳过", "err", err)
+	} else if rotated {
+		slog.Info("security.log 已轮转", "file", logPath, "keep", logKeep)
+	}
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 		g.secLog = slog.New(slog.NewTextHandler(f, nil))
 		slog.Info("安全日志已启用", "file", logPath)

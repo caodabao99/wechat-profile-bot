@@ -47,6 +47,8 @@ type ILinkClient struct {
 	rebindQRData string // data:image/png;base64,...
 	rebindError  string
 	rebindAt     time.Time
+	// rebindLastAttempt 上一次发起重绑的时刻，用于冷却（见 rebindCooldown）。
+	rebindLastAttempt time.Time
 	// 优雅关闭：取消长轮询中的 HTTP 请求
 	ctx    context.Context
 	cancel context.CancelFunc

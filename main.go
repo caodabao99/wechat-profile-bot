@@ -178,7 +178,7 @@ func main() {
 		// 会话过期退避：首次 60s，之后 ×3，上限 60 分钟（对齐官方插件 Session Guard 的
 		// 「暂停该账号 60 分钟」做法）。关键是**不再永不 GetUpdates**。
 		expiryBackoff := time.Minute
-		lastPrune := time.Now()
+		lastHousekeep := time.Now()
 
 		for {
 			select {
@@ -309,12 +309,13 @@ func main() {
 				}
 			}
 
-			// 账本只留最近 7 天，防表无限增长（每 6 小时清一次）
-			if time.Since(lastPrune) > 6*time.Hour {
+			// 周期性维护（每 6 小时）：清理过期收取账本（防表无限增长）+ 轮转日志（防磁盘填满）
+			if time.Since(lastHousekeep) > 6*time.Hour {
 				if n, err := ingestPrune(db); err == nil && n > 0 {
 					slog.Info("已清理过期收取账本行", "rows", n)
 				}
-				lastPrune = time.Now()
+				rotateAllLogs()
+				lastHousekeep = time.Now()
 			}
 		}
 	}()

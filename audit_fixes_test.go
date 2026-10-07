@@ -5,8 +5,13 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,5 +178,146 @@ func TestAuthGuardCapsConcurrency(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("nil authSem 导致永久阻塞（向 nil channel 发送的陷阱）")
+	}
+}
+
+// N1：ingest_ledger 属运行态而非派生表——「仅重建派生」与恢复末尾清空都不得抹掉它。
+// （旧实现把它放进 derivedTables，管理员点一次重建就会把防重放凭据清零，
+// 导致未提交/待重放的消息重新跑一遍 LLM。）
+func TestRebuildDerivedKeepsIngestLedger(t *testing.T) {
+	db := regressionDB(t)
+	if err := ensureIngestLedger(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := ingestMarkDone(db, "keep-me", "u1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, tbl := range derivedTables {
+		if tbl == "ingest_ledger" {
+			t.Fatal("ingest_ledger 不应在 derivedTables：重建派生/恢复清空会抹掉去重凭据")
+		}
+	}
+	if !restoreSkipTables["ingest_ledger"] {
+		t.Fatal("ingest_ledger 应仍列入 restoreSkipTables（不参与备份恢复）")
+	}
+
+	RebuildDerived(db)
+
+	if p, _ := ingestShouldProcess(db, "keep-me"); p {
+		t.Fatal("重建派生后账本应仍记得 keep-me 已 done，否则重放会重新处理")
+	}
+}
+
+// N2：重绑失败必须把旧凭据原样恢复——一次误点不得毁掉仍可能可用的会话。
+func TestRebindFailureRestoresCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ret":1,"errmsg":"服务不可用"}`))
+	}))
+	defer srv.Close()
+
+	c := NewILinkClient(filepath.Join(t.TempDir(), "ilink_credentials.json"))
+	defer c.Shutdown()
+	c.baseURL = srv.URL
+	c.mu.Lock()
+	c.botToken, c.botID, c.userID, c.cursor = "OLDTOK", "oldbot@im.bot", "old@im.wechat", "C7"
+	c.mu.Unlock()
+	if err := c.SaveCredentials(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.StartRebind(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	var snap map[string]interface{}
+	for time.Now().Before(deadline) {
+		snap = c.RebindSnapshot()
+		if snap["status"] == "failed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if snap["status"] != "failed" {
+		t.Fatalf("应落终态 failed，实得 %+v", snap)
+	}
+	if !c.IsLoggedIn() {
+		t.Fatal("重绑失败后应恢复旧会话内存字段（不能因一次误点永久丢凭据）")
+	}
+	data, err := os.ReadFile(c.tokenPath)
+	if err != nil {
+		t.Fatalf("旧凭据文件应被恢复: %v", err)
+	}
+	var cred ILinkCredentials
+	if err := json.Unmarshal(data, &cred); err != nil {
+		t.Fatal(err)
+	}
+	if cred.BotToken != "OLDTOK" {
+		t.Fatalf("恢复的应是旧令牌，实得 %q", cred.BotToken)
+	}
+}
+
+// N2b：重绑需冷却，否则反复点会连打二维码接口自触微信侧限流。
+func TestRebindCooldownBlocksSecondAttempt(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ret":1,"errmsg":"服务不可用"}`))
+	}))
+	defer srv.Close()
+	c := NewILinkClient(filepath.Join(t.TempDir(), "ilink_credentials.json"))
+	defer c.Shutdown()
+	c.baseURL = srv.URL
+
+	if _, err := c.StartRebind(); err != nil {
+		t.Fatalf("首次应可启动: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for c.RebindActive() && time.Now().Before(deadline) {
+		time.Sleep(30 * time.Millisecond)
+	}
+	if _, err := c.StartRebind(); !errors.Is(err, errRebindCooldown) {
+		t.Fatalf("冷却期内应返回 errRebindCooldown，实得 %v", err)
+	}
+	if got := c.RebindSnapshot()["cooldown_seconds"]; got == 0 {
+		t.Fatalf("快照应回报剩余冷却秒数（供前端置灰按钮），实得 %v", got)
+	}
+}
+
+// N5：日志必须能自转，否则长跑一定吃满磁盘（磁盘满后备份/游标落盘/VACUUM 一起失败）。
+func TestRotateIfNeededTruncatesAndKeepsHistory(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "bot.log")
+	line := strings.Repeat("x", 4096)
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	rotated, err := rotateIfNeeded(p, 20*1024, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotated {
+		t.Fatal("已达阈值应触发轮转")
+	}
+	if fi, err := os.Stat(p); err != nil || fi.Size() != 0 {
+		t.Fatalf("原文件应被截断，实得 %+v err=%v", fi, err)
+	}
+	if fi, err := os.Stat(p + ".1"); err != nil || fi.Size() != 40960 {
+		t.Fatalf("历史副本应完整保留 40960 字节，实得 %+v err=%v", fi, err)
+	}
+	// 未达阈值不得动文件
+	if r, err := rotateIfNeeded(p, 20*1024, 3); err != nil || r {
+		t.Fatalf("空文件不应轮转，实得 rotated=%v err=%v", r, err)
+	}
+	// 不存在的文件静默跳过（安全日志可能从未创建）
+	if r, err := rotateIfNeeded(filepath.Join(dir, "missing.log"), 1024, 3); r || err != nil {
+		t.Fatalf("不存在的文件应静默跳过，实得 rotated=%v err=%v", r, err)
 	}
 }

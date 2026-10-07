@@ -147,6 +147,69 @@ func (c *ILinkClient) AllowProbe() {
 	c.mu.Unlock()
 }
 
+// credStash 是重绑前对会话文件的暂存（投产前审计 N2）。
+//
+// 为什么必须能回滚：-14 并不永远是「令牌真的死了」，也可能是服务端瞬时抛错；
+// 旧实现 runRebind 一进来就 ClearCredentials，用户“点了重绑但没扫成”就把一个
+// 可能仍然可用的会话彻底毁掉，只能重新扫码。现在先暂存，失败/放弃时原样恢复。
+type credStash struct {
+	files map[string][]byte // 原文件内容（不存在的项不收录）
+}
+
+// stashCredentials 读入会话相关文件的内容后删除原文件并清空内存会话（等同 ClearCredentials）。
+// 返回的 stash 可用于 restore；成功扫码后应调 discard 释放。
+func (c *ILinkClient) stashCredentials() (*credStash, error) {
+	st := &credStash{files: map[string][]byte{}}
+	var firstErr error
+	for _, p := range []string{c.tokenPath, c.contextTokenPath(), c.syncBufPath()} {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("暂存 %s 失败: %w", filepath.Base(p), err)
+			}
+			continue
+		}
+		st.files[p] = data
+	}
+	for p := range st.files {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = fmt.Errorf("删除 %s 失败: %w", filepath.Base(p), err)
+		}
+	}
+	c.mu.Lock()
+	c.botToken, c.botID, c.userID = "", "", ""
+	c.cursor, c.pendingBuf = "", ""
+	c.sessionExpired = false
+	c.recentIDs = make(map[string]time.Time)
+	c.contextTokens = make(map[string]string)
+	c.mu.Unlock()
+	return st, firstErr
+}
+
+// restore 把暂存的会话文件与内存字段装回去（扫码失败/放弃时调用）。
+// 若会话确实已过期，下一轮 GetUpdates 会再次收到 -14 并重新置位，不会错过真实状态。
+func (st *credStash) restore(c *ILinkClient) error {
+	var firstErr error
+	for p, data := range st.files {
+		if err := writeFileAtomic(p, data); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("恢复 %s 失败: %w", filepath.Base(p), err)
+		}
+	}
+	_ = c.LoadCredentials()
+	_ = c.LoadContextTokens()
+	c.LoadCursor()
+	for p := range st.files {
+		delete(st.files, p)
+	}
+	return firstErr
+}
+
+// discard 确认新会话已建立后释放暂存（仅内存引用，不落盘）。
+func (st *credStash) discard() { st.files = nil }
+
 var rebindClearMu sync.Mutex
 
 // ClearCredentials 删除磁盘上的凭据、context_token 缓存与游标文件，并清空内存会话。
