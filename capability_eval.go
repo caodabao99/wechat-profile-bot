@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,8 +92,9 @@ type CapabilityReport struct {
 	Error            string                 `json:"error,omitempty"`
 	Model            string                 `json:"model"`
 	Total            int                    `json:"total"`
-	Ran              int                    `json:"ran"`              // 实际完成并评分的探针数
+	Ran              int                    `json:"ran"`              // 实际拿到模型答复并评分的探针数
 	SkippedRateLimit int                    `json:"skippedRateLimit"` // 因限流未完成
+	Errored          int                    `json:"errored"`          // 因超时/传输/5xx 未完成（均不计入 accuracy 分母）
 	Passed           int                    `json:"passed"`
 	Accuracy         float64                `json:"accuracy"`
 	JSONValidity     float64                `json:"jsonValidity"`
@@ -113,22 +115,25 @@ func RunCapabilityEval(ctx context.Context, db *sql.DB, call llmCaller, model st
 				prompt = rp
 			}
 		}
-		cctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 		start := time.Now()
 		raw, err := call.CallContext(cctx, prompt)
 		lat := time.Since(start).Milliseconds()
 		cancel()
 
 		res := CapabilityCaseResult{ID: pr.ID, Task: pr.Task, LatencyMs: lat, Raw: clipOut(raw, 400)}
-		if err != nil && strings.Contains(err.Error(), "429") {
-			res.Error = "限流未完成"
-			rep.SkippedRateLimit++
-			rep.Cases = append(rep.Cases, res)
-			continue
-		}
 		if err != nil {
-			res.Error = err.Error()
-			raw = ""
+			// 拿不到模型答复属基础设施问题（限流/超时/传输/5xx），不是模型能力信号：记为未完成、不计入 accuracy 分母。
+			if strings.Contains(err.Error(), "429") {
+				res.Error = "限流未完成"
+				rep.SkippedRateLimit++
+			} else {
+				res.Error = "未完成: " + err.Error()
+				rep.Errored++
+			}
+			rep.Cases = append(rep.Cases, res)
+			time.Sleep(700 * time.Millisecond)
+			continue
 		}
 		g := GoldenCase{ID: pr.ID, Task: pr.Task, Expect: pr.Expect,
 			ModelOutputs: map[string]EvalSample{"live": {Output: raw}}}
@@ -152,6 +157,7 @@ func RunCapabilityEval(ctx context.Context, db *sql.DB, call llmCaller, model st
 			}
 		}
 		rep.Cases = append(rep.Cases, res)
+		time.Sleep(700 * time.Millisecond)
 	}
 	if rep.Ran > 0 {
 		rep.Passed = passed
@@ -160,24 +166,30 @@ func RunCapabilityEval(ctx context.Context, db *sql.DB, call llmCaller, model st
 		if hallucApplied > 0 {
 			rep.Hallucination = capRound2(float64(hallucHit) / float64(hallucApplied))
 		}
-		rep.Verdict = capabilityVerdict(rep)
-	} else {
-		rep.Verdict = "未能完成任何探针（可能模型不可达或持续限流）"
 	}
+	rep.Verdict = capabilityVerdict(rep)
 	return rep
 }
 
 func capabilityVerdict(r CapabilityReport) string {
+	if r.Ran == 0 {
+		return "未能获得任何模型答复（模型不可达/持续限流/超时），无法评估能力——请先检查模型配置与配额。"
+	}
+	core := ""
 	switch {
 	case r.Accuracy >= 0.8 && r.Hallucination == 0:
-		return "能力良好：抽取准确、无编造，可用于生产。"
+		core = "能力良好：抽取准确、无编造，可用于生产。"
 	case r.Accuracy >= 0.8:
-		return "整体良好，但检出疑似幻觉，关键抽取建议加人工复核。"
+		core = "整体良好，但检出疑似幻觉，关键抽取建议加人工复核。"
 	case r.Accuracy >= 0.5:
-		return "基本可用但有明显短板（见下方失败项），暂不建议无人复核用于关键事实。"
+		core = "基本可用但有明显短板（见下方失败项），暂不建议无人复核用于关键事实。"
 	default:
-		return "能力不足：多数探针未通过，该模型不适合本产品的关系信息抽取。"
+		core = "能力不足：多数已完成探针未通过，该模型不适合本产品的关系信息抽取。"
 	}
+	if r.Ran*2 < r.Total {
+		core = "（注意：仅 " + strconv.Itoa(r.Ran) + "/" + strconv.Itoa(r.Total) + " 条成功完成，其余因限流/超时未完成——样本不足，以下结论仅供参考）" + core
+	}
+	return core
 }
 
 // missingSnippets 返回未命中的期望片段（每个片段含「|」同义备选，任一命中即算命中）。

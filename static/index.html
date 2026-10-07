@@ -2678,7 +2678,7 @@
                   <span class="mp-site-err" v-else-if="!c.pass && c.hitForbidden && c.hitForbidden.length">疑幻觉: {{ c.hitForbidden.join(' / ') }}</span>
                 </div>
               </div>
-              <div v-if="mp.capResult.skippedRateLimit" class="mp-site-err">{{ mp.capResult.skippedRateLimit }} 个探针因限流未完成</div>
+              <div v-if="mp.capResult.skippedRateLimit || mp.capResult.errored" class="mp-site-err">{{ mp.capResult.skippedRateLimit }} 个限流、{{ mp.capResult.errored }} 个超时/出错未完成（结论仅基于已完成的 {{ mp.capResult.ran }} 条）</div>
             </template>
           </div>
         </div>

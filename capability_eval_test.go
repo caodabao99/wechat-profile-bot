@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -103,6 +104,22 @@ type fakeErr struct{}
 func (fakeErr) Error() string { return "模型接口返回 429: too many" }
 
 var errFake429 = fakeErr{}
+
+func TestCapabilityEvalInconclusiveError(t *testing.T) {
+	db := regressionDB(t)
+	// 非 429 错误（超时/传输）：拿不到答复属基础设施问题，不得计入 accuracy 分母、不得误判“能力不足”。
+	boom := func(_ string) (string, error) { return "", errors.New("context deadline exceeded") }
+	rep := RunCapabilityEval(context.Background(), db, stubCaller{boom}, "stub-timeout")
+	if rep.Ran != 0 {
+		t.Fatalf("超时不应计入 ran: ran=%d", rep.Ran)
+	}
+	if rep.Errored != rep.Total {
+		t.Fatalf("应全部记为 Errored: %d/%d", rep.Errored, rep.Total)
+	}
+	if !strings.Contains(rep.Verdict, "无法评估") {
+		t.Fatalf("verdict 应提示无法评估，实得 %q", rep.Verdict)
+	}
+}
 
 func TestCapabilityHandlerNotConfiguredGraceful(t *testing.T) {
 	db := regressionDB(t)
