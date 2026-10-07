@@ -67,7 +67,7 @@
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.0.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.1.0.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -84,7 +84,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.0.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -302,7 +302,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.0.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.0.0.tar.gz`，得到 `wechat-profile-bot:v7.0.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.1.0.tar.gz`，得到 `wechat-profile-bot:v7.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
@@ -641,6 +641,17 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:17965/api/status
 这些都是运行时生成的，`.gitignore` 已排除，不要提交到仓库。
 
 ## 更新日志
+
+### v7.1.0（2026-10-07）— 模型能力可验证 + 调用参数可自定义
+
+本版本把 AI 能力从「声称」变成「可验证」，并让模型调用参数适配多厂商差异：
+
+- **网页端「验证模型能力」面板**（`POST /api/llm/capability`）：一键用当前活动模型跑 7 条能力探针（情绪含过度报警陷阱 / 跟进含过度抽取陷阱 / 事实幻觉 / 缺失信息拒答 / 冲突 / 时间推理），返回准确率 / JSON合法率 / 幻觉率 / 逐条结果与结论。走既有鉴权、single-flight、未配置优雅降级不 500；与生产同一条 `ExtractJSON`/评分路径。
+- **模型调用参数可自定义**（档案 `extraBody`）：每个模型档案可填一段 JSON，逐键合并进每次请求，适配各家对思考/推理模式的不同命名（`enable_thinking` / `thinking:{type}` / `reasoning_effort` …），无需改代码；结构性键 `messages` 受保护，坏 JSON 保存即拒。
+- **AI 评测器修复**（`eval.go`/`golden_cases.json`）：期望片段支持「|」同义备选、禁用片段否定语保护、确定性任务从大模型评测分母剔除、补齐缺上下文的用例——真实模型跑分不再被同义换写/限流/超时误判（GLM 基线 accuracy 0.36→0.82）。
+- **真实模型验证**：GLM-4.7-flash / glm-5.3-flash 端到端实测通过。
+
+无破坏性 API 变更；`appVersion` 由 v7.0.0 升至 **v7.1.0**；`-race` 覆盖率 **72.4%**。
 
 ### v7.0.0（2026-10-06）— Personal Relationship OS 3.0
 
