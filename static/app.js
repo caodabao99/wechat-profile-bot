@@ -3597,6 +3597,7 @@ createApp({
       proxyForm: { enabled: false, url: '', noProxy: '' }, proxySaving: false,
       proxyTesting: false, modelTesting: false,
       modelTestResult: null,
+      capTesting: false, capResult: null,
     });
     function regionLabel(r) { return r === 'foreign' ? '国外' : '国内'; }
     function activeProfile() {
@@ -3729,6 +3730,15 @@ createApp({
         reloadUsage();
       } catch (e) { mp.modelTestResult = { ok: false, error: e.message || '调用失败' }; }
       finally { mp.modelTesting = false; }
+    }
+    async function runCapabilityEval() {
+      if (mp.capTesting) return; mp.capTesting = true; mp.capResult = null;
+      try {
+        mp.capResult = await api('/api/llm/capability', { method: 'POST', body: {} });
+        if (mp.capResult && mp.capResult.ok) toast('模型能力测试完成', 'ok');
+        reloadUsage();
+      } catch (e) { mp.capResult = { ok: false, error: e.message || '能力测试失败' }; }
+      finally { mp.capTesting = false; }
     }
 
     // ---------- v5.4.0 #9 数据健康自检（只读 SQL 聚合，按需手动刷新） ----------
@@ -3964,7 +3974,7 @@ createApp({
       // v6.2 模型与代理页
       mp, regionLabel, activeProfile, loadModelPage, reloadUsage, saveBudget,
       openNewForm, openPresetForm, openEditForm, closeForm, saveProfile,
-      activateProfile, deleteProfile, saveProxy, testProxy, testModel,
+      activateProfile, deleteProfile, saveProxy, testProxy, testModel, runCapabilityEval,
       // v5.4.0 #9 数据健康自检
       dataReport, loadDataReport, fmtBytes,
       // 标签

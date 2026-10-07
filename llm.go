@@ -78,6 +78,14 @@ func (c *LLMClient) configured() bool {
 	return strings.TrimSpace(spec.APIKey) != "" && strings.TrimSpace(spec.BaseURL) != ""
 }
 
+// ActiveModelName 返回当前解析出的活动模型名（供能力测试标注被测模型）。无配置时返回空串。
+func (c *LLMClient) ActiveModelName() string {
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.resolveSpec().Model)
+}
+
 // chatResponse 是接口返回中我们关心的字段
 type chatResponse struct {
 	Choices []struct {

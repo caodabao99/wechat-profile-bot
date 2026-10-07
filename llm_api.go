@@ -108,6 +108,9 @@ func (s *apiServer) routeLLM(w http.ResponseWriter, r *http.Request, sub []strin
 			return
 		}
 		writeErr(w, http.StatusNotFound, "未知接口: /api/llm/model")
+	case "capability":
+		// 网页端「模型能力测试」：用当前活动模型跑能力探针，返回量化报告（未配置优雅降级不 500）。
+		s.hLLMCapabilityEval(w, r)
 	default:
 		writeErr(w, http.StatusNotFound, "未知接口: /api/llm/"+sub[0])
 	}
