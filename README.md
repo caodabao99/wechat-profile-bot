@@ -1,6 +1,6 @@
 # wechat-profile-bot
 
-![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.1.0-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-72.4%25-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-green) ![go](https://img.shields.io/badge/go-1.25%2B-blue) ![version](https://img.shields.io/badge/version-v7.1.1-informational) ![coverage](https://img.shields.io/badge/%2Dtest%20coverage-72.4%25-brightgreen)
 
 **把微信聊天记录变成一台「关系操作系统」。** 粘贴记录 → 自动入库去重 → 抽取**可溯源**的可信事实（事实/推断分层、冲突进人工复核）→ **确定性评分**给出「今天最该联系的人」与依据 → 行动后自动回测回暖率。纯本地 SQLite、单二进制部署；**不读微信数据库、不监控、不自动发消息**，LLM 全失效时核心功能照常工作。
 
@@ -23,7 +23,7 @@
 ```bash
 # 方式 A：下载 Release 二进制（win/linux），或
 # 方式 B：Docker —— 下载镜像 tar 后
-docker load -i wechat-profile-bot-docker-v7.1.0.tar.gz
+docker load -i wechat-profile-bot-docker-v7.1.1.tar.gz
 docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登录
 ```
 
@@ -97,7 +97,7 @@ docker compose up -d      # 打开 http://服务器IP:17965 完成 Token+2FA 登
 
 ### 1. 获取程序
 
-从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.1.0.zip`，解压后得到：
+从 [Releases](https://github.com/caodabao99/wechat-profile-bot/releases) 下载 `wechat-profile-bot-v7.1.1.zip`，解压后得到：
 
 ```
 wechat-profile-bot-linux-amd64            Linux 服务端（amd64）
@@ -114,7 +114,7 @@ README.md                                 本文档
 ```
 
 - Linux 服务器用 `wechat-profile-bot-linux-amd64`，Windows 用 `.exe`
-- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.1.0.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
+- Docker 部署见下方「Docker 部署」：直接加载 Release 附带的镜像 tar（`wechat-profile-bot-docker-v7.1.1.tar.gz`），或用包内 Dockerfile 本地构建，均不需要 git clone 源码
 
 > 也可自行编译，需要 Go 1.25+：
 > ```bash
@@ -332,7 +332,7 @@ Get-Process wechat-profile-bot-windows-amd64 | Stop-Process
 
 镜像未发布到 Docker Hub，两种方式任选：
 
-- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.1.0.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.1.0.tar.gz`，得到 `wechat-profile-bot:v7.1.0` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
+- **加载 Release 附带的镜像 tar**（推荐，无需 Go 环境）：下载 `wechat-profile-bot-docker-v7.1.1.tar.gz` 后 `docker load -i wechat-profile-bot-docker-v7.1.1.tar.gz`，得到 `wechat-profile-bot:v7.1.1` 镜像，再按下文 compose（删掉 `build:` 段）或 `docker run` 启动
 - **本地构建**：需要源码或 Release 包内的 Dockerfile
 
 ### 方式一：docker compose（推荐）
